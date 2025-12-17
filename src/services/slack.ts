@@ -292,3 +292,113 @@ export async function setReminder(input: ReminderInput): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Post a message to an existing thread
+ */
+export async function postToThread(
+  threadTs: string,
+  text: string,
+  blocks?: unknown[]
+): Promise<SlackMessage> {
+  const client = getClient();
+
+  const response = await client.chat.postMessage({
+    channel: config.slack.channelId,
+    thread_ts: threadTs,
+    text,
+    blocks: blocks as ChatPostMessageResponse['blocks'],
+    unfurl_links: false,
+    unfurl_media: false,
+  });
+
+  if (!response.ok || !response.ts) {
+    throw new Error(`Failed to post to Slack thread: ${response.error}`);
+  }
+
+  return {
+    ts: response.ts,
+    channel: response.channel ?? config.slack.channelId,
+  };
+}
+
+/**
+ * Add a reaction to a message
+ */
+export async function addReaction(
+  messageTs: string,
+  emoji: string
+): Promise<void> {
+  const client = getClient();
+
+  try {
+    await client.reactions.add({
+      channel: config.slack.channelId,
+      timestamp: messageTs,
+      name: emoji,
+    });
+  } catch (error) {
+    // Might fail if reaction already exists
+    console.warn('Failed to add reaction:', error);
+  }
+}
+
+/**
+ * Remove a reaction from a message
+ */
+export async function removeReaction(
+  messageTs: string,
+  emoji: string
+): Promise<void> {
+  const client = getClient();
+
+  try {
+    await client.reactions.remove({
+      channel: config.slack.channelId,
+      timestamp: messageTs,
+      name: emoji,
+    });
+  } catch (error) {
+    // Might fail if reaction doesn't exist
+    console.warn('Failed to remove reaction:', error);
+  }
+}
+
+/**
+ * Post an ephemeral message (only visible to one user)
+ */
+export async function postEphemeral(
+  channelId: string,
+  userId: string,
+  text: string,
+  blocks?: unknown[]
+): Promise<void> {
+  const client = getClient();
+
+  await client.chat.postEphemeral({
+    channel: channelId,
+    user: userId,
+    text,
+    blocks: blocks as ChatPostMessageResponse['blocks'],
+  });
+}
+
+/**
+ * Verify a Slack request signature
+ */
+export function verifySlackSignature(
+  signature: string,
+  timestamp: string,
+  body: string,
+  signingSecret: string
+): boolean {
+  const crypto = require('crypto');
+  const baseString = `v0:${timestamp}:${body}`;
+  const hmac = crypto.createHmac('sha256', signingSecret);
+  hmac.update(baseString);
+  const expectedSignature = `v0=${hmac.digest('hex')}`;
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expectedSignature)
+  );
+}

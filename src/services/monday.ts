@@ -232,3 +232,151 @@ export async function getAllUsers(): Promise<MondayUser[]> {
   const result = await executeQuery<{ users: MondayUser[] }>(query);
   return result.users;
 }
+
+/**
+ * Find a Monday item by its Slack thread ID
+ */
+export async function findItemBySlackThread(slackThreadTs: string): Promise<string | null> {
+  const query = `
+    query FindItemBySlackThread($boardId: ID!, $columnId: String!, $value: String!) {
+      items_page_by_column_values(
+        board_id: $boardId
+        columns: [{ column_id: $columnId, column_values: [$value] }]
+        limit: 1
+      ) {
+        items {
+          id
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items_page_by_column_values: { items: Array<{ id: string }> };
+    }>(query, {
+      boardId: config.monday.boardId,
+      columnId: config.monday.columns.slackThreadId,
+      value: slackThreadTs,
+    });
+
+    return result.items_page_by_column_values.items[0]?.id ?? null;
+  } catch (error) {
+    console.error('Error finding item by Slack thread:', error);
+    return null;
+  }
+}
+
+/**
+ * Get the Slack thread ID from a Monday item
+ */
+export async function getSlackThreadId(itemId: string): Promise<string | null> {
+  const query = `
+    query GetSlackThreadId($itemId: ID!) {
+      items(ids: [$itemId]) {
+        column_values(ids: ["${config.monday.columns.slackThreadId}"]) {
+          text
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{ column_values: Array<{ text: string }> }>;
+    }>(query, { itemId });
+
+    return result.items[0]?.column_values[0]?.text || null;
+  } catch (error) {
+    console.error('Error getting Slack thread ID:', error);
+    return null;
+  }
+}
+
+/**
+ * Create an update (comment) on a Monday item
+ */
+export async function createUpdate(itemId: string, body: string): Promise<string> {
+  const query = `
+    mutation CreateUpdate($itemId: ID!, $body: String!) {
+      create_update(item_id: $itemId, body: $body) {
+        id
+      }
+    }
+  `;
+
+  const result = await executeQuery<{ create_update: { id: string } }>(query, {
+    itemId,
+    body,
+  });
+
+  return result.create_update.id;
+}
+
+/**
+ * Update the status column on a Monday item
+ */
+export async function updateStatus(itemId: string, status: string): Promise<void> {
+  const query = `
+    mutation UpdateStatus($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  await executeQuery(query, {
+    boardId: config.monday.boardId,
+    itemId,
+    columnValues: JSON.stringify({
+      [config.monday.columns.status]: { label: status },
+    }),
+  });
+}
+
+/**
+ * Get item details including name and owner
+ */
+export async function getItem(itemId: string): Promise<{
+  id: string;
+  name: string;
+  status: string | null;
+} | null> {
+  const query = `
+    query GetItem($itemId: ID!) {
+      items(ids: [$itemId]) {
+        id
+        name
+        column_values(ids: ["${config.monday.columns.status}"]) {
+          text
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{
+        id: string;
+        name: string;
+        column_values: Array<{ text: string }>;
+      }>;
+    }>(query, { itemId });
+
+    const item = result.items[0];
+    if (!item) return null;
+
+    return {
+      id: item.id,
+      name: item.name,
+      status: item.column_values[0]?.text || null,
+    };
+  } catch (error) {
+    console.error('Error getting item:', error);
+    return null;
+  }
+}

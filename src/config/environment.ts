@@ -57,6 +57,7 @@ export const config = {
   slack: {
     botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
     channelId: getEnvVar('SLACK_CHANNEL_ID', 'C08QCFC4Y0H'),
+    signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
   },
 
   // ConvertAPI
