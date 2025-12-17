@@ -12,7 +12,7 @@ export interface PendingTask {
   missing: MissingFields;
   slackUserId: string;
   slackChannelId: string;
-  awaitingField: 'name' | 'assignee' | 'dueDate' | null;
+  awaitingFields: Array<'name' | 'assignee' | 'dueDate'>; // All missing fields
   createdAt: number;
   lastMessageTs?: string;
 }
@@ -93,35 +93,44 @@ export function clearPendingTask(channelId: string, userId: string): void {
 }
 
 /**
- * Determine which field to ask for next
+ * Get all missing fields as an array
  */
-export function getNextMissingField(missing: MissingFields): 'name' | 'assignee' | 'dueDate' | null {
-  // Priority order: name first, then assignee, then due date
-  if (missing.needsName) return 'name';
-  if (missing.needsAssignee) return 'assignee';
-  if (missing.needsDueDate) return 'dueDate';
-  return null;
+export function getMissingFields(missing: MissingFields): Array<'name' | 'assignee' | 'dueDate'> {
+  const fields: Array<'name' | 'assignee' | 'dueDate'> = [];
+  if (missing.needsName) fields.push('name');
+  if (missing.needsAssignee) fields.push('assignee');
+  if (missing.needsDueDate) fields.push('dueDate');
+  return fields;
 }
 
 /**
- * Generate the question to ask for a missing field
+ * Generate a combined question asking for all missing fields at once
  */
-export function getQuestionForField(field: 'name' | 'assignee' | 'dueDate'): string {
-  switch (field) {
-    case 'name':
-      return "What's the task? Please describe what needs to be done.";
-    case 'assignee':
-      return "Who should this be assigned to? (you can say 'me' or type a name)";
-    case 'dueDate':
-      return "When is this due? (e.g., 'tomorrow', 'friday', 'next week', '12/25')";
+export function generateCombinedQuestion(missingFields: Array<'name' | 'assignee' | 'dueDate'>): string {
+  const questions: string[] = [];
+
+  for (const field of missingFields) {
+    switch (field) {
+      case 'name':
+        questions.push("*What's the task?*");
+        break;
+      case 'assignee':
+        questions.push("*Who should this be assigned to?* (say 'me' or a name)");
+        break;
+      case 'dueDate':
+        questions.push("*When is it due?* (e.g., 'tomorrow', 'friday')");
+        break;
+    }
   }
+
+  return questions.join('\n');
 }
 
 /**
- * Generate blocks for asking a follow-up question
+ * Generate blocks for asking all missing questions at once
  */
 export function generateQuestionBlocks(
-  question: string,
+  missingFields: Array<'name' | 'assignee' | 'dueDate'>,
   taskSoFar: ParsedTask,
   showCancel: boolean = true
 ): unknown[] {
@@ -138,18 +147,20 @@ export function generateQuestionBlocks(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `:memo: *Creating task...*\n${summaryParts.join('\n')}`,
+        text: `:memo: *Got it!*\n${summaryParts.join('\n')}`,
       },
     });
     blocks.push({ type: 'divider' });
   }
 
-  // Ask the question
+  // Ask all questions at once
+  const combinedQuestion = generateCombinedQuestion(missingFields);
+
   blocks.push({
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `:question: ${question}`,
+      text: `:question: *I need a bit more info:*\n\n${combinedQuestion}\n\n_Reply with all answers (e.g., "john, friday" or "assign to john due friday")_`,
     },
   });
 

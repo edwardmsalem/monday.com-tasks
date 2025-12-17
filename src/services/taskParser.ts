@@ -199,69 +199,115 @@ Extract what you can and mark fields as missing if they're not provided. Be gene
 }
 
 /**
- * Merge additional input into an existing parsed task
+ * Parse a follow-up response that contains answers to multiple missing fields
+ * Uses Claude to intelligently extract assignee and due date from natural language
  */
-export async function mergeTaskInput(
+export async function parseFollowUpAnswers(
   existing: ParsedTask,
-  additionalText: string,
-  slackUserId: string,
-  fieldToFill: 'name' | 'assignee' | 'dueDate'
+  answerText: string,
+  missingFields: Array<'name' | 'assignee' | 'dueDate'>,
+  slackUserId: string
 ): Promise<ParsedTask> {
   const client = getClient();
+  const users = await getAllUsers();
+  const userNames = users.map(u => u.name).join(', ');
+
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
 
-  // For simple field fills, we can use Claude to interpret
-  if (fieldToFill === 'dueDate') {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 256,
-      tools: [
-        {
-          name: 'parse_date',
-          description: 'Parse a date from natural language',
-          input_schema: {
-            type: 'object' as const,
-            properties: {
-              date: {
-                type: 'string',
-                description: 'The date in YYYY-MM-DD format',
-              },
+  // Build the prompt based on what we need
+  const fieldsDescription = missingFields.map(f => {
+    switch (f) {
+      case 'name': return 'task description';
+      case 'assignee': return 'assignee (person name)';
+      case 'dueDate': return 'due date';
+    }
+  }).join(', ');
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 512,
+    tools: [
+      {
+        name: 'extract_answers',
+        description: 'Extract task field values from the user response',
+        input_schema: {
+          type: 'object' as const,
+          properties: {
+            task_name: {
+              type: 'string',
+              description: 'The task description if provided',
             },
-            required: ['date'],
+            assignee: {
+              type: 'string',
+              description: 'The assignee name. Look for names, "me", "myself", or @mentions',
+            },
+            due_date: {
+              type: 'string',
+              description: 'The due date in YYYY-MM-DD format',
+            },
+            due_date_raw: {
+              type: 'string',
+              description: 'The original due date text (e.g., "friday", "next week")',
+            },
           },
         },
-      ],
-      tool_choice: { type: 'tool', name: 'parse_date' },
-      messages: [
-        {
-          role: 'user',
-          content: `Today is ${todayStr} (${today.toLocaleDateString('en-US', { weekday: 'long' })}). Parse this due date: "${additionalText}"`,
-        },
-      ],
-    });
+      },
+    ],
+    tool_choice: { type: 'tool', name: 'extract_answers' },
+    messages: [
+      {
+        role: 'user',
+        content: `Extract the following from the user's response: ${fieldsDescription}
 
-    const toolUse = response.content.find(block => block.type === 'tool_use');
-    if (toolUse && toolUse.type === 'tool_use') {
-      const input = toolUse.input as { date: string };
-      return { ...existing, dueDate: input.date, rawDueDate: additionalText };
-    }
+Today's date: ${todayStr} (${today.toLocaleDateString('en-US', { weekday: 'long' })})
+Available team members: ${userNames}
+User's Slack ID: ${slackUserId} (if they say "me" or "myself", return "me")
+
+User's response: "${answerText}"
+
+Examples of valid responses:
+- "john, friday" → assignee: john, due_date: this friday
+- "assign to sarah due tomorrow" → assignee: sarah, due_date: tomorrow
+- "me, next week" → assignee: me, due_date: next monday
+- "friday for john" → assignee: john, due_date: this friday`,
+      },
+    ],
+  });
+
+  const toolUse = response.content.find(block => block.type === 'tool_use');
+  if (!toolUse || toolUse.type !== 'tool_use') {
+    return existing;
   }
 
-  if (fieldToFill === 'assignee') {
-    let assignee = additionalText.trim();
-    // Handle "me" case
+  const input = toolUse.input as {
+    task_name?: string;
+    assignee?: string;
+    due_date?: string;
+    due_date_raw?: string;
+  };
+
+  // Build updated parsed task
+  const updated = { ...existing };
+
+  if (missingFields.includes('name') && input.task_name) {
+    updated.name = input.task_name;
+  }
+
+  if (missingFields.includes('assignee') && input.assignee) {
+    let assignee = input.assignee;
     if (['me', 'myself', 'i'].includes(assignee.toLowerCase())) {
       assignee = `<@${slackUserId}>`;
     }
-    return { ...existing, assignee };
+    updated.assignee = assignee;
   }
 
-  if (fieldToFill === 'name') {
-    return { ...existing, name: additionalText.trim() };
+  if (missingFields.includes('dueDate') && input.due_date) {
+    updated.dueDate = input.due_date;
+    updated.rawDueDate = input.due_date_raw || input.due_date;
   }
 
-  return existing;
+  return updated;
 }
 
 /**

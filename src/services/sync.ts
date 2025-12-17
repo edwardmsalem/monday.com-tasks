@@ -13,14 +13,12 @@ import { config } from '../config/environment.js';
 import * as monday from './monday.js';
 import * as slack from './slack.js';
 import { getAllUsers, findUserByName, type UnifiedUser } from './userResolver.js';
-import { parseTaskWithAI, mergeTaskInput, type ParsedTask } from './taskParser.js';
+import { parseTaskWithAI, parseFollowUpAnswers, type ParsedTask } from './taskParser.js';
 import {
   storePendingTask,
   getPendingTask,
-  updatePendingTask,
   clearPendingTask,
-  getNextMissingField,
-  getQuestionForField,
+  getMissingFields,
   generateQuestionBlocks,
   generateConfirmationBlocks,
   type PendingTask,
@@ -384,7 +382,16 @@ export async function startSmartTaskCreation(
     const result = await parseTaskWithAI(text, slackUserId);
 
     if (result.isComplete) {
-      // All required fields present - show confirmation
+      // All required fields present - store for confirmation and show confirm dialog
+      storePendingTask(slackChannelId, slackUserId, {
+        parsed: result.parsed,
+        missing: result.missing,
+        slackUserId,
+        slackChannelId,
+        awaitingFields: [],
+        createdAt: Date.now(),
+      });
+
       const assigneeName = await resolveAssigneeName(result.parsed.assignee!, slackUserId);
 
       return {
@@ -399,10 +406,10 @@ export async function startSmartTaskCreation(
       };
     }
 
-    // Missing required fields - store state and ask question
-    const nextField = getNextMissingField(result.missing);
+    // Missing required fields - get ALL missing fields
+    const missingFields = getMissingFields(result.missing);
 
-    if (!nextField) {
+    if (missingFields.length === 0) {
       // Shouldn't happen, but handle gracefully
       return {
         type: 'error',
@@ -410,22 +417,20 @@ export async function startSmartTaskCreation(
       };
     }
 
-    // Store the pending task
+    // Store the pending task with all missing fields
     storePendingTask(slackChannelId, slackUserId, {
       parsed: result.parsed,
       missing: result.missing,
       slackUserId,
       slackChannelId,
-      awaitingField: nextField,
+      awaitingFields: missingFields,
       createdAt: Date.now(),
     });
 
-    const question = getQuestionForField(nextField);
-
+    // Ask all questions at once
     return {
       type: 'needs_info',
-      message: question,
-      blocks: generateQuestionBlocks(question, result.parsed),
+      blocks: generateQuestionBlocks(missingFields, result.parsed),
     };
   } catch (error) {
     console.error('Smart task creation error:', error);
@@ -437,7 +442,7 @@ export async function startSmartTaskCreation(
 }
 
 /**
- * Continue task creation with additional input
+ * Continue task creation with additional input (answers to all questions at once)
  */
 export async function continueSmartTaskCreation(
   text: string,
@@ -446,36 +451,30 @@ export async function continueSmartTaskCreation(
 ): Promise<SmartTaskResponse> {
   const pending = getPendingTask(slackChannelId, slackUserId);
 
-  if (!pending || !pending.awaitingField) {
+  if (!pending || pending.awaitingFields.length === 0) {
     // No pending task - treat as new request
     return startSmartTaskCreation(text, slackUserId, slackChannelId);
   }
 
   try {
-    // Merge the new input
-    const updatedParsed = await mergeTaskInput(
+    // Parse all answers at once using AI
+    const updatedParsed = await parseFollowUpAnswers(
       pending.parsed,
       text,
-      slackUserId,
-      pending.awaitingField
+      pending.awaitingFields,
+      slackUserId
     );
 
-    // Update missing fields
-    const newMissing = { ...pending.missing };
-    if (pending.awaitingField === 'name' && updatedParsed.name) {
-      newMissing.needsName = false;
-    }
-    if (pending.awaitingField === 'assignee' && updatedParsed.assignee) {
-      newMissing.needsAssignee = false;
-    }
-    if (pending.awaitingField === 'dueDate' && updatedParsed.dueDate) {
-      newMissing.needsDueDate = false;
-    }
+    // Check what's still missing
+    const newMissing = {
+      needsName: !updatedParsed.name,
+      needsAssignee: !updatedParsed.assignee,
+      needsDueDate: !updatedParsed.dueDate,
+    };
 
-    // Check if complete now
-    const nextField = getNextMissingField(newMissing);
+    const stillMissingFields = getMissingFields(newMissing);
 
-    if (!nextField) {
+    if (stillMissingFields.length === 0) {
       // All fields complete - show confirmation
       clearPendingTask(slackChannelId, slackUserId);
 
@@ -487,7 +486,7 @@ export async function continueSmartTaskCreation(
         missing: newMissing,
         slackUserId,
         slackChannelId,
-        awaitingField: null,
+        awaitingFields: [],
         createdAt: Date.now(),
       });
 
@@ -503,19 +502,20 @@ export async function continueSmartTaskCreation(
       };
     }
 
-    // Still missing fields - update state and ask next question
-    updatePendingTask(slackChannelId, slackUserId, {
+    // Still missing some fields - ask again for what's still missing
+    storePendingTask(slackChannelId, slackUserId, {
       parsed: updatedParsed,
       missing: newMissing,
-      awaitingField: nextField,
+      slackUserId,
+      slackChannelId,
+      awaitingFields: stillMissingFields,
+      createdAt: Date.now(),
     });
-
-    const question = getQuestionForField(nextField);
 
     return {
       type: 'needs_info',
-      message: question,
-      blocks: generateQuestionBlocks(question, updatedParsed),
+      message: "I'm still missing some info:",
+      blocks: generateQuestionBlocks(stillMissingFields, updatedParsed),
     };
   } catch (error) {
     console.error('Continue task creation error:', error);
