@@ -68,6 +68,19 @@ export const config = {
   anthropic: {
     apiKey: getEnvVar('ANTHROPIC_API_KEY', ''),
   },
+
+  // Google Calendar (optional)
+  google: {
+    enabled: getEnvVar('GOOGLE_CALENDAR_ENABLED', 'false') === 'true',
+    calendarId: getEnvVar('GOOGLE_CALENDAR_ID', 'primary'),
+    timeZone: getEnvVar('GOOGLE_CALENDAR_TIMEZONE', 'America/New_York'),
+    // Service Account (recommended for server-side automation)
+    serviceAccountKey: getEnvVarOptional('GOOGLE_SERVICE_ACCOUNT_KEY'),
+    // OR OAuth (for personal use)
+    clientId: getEnvVarOptional('GOOGLE_CLIENT_ID'),
+    clientSecret: getEnvVarOptional('GOOGLE_CLIENT_SECRET'),
+    refreshToken: getEnvVarOptional('GOOGLE_REFRESH_TOKEN'),
+  },
 } as const;
 
 /**

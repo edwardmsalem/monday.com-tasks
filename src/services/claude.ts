@@ -55,12 +55,17 @@ When analyzing an email, extract:
    - Opportunity: sales opportunities, upsells
    - Issue Call: customer complaints, issues requiring a call
    - General: anything else
-4. **Notes**: Any additional context or important details from the email.
+4. **Priority**: Detect urgency level:
+   - high: Contains "ASAP", "urgent", "immediately", "critical", "emergency", angry customer, escalation
+   - medium: Standard task with a deadline, customer waiting
+   - low: FYI, informational, no rush, when you get a chance
+5. **Notes**: Any additional context or important details from the email.
 
 Be smart about inferring information. For example:
 - "Send this to Dayna for next Friday" → owner: dayna, due date: calculate days until Friday
-- "Refund request - handle ASAP" → task type: Refund, due date: +1
-- "Customer wants to discuss payment options" → task type: Payment Plan`;
+- "Refund request - handle ASAP" → task type: Refund, due date: +1, priority: high
+- "Customer wants to discuss payment options" → task type: Payment Plan, priority: medium
+- "FYI - customer feedback" → priority: low`;
 }
 
 /**
@@ -86,6 +91,11 @@ function buildExtractTaskTool(userNames: string): Anthropic.Tool {
           enum: TASK_TYPE_MAPPINGS.flatMap(t => [t.displayName, ...t.aliases]),
           description: 'The type of task',
         },
+        priority: {
+          type: 'string',
+          enum: ['high', 'medium', 'low'],
+          description: 'Priority level: high (urgent/ASAP), medium (standard), low (FYI/no rush)',
+        },
         notes: {
           type: 'string',
           description: 'Additional context or important details extracted from the email',
@@ -95,12 +105,15 @@ function buildExtractTaskTool(userNames: string): Anthropic.Tool {
           description: 'Confidence score from 0 to 1 for the extraction',
         },
       },
-      required: ['owner', 'dueDate', 'taskType', 'notes', 'confidence'],
+      required: ['owner', 'dueDate', 'taskType', 'priority', 'notes', 'confidence'],
     },
   };
 }
 
+export type Priority = 'high' | 'medium' | 'low';
+
 export interface AnalysisResult extends TaskDetails {
+  priority: Priority;
   confidence: number;
 }
 
@@ -165,6 +178,7 @@ export async function analyzeEmail(
     owner: string;
     dueDate: string;
     taskType: string;
+    priority: Priority;
     notes: string;
     confidence: number;
   };
@@ -175,6 +189,7 @@ export async function analyzeEmail(
     owner: input.owner.toLowerCase(),
     dueDate: input.dueDate,
     taskType: input.taskType,
+    priority: input.priority,
     notes: input.notes,
     confidence: input.confidence,
   };
@@ -198,10 +213,20 @@ export async function analyzeEmailSafe(
     // Fallback: try to parse the old format (line by line)
     const lines = emailBody.split(/\r?\n/).filter(line => line.trim() !== '');
 
+    // Try to detect priority from keywords
+    const text = emailBody.toLowerCase();
+    let priority: Priority = 'medium';
+    if (text.includes('asap') || text.includes('urgent') || text.includes('immediately') || text.includes('critical')) {
+      priority = 'high';
+    } else if (text.includes('fyi') || text.includes('no rush') || text.includes('when you get a chance')) {
+      priority = 'low';
+    }
+
     return {
       owner: (lines[0] ?? '').replace(/@/g, '').trim().toLowerCase(),
       dueDate: (lines[1] ?? '+1').trim(),
       taskType: (lines[2] ?? 'general').trim().toLowerCase(),
+      priority,
       notes: lines.slice(3).join('\n').trim(),
       confidence: 0.3, // Low confidence for fallback parsing
     };

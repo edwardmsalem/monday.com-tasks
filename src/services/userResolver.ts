@@ -94,37 +94,74 @@ export async function refreshUserCache(): Promise<void> {
 }
 
 /**
- * Find a user by name using fuzzy matching
+ * Find a user by name using smart matching
  *
- * Supports:
- * - Exact match (case-insensitive): "Dayna" → dayna
- * - First name match: "John" → "John Smith"
- * - Partial match: "day" → "Dayna"
- * - With @ prefix: "@dayna" → "Dayna"
+ * Priority order (highest to lowest):
+ * 1. Exact full name match: "Elia Smith" → Elia Smith
+ * 2. Exact first name match: "elia" → Elia Smith (not Eliana!)
+ * 3. Slack username match: "esmith" → Elia Smith
+ * 4. Partial match (prefers shorter names): "eli" → Elia over Eliana
+ *
+ * Handles @ prefix: "@elia" → Elia Smith
  */
 export async function findUserByName(name: string): Promise<UnifiedUser | null> {
   const users = await getAllUsers();
   const searchName = name.toLowerCase().trim().replace(/^@/, '');
 
-  // Try exact match first
-  let match = users.find(u => u.name.toLowerCase() === searchName);
-  if (match) return match;
+  if (!searchName) return null;
 
-  // Try first name match
-  match = users.find(u => {
+  // 1. Exact full name match (highest priority)
+  let match = users.find(u => u.name.toLowerCase() === searchName);
+  if (match) {
+    console.log(`User match: exact full name "${searchName}" → ${match.name}`);
+    return match;
+  }
+
+  // 2. Exact first name match (important: "elia" matches "Elia", not "Eliana")
+  const firstNameMatches = users.filter(u => {
     const firstName = u.name.split(' ')[0].toLowerCase();
     return firstName === searchName;
   });
-  if (match) return match;
+  if (firstNameMatches.length === 1) {
+    console.log(`User match: exact first name "${searchName}" → ${firstNameMatches[0].name}`);
+    return firstNameMatches[0];
+  }
+  if (firstNameMatches.length > 1) {
+    // Multiple people with same first name - return first but warn
+    console.warn(`Multiple users with first name "${searchName}": ${firstNameMatches.map(u => u.name).join(', ')}. Using first match.`);
+    return firstNameMatches[0];
+  }
 
-  // Try partial match (name contains search term)
-  match = users.find(u => u.name.toLowerCase().includes(searchName));
-  if (match) return match;
-
-  // Try Slack username match
+  // 3. Exact Slack username match
   match = users.find(u => u.slackName?.toLowerCase() === searchName);
-  if (match) return match;
+  if (match) {
+    console.log(`User match: Slack username "${searchName}" → ${match.name}`);
+    return match;
+  }
 
+  // 4. Partial match - but prefer shorter names to avoid "eli" → "Eliana" when "Elia" exists
+  const partialMatches = users.filter(u => {
+    const fullName = u.name.toLowerCase();
+    const firstName = fullName.split(' ')[0];
+    return firstName.startsWith(searchName) || fullName.includes(searchName);
+  });
+
+  if (partialMatches.length > 0) {
+    // Sort by first name length (shorter = better match for partial)
+    partialMatches.sort((a, b) => {
+      const aFirst = a.name.split(' ')[0].length;
+      const bFirst = b.name.split(' ')[0].length;
+      return aFirst - bFirst;
+    });
+
+    if (partialMatches.length > 1) {
+      console.warn(`Partial match "${searchName}" found multiple users: ${partialMatches.map(u => u.name).join(', ')}. Using shortest first name.`);
+    }
+    console.log(`User match: partial "${searchName}" → ${partialMatches[0].name}`);
+    return partialMatches[0];
+  }
+
+  console.warn(`No user found matching "${searchName}"`);
   return null;
 }
 

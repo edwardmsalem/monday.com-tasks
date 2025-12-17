@@ -12,16 +12,26 @@ function getClient(): WebClient {
   return slackClient;
 }
 
+type Priority = 'high' | 'medium' | 'low';
+
 interface SlackNotificationInput {
   taskType: string;
   subject: string;
   assigneeSlackId: string;
   dueDate: string;
+  priority: Priority;
   notes: string;
   fromEmail: string | null;
   toEmail: string | null;
   mondayItemId: string;
 }
+
+// Priority display config
+const PRIORITY_CONFIG: Record<Priority, { emoji: string; label: string }> = {
+  high: { emoji: '🔴', label: 'High' },
+  medium: { emoji: '🟡', label: 'Medium' },
+  low: { emoji: '🟢', label: 'Low' },
+};
 
 /**
  * Send a notification message using Block Kit for rich formatting
@@ -60,6 +70,15 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
           type: 'mrkdwn',
           text: `*Due:*\n${input.dueDate}`,
         },
+        {
+          type: 'mrkdwn',
+          text: `*Priority:*\n${PRIORITY_CONFIG[input.priority].emoji} ${PRIORITY_CONFIG[input.priority].label}`,
+        },
+      ],
+    },
+    {
+      type: 'section',
+      fields: [
         {
           type: 'mrkdwn',
           text: `*Type:*\n${input.taskType}`,
@@ -229,4 +248,47 @@ export async function getAllUsers(): Promise<SlackUser[]> {
   } while (cursor);
 
   return users;
+}
+
+export interface ReminderInput {
+  userId: string;
+  text: string;
+  dueDate: string; // YYYY-MM-DD format
+}
+
+/**
+ * Set a Slack reminder for a user on the due date
+ *
+ * The reminder will trigger at 9am on the due date
+ */
+export async function setReminder(input: ReminderInput): Promise<boolean> {
+  const client = getClient();
+
+  try {
+    // Parse the due date and set reminder for 9am
+    const [year, month, day] = input.dueDate.split('-').map(Number);
+    const reminderDate = new Date(year, month - 1, day, 9, 0, 0);
+
+    // Convert to Unix timestamp
+    const timestamp = Math.floor(reminderDate.getTime() / 1000);
+
+    // Don't set reminders in the past
+    if (timestamp < Math.floor(Date.now() / 1000)) {
+      console.log('Skipping reminder - due date is in the past');
+      return false;
+    }
+
+    await client.reminders.add({
+      user: input.userId,
+      text: input.text,
+      time: timestamp,
+    });
+
+    console.log(`Slack reminder set for ${input.userId} at ${reminderDate.toISOString()}`);
+    return true;
+  } catch (error) {
+    // Reminders API might not be available for all workspaces
+    console.warn('Failed to set Slack reminder:', error);
+    return false;
+  }
 }

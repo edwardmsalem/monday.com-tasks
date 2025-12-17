@@ -23,6 +23,7 @@ import { analyzeEmailSafe } from './services/claude.js';
 import { convertEmlToPdf } from './services/convertApi.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
+import * as calendar from './services/calendar.js';
 import { findUserByName, getUserNamesString } from './services/userResolver.js';
 import { getTaskTypeDisplayName } from './config/taskTypes.js';
 import { parseDate, formatDateForDisplay } from './utils/dateParser.js';
@@ -106,6 +107,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     subject: email.subject,
     assigneeSlackId: slackMention,
     dueDate: formatDateForDisplay(formattedDueDate),
+    priority: analysisResult.priority,
     notes: analysisResult.notes,
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
@@ -125,6 +127,31 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   console.log('Updating Monday with Slack thread ID...');
   await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
   console.log('Monday item updated with Slack thread ID');
+
+  // Step 13: Create Google Calendar event (if enabled)
+  if (calendar.isCalendarEnabled()) {
+    console.log('Creating Google Calendar event...');
+    const calendarEvent = await calendar.createTaskEvent({
+      title: `[${taskType}] ${email.subject}`,
+      description: analysisResult.notes,
+      dueDate: formattedDueDate,
+      assigneeEmail: user.email,
+      mondayItemId: mondayItem.id,
+    });
+    if (calendarEvent) {
+      console.log('Calendar event created:', calendarEvent.eventId);
+    }
+  }
+
+  // Step 14: Set Slack reminder for assignee (if they have a Slack ID)
+  if (user.slackId) {
+    console.log('Setting Slack reminder...');
+    await slack.setReminder({
+      userId: user.slackId,
+      text: `Task due: ${email.subject}\n${monday.getItemUrl(mondayItem.id)}`,
+      dueDate: formattedDueDate,
+    });
+  }
 
   console.log('Workflow completed successfully!');
 
