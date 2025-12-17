@@ -33,6 +33,7 @@ export interface ParsedTask {
   taskType: string | null;
   priority: 'high' | 'medium' | 'low' | null;
   rawDueDate: string | null; // The original due date text before parsing
+  team: string | null;       // Sports team if mentioned
 }
 
 export interface MissingFields {
@@ -99,6 +100,10 @@ export async function parseTaskWithAI(
               enum: ['high', 'medium', 'low'],
               description: 'Priority level based on urgency words like "urgent", "asap", "when you can", "low priority".',
             },
+            team: {
+              type: 'string',
+              description: 'Sports team name if mentioned (e.g., "Yankees", "Knicks", "Rangers", "Giants"). Look for team names in the task description.',
+            },
             missing_name: {
               type: 'boolean',
               description: 'True if no clear task description was provided.',
@@ -148,6 +153,7 @@ Extract what you can and mark fields as missing if they're not provided. Be gene
     due_date_raw?: string;
     task_type?: string;
     priority?: 'high' | 'medium' | 'low';
+    team?: string;
     missing_name: boolean;
     missing_assignee: boolean;
     missing_due_date: boolean;
@@ -170,6 +176,7 @@ Extract what you can and mark fields as missing if they're not provided. Be gene
     taskType: input.task_type || null,
     priority: input.priority || null,
     rawDueDate: input.due_date_raw || null,
+    team: input.team || null,
   };
 
   const missing: MissingFields = {
@@ -317,8 +324,12 @@ export function formatTaskConfirmation(task: ParsedTask, assigneeName: string): 
   const priorityEmoji = task.priority === 'high' ? ' :red_circle:' :
                         task.priority === 'low' ? ' :large_green_circle:' : '';
 
-  return `*Task:* ${task.name}${priorityEmoji}\n` +
+  let message = `*Task:* ${task.name}${priorityEmoji}\n` +
          `*Assigned to:* ${assigneeName}\n` +
-         `*Due:* ${task.rawDueDate || task.dueDate}` +
-         (task.taskType ? `\n*Type:* ${task.taskType}` : '');
+         `*Due:* ${task.rawDueDate || task.dueDate}`;
+
+  if (task.taskType) message += `\n*Type:* ${task.taskType}`;
+  if (task.team) message += `\n*Team:* ${task.team}`;
+
+  return message;
 }

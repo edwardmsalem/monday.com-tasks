@@ -417,7 +417,8 @@ export async function startSmartTaskCreation(
           assigneeName,
           result.parsed.rawDueDate || result.parsed.dueDate!,
           result.parsed.taskType,
-          result.parsed.priority
+          result.parsed.priority,
+          result.parsed.team
         ),
       };
     }
@@ -513,7 +514,8 @@ export async function continueSmartTaskCreation(
           assigneeName,
           updatedParsed.rawDueDate || updatedParsed.dueDate!,
           updatedParsed.taskType,
-          updatedParsed.priority
+          updatedParsed.priority,
+          updatedParsed.team
         ),
       };
     }
@@ -585,6 +587,7 @@ export async function confirmSmartTask(
       ownerIds: [assignee.mondayId],  // Support multiple owners
       taskType: parsed.taskType ?? 'General',
       source: 'Slack Tasks',
+      team: parsed.team ?? undefined,
       fromEmail: null,
       toEmail: null,
       notes: `Created via Slack /monday command${parsed.priority ? ` | Priority: ${parsed.priority}` : ''}`,

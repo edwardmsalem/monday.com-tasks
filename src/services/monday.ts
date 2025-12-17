@@ -47,6 +47,7 @@ interface CreateItemInput {
   ownerIds: number[];  // Support multiple owners
   taskType: string;
   source: string;      // Source (Forwarding Tasks, Slack Tasks, etc.)
+  team?: string;       // Sports team (optional)
   fromEmail: string | null;
   toEmail: string | null;
   notes: string;
@@ -66,6 +67,11 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
     [columns.source]: { label: input.source },
     [columns.notes]: { text: input.notes },
   };
+
+  // Set team if provided (dropdown column uses labels array)
+  if (input.team) {
+    columnValues[columns.team] = { labels: [input.team] };
+  }
 
   if (input.fromEmail) {
     columnValues[columns.from] = { email: input.fromEmail, text: input.fromEmail };

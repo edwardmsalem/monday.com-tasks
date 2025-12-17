@@ -141,6 +141,7 @@ export function generateQuestionBlocks(
   if (taskSoFar.name) summaryParts.push(`*Task:* ${taskSoFar.name}`);
   if (taskSoFar.assignee) summaryParts.push(`*Assignee:* ${taskSoFar.assignee}`);
   if (taskSoFar.dueDate) summaryParts.push(`*Due:* ${taskSoFar.rawDueDate || taskSoFar.dueDate}`);
+  if (taskSoFar.team) summaryParts.push(`*Team:* ${taskSoFar.team}`);
 
   if (summaryParts.length > 0) {
     blocks.push({
@@ -194,7 +195,8 @@ export function generateConfirmationBlocks(
   assigneeName: string,
   dueDate: string,
   taskType?: string | null,
-  priority?: string | null
+  priority?: string | null,
+  team?: string | null
 ): unknown[] {
   const priorityText = priority === 'high' ? ':red_circle: High' :
                        priority === 'medium' ? ':large_yellow_circle: Medium' :
@@ -202,6 +204,7 @@ export function generateConfirmationBlocks(
 
   let details = `*Task:* ${taskName}\n*Assigned to:* ${assigneeName}\n*Due:* ${dueDate}`;
   if (taskType) details += `\n*Type:* ${taskType}`;
+  if (team) details += `\n*Team:* ${team}`;
   if (priorityText) details += `\n*Priority:* ${priorityText}`;
 
   return [
