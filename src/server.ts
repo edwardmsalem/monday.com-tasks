@@ -21,6 +21,7 @@ import { parseIncomingEmail } from './services/emailParser.js';
 import { executeWorkflowSafe } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
+import { startFollowUpScheduler } from './services/autoFollowUp.js';
 
 const app = express();
 
@@ -261,12 +262,18 @@ app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<v
 });
 
 // ============================================================================
-// Slack Slash Commands
+// Slack Slash Commands (AI-powered with follow-up questions)
 // ============================================================================
 
 /**
  * Slack slash command handler
- * Usage: /monday add Task name @assignee due:friday type:issue
+ * Uses Claude AI to understand natural language and asks follow-up questions
+ * for missing required fields (assignee, due date)
+ *
+ * Examples:
+ *   /monday Fix the login bug
+ *   /monday Review the contract for John by Friday
+ *   /monday urgent: deploy hotfix @sarah
  */
 app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
   try {
@@ -279,55 +286,115 @@ app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async
 
     console.log(`Slash command received: ${command} ${text}`);
 
-    // Parse the command
-    const parsed = sync.parseSlashCommand(text);
+    const trimmedText = text.trim().toLowerCase();
 
-    if (parsed.action === 'add' && parsed.name) {
-      // Acknowledge immediately
+    // Handle help
+    if (trimmedText === 'help' || trimmedText === '') {
       res.json({
         response_type: 'ephemeral',
-        text: ':hourglass: Creating task...',
-      });
-
-      // Create the task
-      try {
-        const result = await sync.createQuickTask({
-          name: parsed.name,
-          assignee: parsed.assignee,
-          dueDate: parsed.dueDate,
-          taskType: parsed.taskType,
-          slackUserId: user_id,
-          slackChannelId: channel_id,
-        });
-        console.log('Quick task created:', result.mondayItemId);
-      } catch (err) {
-        console.error('Failed to create quick task:', err);
-      }
-    } else if (parsed.action === 'help' || !parsed.action) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `*Monday.com Slash Commands*\n\n` +
-          `\`/monday add <task name>\` - Create a new task\n\n` +
-          `*Options:*\n` +
-          `• \`@name\` - Assign to someone (default: you)\n` +
-          `• \`due:friday\` - Set due date (today, tomorrow, +3, friday, 12/25)\n` +
-          `• \`type:issue\` - Set task type\n\n` +
+        text: `*Monday.com - Smart Task Creation*\n\n` +
+          `Just describe your task naturally! I'll ask for any missing details.\n\n` +
           `*Examples:*\n` +
-          `• \`/monday add Fix the login bug @john due:friday type:issue\`\n` +
-          `• \`/monday add Review contract due:tomorrow\`\n` +
-          `• \`/monday add Team standup due:+1\``,
+          `• \`/monday Fix the login bug\`\n` +
+          `• \`/monday Review contract for @john by friday\`\n` +
+          `• \`/monday urgent: deploy hotfix asap\`\n` +
+          `• \`/monday Schedule meeting with team next week\`\n\n` +
+          `*Required info (I'll ask if missing):*\n` +
+          `• Task description\n` +
+          `• Assignee (who's responsible?)\n` +
+          `• Due date (when is it due?)\n\n` +
+          `_Tip: The more detail you provide, the faster the task is created!_`,
       });
-    } else {
+      return;
+    }
+
+    // Handle cancel
+    if (trimmedText === 'cancel') {
+      const result = sync.cancelSmartTask(user_id, channel_id);
       res.json({
         response_type: 'ephemeral',
-        text: `Unknown command: \`${parsed.action}\`. Try \`/monday help\` for usage.`,
+        text: result.message,
       });
+      return;
     }
+
+    // Check if there's a pending task (user is answering a question)
+    if (sync.hasPendingTask(user_id, channel_id)) {
+      const result = await sync.continueSmartTaskCreation(text, user_id, channel_id);
+      res.json({
+        response_type: 'ephemeral',
+        text: result.message ?? '',
+        blocks: result.blocks,
+      });
+      return;
+    }
+
+    // Start new task creation with AI
+    const result = await sync.startSmartTaskCreation(text, user_id, channel_id);
+
+    res.json({
+      response_type: 'ephemeral',
+      text: result.message ?? '',
+      blocks: result.blocks,
+    });
   } catch (error) {
     console.error('Slash command error:', error);
     res.json({
       response_type: 'ephemeral',
       text: ':x: Error processing command. Please try again.',
+    });
+  }
+});
+
+// ============================================================================
+// Slack Interactive Messages (button clicks, etc.)
+// ============================================================================
+
+interface SlackInteraction {
+  type: string;
+  user: { id: string };
+  channel: { id: string };
+  actions?: Array<{ action_id: string }>;
+  response_url?: string;
+}
+
+/**
+ * Handle Slack interactive messages (button clicks)
+ */
+app.post('/webhook/slack/interactive', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const payload = JSON.parse(req.body.payload) as SlackInteraction;
+
+    const userId = payload.user.id;
+    const channelId = payload.channel.id;
+    const actionId = payload.actions?.[0]?.action_id;
+
+    console.log(`Slack interactive: ${actionId} from ${userId}`);
+
+    if (actionId === 'confirm_task') {
+      // User confirmed - create the task
+      const result = await sync.confirmSmartTask(userId, channelId);
+      res.json({
+        response_type: 'ephemeral',
+        text: result.message,
+        replace_original: true,
+      });
+    } else if (actionId === 'cancel_task') {
+      // User cancelled
+      const result = sync.cancelSmartTask(userId, channelId);
+      res.json({
+        response_type: 'ephemeral',
+        text: result.message,
+        replace_original: true,
+      });
+    } else {
+      res.json({ text: 'Unknown action' });
+    }
+  } catch (error) {
+    console.error('Interactive message error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: ':x: Error processing action.',
     });
   }
 });
@@ -428,12 +495,18 @@ function start() {
     console.log(`Server listening on port ${config.port}`);
     console.log('');
     console.log('Endpoints:');
-    console.log(`  Health:         http://localhost:${config.port}/health`);
-    console.log(`  Email webhook:  http://localhost:${config.port}/webhook/email`);
-    console.log(`  JSON webhook:   http://localhost:${config.port}/webhook/json`);
-    console.log(`  Slack events:   http://localhost:${config.port}/webhook/slack/events`);
-    console.log(`  Slack command:  http://localhost:${config.port}/webhook/slack/command`);
-    console.log(`  Monday webhook: http://localhost:${config.port}/webhook/monday`);
+    console.log(`  Health:          http://localhost:${config.port}/health`);
+    console.log(`  Email webhook:   http://localhost:${config.port}/webhook/email`);
+    console.log(`  JSON webhook:    http://localhost:${config.port}/webhook/json`);
+    console.log(`  Slack events:    http://localhost:${config.port}/webhook/slack/events`);
+    console.log(`  Slack command:   http://localhost:${config.port}/webhook/slack/command`);
+    console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
+    console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
+    console.log('');
+
+    // Start auto follow-up scheduler (checks every hour)
+    startFollowUpScheduler();
+    console.log('Auto follow-up scheduler started (hourly)');
   });
 }
 

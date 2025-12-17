@@ -6,12 +6,25 @@
  * - Monday updates → Slack thread replies
  * - Smart @ mention translation between platforms
  * - Status sync (checkmark ↔ complete)
+ * - AI-powered natural language task creation
  */
 
 import { config } from '../config/environment.js';
 import * as monday from './monday.js';
 import * as slack from './slack.js';
-import { getAllUsers, type UnifiedUser } from './userResolver.js';
+import { getAllUsers, findUserByName, type UnifiedUser } from './userResolver.js';
+import { parseTaskWithAI, mergeTaskInput, type ParsedTask } from './taskParser.js';
+import {
+  storePendingTask,
+  getPendingTask,
+  updatePendingTask,
+  clearPendingTask,
+  getNextMissingField,
+  getQuestionForField,
+  generateQuestionBlocks,
+  generateConfirmationBlocks,
+  type PendingTask,
+} from './conversationState.js';
 
 /**
  * Translate @ mentions from Slack format to Monday format
@@ -343,4 +356,306 @@ function parseDueFlag(value: string): string {
 
   // Default to tomorrow
   return getTomorrowDate();
+}
+
+// ============================================================================
+// AI-Powered Task Creation (with follow-up questions)
+// ============================================================================
+
+export interface SmartTaskResponse {
+  type: 'created' | 'needs_info' | 'confirmation' | 'cancelled' | 'error';
+  message?: string;
+  blocks?: unknown[];
+  mondayItemId?: string;
+  mondayUrl?: string;
+}
+
+/**
+ * Start creating a task from natural language input
+ * Uses Claude AI to parse the request and asks follow-up questions if needed
+ */
+export async function startSmartTaskCreation(
+  text: string,
+  slackUserId: string,
+  slackChannelId: string
+): Promise<SmartTaskResponse> {
+  try {
+    // Parse the input with AI
+    const result = await parseTaskWithAI(text, slackUserId);
+
+    if (result.isComplete) {
+      // All required fields present - show confirmation
+      const assigneeName = await resolveAssigneeName(result.parsed.assignee!, slackUserId);
+
+      return {
+        type: 'confirmation',
+        blocks: generateConfirmationBlocks(
+          result.parsed.name!,
+          assigneeName,
+          result.parsed.rawDueDate || result.parsed.dueDate!,
+          result.parsed.taskType,
+          result.parsed.priority
+        ),
+      };
+    }
+
+    // Missing required fields - store state and ask question
+    const nextField = getNextMissingField(result.missing);
+
+    if (!nextField) {
+      // Shouldn't happen, but handle gracefully
+      return {
+        type: 'error',
+        message: 'Something went wrong parsing your request. Please try again.',
+      };
+    }
+
+    // Store the pending task
+    storePendingTask(slackChannelId, slackUserId, {
+      parsed: result.parsed,
+      missing: result.missing,
+      slackUserId,
+      slackChannelId,
+      awaitingField: nextField,
+      createdAt: Date.now(),
+    });
+
+    const question = getQuestionForField(nextField);
+
+    return {
+      type: 'needs_info',
+      message: question,
+      blocks: generateQuestionBlocks(question, result.parsed),
+    };
+  } catch (error) {
+    console.error('Smart task creation error:', error);
+    return {
+      type: 'error',
+      message: 'Sorry, I had trouble understanding that. Please try again or use `/monday help`.',
+    };
+  }
+}
+
+/**
+ * Continue task creation with additional input
+ */
+export async function continueSmartTaskCreation(
+  text: string,
+  slackUserId: string,
+  slackChannelId: string
+): Promise<SmartTaskResponse> {
+  const pending = getPendingTask(slackChannelId, slackUserId);
+
+  if (!pending || !pending.awaitingField) {
+    // No pending task - treat as new request
+    return startSmartTaskCreation(text, slackUserId, slackChannelId);
+  }
+
+  try {
+    // Merge the new input
+    const updatedParsed = await mergeTaskInput(
+      pending.parsed,
+      text,
+      slackUserId,
+      pending.awaitingField
+    );
+
+    // Update missing fields
+    const newMissing = { ...pending.missing };
+    if (pending.awaitingField === 'name' && updatedParsed.name) {
+      newMissing.needsName = false;
+    }
+    if (pending.awaitingField === 'assignee' && updatedParsed.assignee) {
+      newMissing.needsAssignee = false;
+    }
+    if (pending.awaitingField === 'dueDate' && updatedParsed.dueDate) {
+      newMissing.needsDueDate = false;
+    }
+
+    // Check if complete now
+    const nextField = getNextMissingField(newMissing);
+
+    if (!nextField) {
+      // All fields complete - show confirmation
+      clearPendingTask(slackChannelId, slackUserId);
+
+      const assigneeName = await resolveAssigneeName(updatedParsed.assignee!, slackUserId);
+
+      // Store for confirmation
+      storePendingTask(slackChannelId, slackUserId, {
+        parsed: updatedParsed,
+        missing: newMissing,
+        slackUserId,
+        slackChannelId,
+        awaitingField: null,
+        createdAt: Date.now(),
+      });
+
+      return {
+        type: 'confirmation',
+        blocks: generateConfirmationBlocks(
+          updatedParsed.name!,
+          assigneeName,
+          updatedParsed.rawDueDate || updatedParsed.dueDate!,
+          updatedParsed.taskType,
+          updatedParsed.priority
+        ),
+      };
+    }
+
+    // Still missing fields - update state and ask next question
+    updatePendingTask(slackChannelId, slackUserId, {
+      parsed: updatedParsed,
+      missing: newMissing,
+      awaitingField: nextField,
+    });
+
+    const question = getQuestionForField(nextField);
+
+    return {
+      type: 'needs_info',
+      message: question,
+      blocks: generateQuestionBlocks(question, updatedParsed),
+    };
+  } catch (error) {
+    console.error('Continue task creation error:', error);
+    return {
+      type: 'error',
+      message: 'Sorry, I had trouble understanding that. Please try again.',
+    };
+  }
+}
+
+/**
+ * Confirm and create the task
+ */
+export async function confirmSmartTask(
+  slackUserId: string,
+  slackChannelId: string
+): Promise<SmartTaskResponse> {
+  const pending = getPendingTask(slackChannelId, slackUserId);
+
+  if (!pending) {
+    return {
+      type: 'error',
+      message: 'No pending task found. Please start over with `/monday`.',
+    };
+  }
+
+  const { parsed } = pending;
+
+  if (!parsed.name || !parsed.assignee || !parsed.dueDate) {
+    return {
+      type: 'error',
+      message: 'Task is missing required information. Please start over.',
+    };
+  }
+
+  try {
+    // Resolve assignee
+    const assignee = await resolveAssignee(parsed.assignee, slackUserId);
+
+    if (!assignee) {
+      return {
+        type: 'error',
+        message: `Could not find user "${parsed.assignee}". Please try again.`,
+      };
+    }
+
+    // Create the Monday item
+    const mondayItem = await monday.createItem({
+      name: parsed.name,
+      dueDate: parsed.dueDate,
+      ownerId: assignee.mondayId,
+      taskType: parsed.taskType ?? 'General',
+      fromEmail: null,
+      toEmail: null,
+      notes: `Created via Slack /monday command${parsed.priority ? ` | Priority: ${parsed.priority}` : ''}`,
+    });
+
+    const mondayUrl = monday.getItemUrl(mondayItem.id);
+
+    // Clear the pending task
+    clearPendingTask(slackChannelId, slackUserId);
+
+    return {
+      type: 'created',
+      message: `:white_check_mark: *Task created!*\n\n*${parsed.name}*\nAssigned to: ${assignee.name}\nDue: ${parsed.rawDueDate || parsed.dueDate}\n\n<${mondayUrl}|View in Monday.com>`,
+      mondayItemId: mondayItem.id,
+      mondayUrl,
+    };
+  } catch (error) {
+    console.error('Confirm task error:', error);
+    return {
+      type: 'error',
+      message: 'Failed to create task. Please try again.',
+    };
+  }
+}
+
+/**
+ * Cancel pending task creation
+ */
+export function cancelSmartTask(
+  slackUserId: string,
+  slackChannelId: string
+): SmartTaskResponse {
+  clearPendingTask(slackChannelId, slackUserId);
+  return {
+    type: 'cancelled',
+    message: ':x: Task creation cancelled.',
+  };
+}
+
+/**
+ * Check if there's a pending task for this user
+ */
+export function hasPendingTask(slackUserId: string, slackChannelId: string): boolean {
+  return getPendingTask(slackChannelId, slackUserId) !== null;
+}
+
+/**
+ * Resolve assignee name from Slack ID or name
+ */
+async function resolveAssigneeName(assignee: string, fallbackSlackId: string): Promise<string> {
+  const users = await getAllUsers();
+
+  // Check if it's a Slack mention
+  const slackMatch = assignee.match(/<@([A-Z0-9]+)>/);
+  if (slackMatch) {
+    const user = users.find(u => u.slackId === slackMatch[1]);
+    return user?.name ?? 'Unknown';
+  }
+
+  // Try to find by name
+  const user = await findUserByName(assignee);
+  if (user) {
+    return user.name;
+  }
+
+  // Fallback to the requesting user
+  const fallbackUser = users.find(u => u.slackId === fallbackSlackId);
+  return fallbackUser?.name ?? assignee;
+}
+
+/**
+ * Resolve assignee to a UnifiedUser
+ */
+async function resolveAssignee(assignee: string, fallbackSlackId: string): Promise<UnifiedUser | null> {
+  const users = await getAllUsers();
+
+  // Check if it's a Slack mention
+  const slackMatch = assignee.match(/<@([A-Z0-9]+)>/);
+  if (slackMatch) {
+    return users.find(u => u.slackId === slackMatch[1]) ?? null;
+  }
+
+  // Try to find by name
+  const user = await findUserByName(assignee);
+  if (user) {
+    return user;
+  }
+
+  // Fallback to the requesting user
+  return users.find(u => u.slackId === fallbackSlackId) ?? null;
 }
