@@ -91,6 +91,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     dueDate: formattedDueDate,
     ownerIds: [user.mondayId],  // Support multiple owners
     taskType,
+    source: 'Forwarding Tasks',
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
     notes: analysisResult.notes,

@@ -141,6 +141,21 @@ export async function syncMondayToSlack(
 }
 
 /**
+ * Mark Monday item as acknowledged when 👀 reaction added in Slack
+ */
+export async function markAcknowledgedFromSlack(slackThreadTs: string): Promise<void> {
+  const mondayItemId = await monday.findItemBySlackThread(slackThreadTs);
+
+  if (!mondayItemId) {
+    console.warn(`No Monday item found for Slack thread ${slackThreadTs}`);
+    return;
+  }
+
+  await monday.updateWorkflowStatus(mondayItemId, 'Acknowledged');
+  console.log(`Marked Monday item ${mondayItemId} as Acknowledged from Slack 👀 reaction`);
+}
+
+/**
  * Mark Monday item as complete when checkmark reaction added in Slack
  */
 export async function markCompleteFromSlack(slackThreadTs: string): Promise<void> {
@@ -151,8 +166,8 @@ export async function markCompleteFromSlack(slackThreadTs: string): Promise<void
     return;
   }
 
-  await monday.updateStatus(mondayItemId, 'Done');
-  console.log(`Marked Monday item ${mondayItemId} as Done from Slack reaction`);
+  await monday.updateWorkflowStatus(mondayItemId, 'Complete');
+  console.log(`Marked Monday item ${mondayItemId} as Complete from Slack reaction`);
 }
 
 /**
@@ -166,12 +181,12 @@ export async function unmarkCompleteFromSlack(slackThreadTs: string): Promise<vo
     return;
   }
 
-  await monday.updateStatus(mondayItemId, 'Working on it');
+  await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
   console.log(`Unmarked Monday item ${mondayItemId} from Slack reaction removal`);
 }
 
 /**
- * Post completion update to Slack when Monday status changes to Done
+ * Post completion update to Slack when Monday status changes to Complete
  */
 export async function notifySlackOfCompletion(
   mondayItemId: string,
@@ -244,6 +259,7 @@ export async function createQuickTask(input: QuickTaskInput): Promise<{
     dueDate,
     ownerIds: [assignee.mondayId],  // Support multiple owners
     taskType: input.taskType ?? 'General',
+    source: 'Slack Tasks',
     fromEmail: null,
     toEmail: null,
     notes: `Created via Slack /monday command`,
@@ -568,6 +584,7 @@ export async function confirmSmartTask(
       dueDate: parsed.dueDate,
       ownerIds: [assignee.mondayId],  // Support multiple owners
       taskType: parsed.taskType ?? 'General',
+      source: 'Slack Tasks',
       fromEmail: null,
       toEmail: null,
       notes: `Created via Slack /monday command${parsed.priority ? ` | Priority: ${parsed.priority}` : ''}`,

@@ -40,15 +40,20 @@ export const config = {
     slackThreadColumnId: getEnvVar('MONDAY_SLACK_THREAD_COLUMN_ID', 'text_mkxxn3hz'),
     boardUrl: getEnvVar('MONDAY_BOARD_URL', 'https://salemseats.monday.com/boards/18383923820'),
 
-    // Column IDs from the blueprint
+    // Column IDs from the board
     columns: {
       date: 'date4',
       from: 'email_mkxvy5nq',
       notes: 'long_text_mkxv1vhb',
       owner: 'person',
+      support: 'multiple_person_mky0vdq1',
       slackThreadId: 'text_mkxxn3hz',
+      slackLink: 'link_mky1j0j6',
       to: 'email_mkxv1hyd',
-      status: 'status',
+      type: 'status',                    // Task type (General, Opportunity, etc.)
+      workflowStatus: 'color_mkxvxxxn',  // Workflow status (Acknowledged, Working on it, etc.)
+      source: 'color_mky0b1yr',          // Source (Forwarding Tasks, Slack Tasks, etc.)
+      team: 'dropdown_mkyqe4we',         // Sports team
       file: 'file_mkxv6aa0',
     },
   },

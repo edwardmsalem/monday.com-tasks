@@ -46,6 +46,7 @@ interface CreateItemInput {
   dueDate: string;
   ownerIds: number[];  // Support multiple owners
   taskType: string;
+  source: string;      // Source (Forwarding Tasks, Slack Tasks, etc.)
   fromEmail: string | null;
   toEmail: string | null;
   notes: string;
@@ -61,7 +62,8 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
   const columnValues: Record<string, unknown> = {
     [columns.date]: { date: input.dueDate },
     [columns.owner]: { personsAndTeams: input.ownerIds.map(id => ({ id, kind: 'person' })) },
-    [columns.status]: { label: input.taskType },
+    [columns.type]: { label: input.taskType },
+    [columns.source]: { label: input.source },
     [columns.notes]: { text: input.notes },
   };
 
@@ -314,9 +316,10 @@ export async function createUpdate(itemId: string, body: string): Promise<string
 }
 
 /**
- * Update the status column on a Monday item
+ * Update the workflow status column on a Monday item
+ * (Acknowledged, Working on it, Complete, etc.)
  */
-export async function updateStatus(itemId: string, status: string): Promise<void> {
+export async function updateWorkflowStatus(itemId: string, status: string): Promise<void> {
   const query = `
     mutation UpdateStatus($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
       change_multiple_column_values(
@@ -333,25 +336,53 @@ export async function updateStatus(itemId: string, status: string): Promise<void
     boardId: config.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
-      [config.monday.columns.status]: { label: status },
+      [config.monday.columns.workflowStatus]: { label: status },
     }),
   });
 }
 
 /**
- * Get item details including name and owner
+ * Update the task type column on a Monday item
+ * (General, Opportunity, Decline, etc.)
+ */
+export async function updateType(itemId: string, taskType: string): Promise<void> {
+  const query = `
+    mutation UpdateType($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  await executeQuery(query, {
+    boardId: config.monday.boardId,
+    itemId,
+    columnValues: JSON.stringify({
+      [config.monday.columns.type]: { label: taskType },
+    }),
+  });
+}
+
+/**
+ * Get item details including name and workflow status
  */
 export async function getItem(itemId: string): Promise<{
   id: string;
   name: string;
-  status: string | null;
+  workflowStatus: string | null;
+  taskType: string | null;
 } | null> {
   const query = `
     query GetItem($itemId: ID!) {
       items(ids: [$itemId]) {
         id
         name
-        column_values(ids: ["${config.monday.columns.status}"]) {
+        column_values(ids: ["${config.monday.columns.workflowStatus}", "${config.monday.columns.type}"]) {
+          id
           text
         }
       }
@@ -363,17 +394,21 @@ export async function getItem(itemId: string): Promise<{
       items: Array<{
         id: string;
         name: string;
-        column_values: Array<{ text: string }>;
+        column_values: Array<{ id: string; text: string }>;
       }>;
     }>(query, { itemId });
 
     const item = result.items[0];
     if (!item) return null;
 
+    const workflowStatusCol = item.column_values.find(c => c.id === config.monday.columns.workflowStatus);
+    const typeCol = item.column_values.find(c => c.id === config.monday.columns.type);
+
     return {
       id: item.id,
       name: item.name,
-      status: item.column_values[0]?.text || null,
+      workflowStatus: workflowStatusCol?.text || null,
+      taskType: typeCol?.text || null,
     };
   } catch (error) {
     console.error('Error getting item:', error);

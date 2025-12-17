@@ -239,9 +239,12 @@ app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<v
         }
       }
 
-      // Handle reaction added - checkmark = complete
+      // Handle reaction added - 👀 = acknowledged, ✅ = complete
       if (event.type === 'reaction_added' && event.reaction && event.item) {
-        if (['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)) {
+        if (event.reaction === 'eyes') {
+          console.log('Eyes reaction added, marking Monday item acknowledged...');
+          await sync.markAcknowledgedFromSlack(event.item.ts);
+        } else if (['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)) {
           console.log('Checkmark reaction added, marking Monday item complete...');
           await sync.markCompleteFromSlack(event.item.ts);
         }
@@ -441,13 +444,13 @@ app.post('/webhook/monday', express.json(), async (req: Request, res: Response):
     if (body.event) {
       const event = body.event;
 
-      // Handle status change to "Done"
-      if (event.type === 'change_column_value' && event.columnId === config.monday.columns.status) {
+      // Handle workflow status change to "Complete"
+      if (event.type === 'change_column_value' && event.columnId === config.monday.columns.workflowStatus) {
         const newStatus = event.value?.label?.text;
         const oldStatus = event.previousValue?.label?.text;
 
-        if (newStatus === 'Done' && oldStatus !== 'Done' && event.pulseId) {
-          console.log('Monday item marked as Done, notifying Slack...');
+        if (newStatus === 'Complete' && oldStatus !== 'Complete' && event.pulseId) {
+          console.log('Monday item marked as Complete, notifying Slack...');
           const mondayUser = event.userId ? await monday.getUser(event.userId) : null;
           await sync.notifySlackOfCompletion(
             String(event.pulseId),
