@@ -1,10 +1,3 @@
-export interface UserMapping {
-  name: string;
-  mondayId: number;
-  slackId: string;
-  email: string;
-}
-
 export interface TaskTypeMapping {
   aliases: string[];
   displayName: string;

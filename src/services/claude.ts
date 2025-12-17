@@ -7,8 +7,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config/environment.js';
-import { USER_MAPPINGS } from '../config/users.js';
 import { TASK_TYPE_MAPPINGS } from '../config/taskTypes.js';
+import { getUserNamesString } from './userResolver.js';
 import type { TaskDetails } from '../types/index.js';
 
 let anthropicClient: Anthropic | null = null;
@@ -22,22 +22,25 @@ function getClient(): Anthropic {
   return anthropicClient;
 }
 
-// Build context about available options
-const availableOwners = USER_MAPPINGS.map(u => u.name).join(', ');
+// Build task type context (static, doesn't need dynamic loading)
 const availableTaskTypes = TASK_TYPE_MAPPINGS.map(t =>
   `${t.displayName} (aliases: ${t.aliases.join(', ')})`
 ).join('\n  - ');
 
-const SYSTEM_PROMPT = `You are an email analysis assistant. Your job is to extract task assignment details from forwarded emails.
+/**
+ * Build the system prompt with dynamic user names
+ */
+function buildSystemPrompt(userNames: string): string {
+  return `You are an email analysis assistant. Your job is to extract task assignment details from forwarded emails.
 
 Available team members to assign tasks to:
-${availableOwners}
+${userNames}
 
 Available task types:
   - ${availableTaskTypes}
 
 When analyzing an email, extract:
-1. **Owner**: Who should this task be assigned to? Match to one of the available team members.
+1. **Owner**: Who should this task be assigned to? Match to one of the available team members by first name or full name.
 2. **Due Date**: When is this due? Can be:
    - Relative: "tomorrow", "next week", "in 3 days" → convert to "+N" format (e.g., "+1", "+7", "+3")
    - Absolute: Any date format → convert to "MM/DD/YY" format
@@ -58,39 +61,44 @@ Be smart about inferring information. For example:
 - "Send this to Dayna for next Friday" → owner: dayna, due date: calculate days until Friday
 - "Refund request - handle ASAP" → task type: Refund, due date: +1
 - "Customer wants to discuss payment options" → task type: Payment Plan`;
+}
 
-// Tool definition for structured output
-const extractTaskTool: Anthropic.Tool = {
-  name: 'extract_task_details',
-  description: 'Extract task assignment details from the email',
-  input_schema: {
-    type: 'object' as const,
-    properties: {
-      owner: {
-        type: 'string',
-        description: `The team member to assign this task to. Must be one of: ${availableOwners}`,
+/**
+ * Build the tool definition with dynamic user names
+ */
+function buildExtractTaskTool(userNames: string): Anthropic.Tool {
+  return {
+    name: 'extract_task_details',
+    description: 'Extract task assignment details from the email',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        owner: {
+          type: 'string',
+          description: `The team member to assign this task to. Should match one of: ${userNames}. Use first name or full name.`,
+        },
+        dueDate: {
+          type: 'string',
+          description: 'The due date in either relative format (+N days) or absolute format (MM/DD/YY)',
+        },
+        taskType: {
+          type: 'string',
+          enum: TASK_TYPE_MAPPINGS.flatMap(t => [t.displayName, ...t.aliases]),
+          description: 'The type of task',
+        },
+        notes: {
+          type: 'string',
+          description: 'Additional context or important details extracted from the email',
+        },
+        confidence: {
+          type: 'number',
+          description: 'Confidence score from 0 to 1 for the extraction',
+        },
       },
-      dueDate: {
-        type: 'string',
-        description: 'The due date in either relative format (+N days) or absolute format (MM/DD/YY)',
-      },
-      taskType: {
-        type: 'string',
-        enum: TASK_TYPE_MAPPINGS.flatMap(t => [t.displayName, ...t.aliases]),
-        description: 'The type of task',
-      },
-      notes: {
-        type: 'string',
-        description: 'Additional context or important details extracted from the email',
-      },
-      confidence: {
-        type: 'number',
-        description: 'Confidence score from 0 to 1 for the extraction',
-      },
+      required: ['owner', 'dueDate', 'taskType', 'notes', 'confidence'],
     },
-    required: ['owner', 'dueDate', 'taskType', 'notes', 'confidence'],
-  },
-};
+  };
+}
 
 export interface AnalysisResult extends TaskDetails {
   confidence: number;
@@ -107,6 +115,14 @@ export async function analyzeEmail(
   emlTo?: string | null
 ): Promise<AnalysisResult> {
   const client = getClient();
+
+  // Get dynamic user names from Monday.com/Slack
+  const userNames = await getUserNamesString();
+  console.log('Available users for assignment:', userNames);
+
+  // Build dynamic prompt and tool
+  const systemPrompt = buildSystemPrompt(userNames);
+  const extractTaskTool = buildExtractTaskTool(userNames);
 
   // Build the message content
   let content = `Please analyze this forwarded email and extract task assignment details.\n\n`;
@@ -125,7 +141,7 @@ export async function analyzeEmail(
   const response = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     tools: [extractTaskTool],
     tool_choice: { type: 'tool', name: 'extract_task_details' },
     messages: [

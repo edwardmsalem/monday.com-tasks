@@ -23,7 +23,7 @@ import { analyzeEmailSafe } from './services/claude.js';
 import { convertEmlToPdf } from './services/convertApi.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
-import { findUserByName } from './config/users.js';
+import { findUserByName, getUserNamesString } from './services/userResolver.js';
 import { getTaskTypeDisplayName } from './config/taskTypes.js';
 import { parseDate, formatDateForDisplay } from './utils/dateParser.js';
 
@@ -70,12 +70,13 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   const formattedDueDate = parseDate(analysisResult.dueDate);
   console.log('Due date:', formattedDueDate);
 
-  // Step 6: Resolve user from unified mapping
-  const user = findUserByName(analysisResult.owner);
+  // Step 6: Resolve user dynamically from Monday.com/Slack
+  const user = await findUserByName(analysisResult.owner);
   if (!user) {
-    throw new Error(`Unknown user: ${analysisResult.owner}. Available users: dayna, ruzzell, garet, elia, eliana, chinedu`);
+    const availableUsers = await getUserNamesString();
+    throw new Error(`Unknown user: ${analysisResult.owner}. Available users: ${availableUsers}`);
   }
-  console.log('Resolved user:', user.name, 'Monday ID:', user.mondayId);
+  console.log('Resolved user:', user.name, 'Monday ID:', user.mondayId, 'Slack ID:', user.slackId ?? 'N/A');
 
   // Step 7: Convert EML to PDF (can run in parallel with Monday item creation)
   console.log('Converting EML to PDF...');
@@ -95,13 +96,8 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   });
   console.log('Monday item created:', mondayItem.id);
 
-  // Step 9: Resolve Slack user ID
-  let slackUserId = user.slackId;
-  if (!slackUserId && user.email) {
-    console.log('Looking up Slack user by email...');
-    slackUserId = (await slack.findUserByEmail(user.email)) ?? '';
-  }
-  const slackMention = slackUserId || analysisResult.owner;
+  // Step 9: Use Slack ID from unified user mapping (already matched by email)
+  const slackMention = user.slackId || user.name;
 
   // Step 10: Send Slack notification
   console.log('Sending Slack notification...');

@@ -188,3 +188,45 @@ export async function addBookmark(
     console.warn('Failed to add Slack bookmark:', error);
   }
 }
+
+export interface SlackUser {
+  id: string;
+  name: string;
+  realName: string;
+  email: string | null;
+}
+
+/**
+ * Fetch all users from Slack workspace
+ */
+export async function getAllUsers(): Promise<SlackUser[]> {
+  const client = getClient();
+  const users: SlackUser[] = [];
+
+  let cursor: string | undefined;
+
+  do {
+    const response = await client.users.list({
+      limit: 200,
+      cursor,
+    });
+
+    if (response.members) {
+      for (const member of response.members) {
+        // Skip bots and deleted users
+        if (member.is_bot || member.deleted || !member.id) continue;
+
+        users.push({
+          id: member.id,
+          name: member.name ?? '',
+          realName: member.real_name ?? member.name ?? '',
+          email: member.profile?.email ?? null,
+        });
+      }
+    }
+
+    cursor = response.response_metadata?.next_cursor;
+  } while (cursor);
+
+  return users;
+}

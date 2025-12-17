@@ -214,3 +214,21 @@ export async function findUserByEmail(email: string): Promise<MondayUser | null>
 export function getItemUrl(itemId: string): string {
   return `${config.monday.boardUrl}/pulses/${itemId}`;
 }
+
+/**
+ * Fetch all users from Monday.com
+ */
+export async function getAllUsers(): Promise<MondayUser[]> {
+  const query = `
+    query GetAllUsers {
+      users(limit: 100) {
+        id
+        name
+        email
+      }
+    }
+  `;
+
+  const result = await executeQuery<{ users: MondayUser[] }>(query);
+  return result.users;
+}
