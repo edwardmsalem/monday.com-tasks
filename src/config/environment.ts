@@ -63,6 +63,11 @@ export const config = {
   convertApi: {
     secret: getEnvVar('CONVERTAPI_SECRET', ''),
   },
+
+  // Anthropic (Claude AI)
+  anthropic: {
+    apiKey: getEnvVar('ANTHROPIC_API_KEY', ''),
+  },
 } as const;
 
 /**
@@ -75,6 +80,7 @@ export function validateConfig(): void {
   if (!config.monday.apiToken) missing.push('MONDAY_API_TOKEN');
   if (!config.slack.botToken) missing.push('SLACK_BOT_TOKEN');
   if (!config.convertApi.secret) missing.push('CONVERTAPI_SECRET');
+  if (!config.anthropic.apiKey) missing.push('ANTHROPIC_API_KEY');
 
   if (missing.length > 0) {
     console.warn(`Warning: Missing environment variables: ${missing.join(', ')}`);

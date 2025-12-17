@@ -2,27 +2,24 @@
  * Main workflow orchestration
  *
  * This module coordinates the entire email forwarding workflow:
- * 1. Parse the incoming email and extract task details
- * 2. Parse the EML attachment for original email headers
- * 3. Convert EML to PDF (in parallel with step 4)
- * 4. Resolve user IDs for Monday and Slack
- * 5. Create Monday.com item
- * 6. Send Slack notification (can start after user resolution)
- * 7. Upload PDF to both Monday and Slack thread
- * 8. Update Monday with Slack thread ID
+ * 1. Parse the incoming email and EML attachment
+ * 2. Use Claude AI to intelligently extract task details
+ * 3. Convert EML to PDF
+ * 4. Create Monday.com item
+ * 5. Send Slack notification
+ * 6. Upload PDF to both Monday and Slack
+ * 7. Update Monday with Slack thread ID
  */
 
 import type {
   ParsedEmail,
-  EmailAttachment,
   WorkflowResult,
-  ConvertedFile,
 } from './types/index.js';
 import {
-  parseTaskDetails,
   parseEmlAttachment,
   findEmlAttachment,
 } from './services/emailParser.js';
+import { analyzeEmailSafe } from './services/claude.js';
 import { convertEmlToPdf } from './services/convertApi.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
@@ -48,37 +45,44 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     throw new Error('No EML attachment found in the email');
   }
 
-  // Step 2: Parse task details from email body
-  const taskDetails = parseTaskDetails(email.text);
-  console.log('Parsed task details:', taskDetails);
+  // Step 2: Parse EML headers first (needed for Claude analysis)
+  console.log('Parsing EML attachment...');
+  const emlHeaders = await parseEmlAttachment(emlAttachment.content);
+  console.log('EML headers:', emlHeaders);
 
-  // Step 3: Resolve the task type
-  const taskType = getTaskTypeDisplayName(taskDetails.taskType);
+  // Step 3: Use Claude AI to analyze the email and extract task details
+  console.log('Analyzing email with Claude AI...');
+  const analysisResult = await analyzeEmailSafe(
+    email.subject,
+    email.text,
+    emlHeaders.subject,
+    emlHeaders.from,
+    emlHeaders.to
+  );
+  console.log('Claude analysis:', analysisResult);
+  console.log(`Confidence: ${(analysisResult.confidence * 100).toFixed(0)}%`);
+
+  // Step 4: Resolve the task type (Claude might return alias or display name)
+  const taskType = getTaskTypeDisplayName(analysisResult.taskType);
   console.log('Task type:', taskType);
 
-  // Step 4: Parse the due date
-  const formattedDueDate = parseDate(taskDetails.dueDate);
+  // Step 5: Parse the due date
+  const formattedDueDate = parseDate(analysisResult.dueDate);
   console.log('Due date:', formattedDueDate);
 
-  // Step 5: Resolve user - from unified mapping (no API calls needed!)
-  const user = findUserByName(taskDetails.owner);
+  // Step 6: Resolve user from unified mapping
+  const user = findUserByName(analysisResult.owner);
   if (!user) {
-    throw new Error(`Unknown user: ${taskDetails.owner}`);
+    throw new Error(`Unknown user: ${analysisResult.owner}. Available users: dayna, ruzzell, garet, elia, eliana, chinedu`);
   }
   console.log('Resolved user:', user.name, 'Monday ID:', user.mondayId);
 
-  // Step 6: Run these in parallel:
-  // - Parse EML headers
-  // - Convert EML to PDF
-  console.log('Starting parallel operations: EML parsing + PDF conversion');
-  const [emlHeaders, pdfFile] = await Promise.all([
-    parseEmlAttachment(emlAttachment.content),
-    convertEmlToPdf(emlAttachment.content, emlAttachment.filename),
-  ]);
-  console.log('EML headers:', emlHeaders);
+  // Step 7: Convert EML to PDF (can run in parallel with Monday item creation)
+  console.log('Converting EML to PDF...');
+  const pdfFile = await convertEmlToPdf(emlAttachment.content, emlAttachment.filename);
   console.log('PDF generated:', pdfFile.filename);
 
-  // Step 7: Create Monday.com item
+  // Step 8: Create Monday.com item
   console.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
     name: email.subject,
@@ -87,36 +91,33 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     taskType,
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
-    notes: taskDetails.notes,
+    notes: analysisResult.notes,
   });
   console.log('Monday item created:', mondayItem.id);
 
-  // Step 8: Resolve Slack user ID
-  // Use the unified mapping first, fall back to API lookup
+  // Step 9: Resolve Slack user ID
   let slackUserId = user.slackId;
   if (!slackUserId && user.email) {
     console.log('Looking up Slack user by email...');
     slackUserId = (await slack.findUserByEmail(user.email)) ?? '';
   }
+  const slackMention = slackUserId || analysisResult.owner;
 
-  // If we still don't have a Slack ID, we'll mention them by name
-  const slackMention = slackUserId || taskDetails.owner;
-
-  // Step 9: Send Slack notification
+  // Step 10: Send Slack notification
   console.log('Sending Slack notification...');
   const slackMessage = await slack.sendNotification({
     taskType,
     subject: email.subject,
     assigneeSlackId: slackMention,
     dueDate: formatDateForDisplay(formattedDueDate),
-    notes: taskDetails.notes,
+    notes: analysisResult.notes,
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
     mondayItemId: mondayItem.id,
   });
   console.log('Slack message sent:', slackMessage.ts);
 
-  // Step 10: Upload PDF to both services in parallel
+  // Step 11: Upload PDF to both services in parallel
   console.log('Uploading PDF to Monday and Slack...');
   await Promise.all([
     monday.uploadFileToItem(mondayItem.id, pdfFile.filename, pdfFile.data),
@@ -124,7 +125,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   ]);
   console.log('PDF uploaded to both services');
 
-  // Step 11: Update Monday with Slack thread ID (for bidirectional linking)
+  // Step 12: Update Monday with Slack thread ID
   console.log('Updating Monday with Slack thread ID...');
   await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
   console.log('Monday item updated with Slack thread ID');
