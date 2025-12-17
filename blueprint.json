@@ -1,0 +1,2065 @@
+{
+    "name": "Eddie Forwarding to Monday to Slack",
+    "flow": [
+        {
+            "id": 1,
+            "module": "gateway:CustomMailHook",
+            "version": 1,
+            "parameters": {
+                "hook": 2524030,
+                "maxResults": 1
+            },
+            "mapper": {},
+            "metadata": {
+                "designer": {
+                    "x": -80,
+                    "y": -2
+                },
+                "restore": {
+                    "parameters": {
+                        "hook": {
+                            "data": {
+                                "editable": "false"
+                            },
+                            "label": "Forwarding Monday Hook"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "hook",
+                        "type": "hook:gateway-mailhook",
+                        "label": "Mailhook",
+                        "required": true
+                    },
+                    {
+                        "name": "maxResults",
+                        "type": "number",
+                        "label": "Maximum number of results"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 2,
+            "module": "util:SetVariables",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "scope": "roundtrip",
+                "variables": [
+                    {
+                        "name": "lines",
+                        "value": "{{split(1.text; newline)}}"
+                    }
+                ]
+            },
+            "metadata": {
+                "designer": {
+                    "x": 300,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "scope": {
+                            "label": "One cycle"
+                        },
+                        "variables": {
+                            "items": [
+                                null
+                            ]
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "variables",
+                        "spec": [
+                            {
+                                "name": "name",
+                                "type": "text",
+                                "label": "Variable name",
+                                "required": true
+                            },
+                            {
+                                "name": "value",
+                                "type": "any",
+                                "label": "Variable value"
+                            }
+                        ],
+                        "type": "array",
+                        "label": "Variables"
+                    },
+                    {
+                        "name": "scope",
+                        "type": "select",
+                        "label": "Variable lifetime",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "roundtrip",
+                                "execution"
+                            ]
+                        }
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "lines",
+                        "type": "any",
+                        "label": "lines"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 3,
+            "module": "util:SetVariables",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "scope": "roundtrip",
+                "variables": [
+                    {
+                        "name": "line1",
+                        "value": "{{2.lines[1]}}"
+                    },
+                    {
+                        "name": "line2",
+                        "value": "{{2.lines[2]}}"
+                    },
+                    {
+                        "name": "line3",
+                        "value": "{{2.lines[3]}}"
+                    },
+                    {
+                        "name": "line4",
+                        "value": "{{2.lines[4]}}"
+                    }
+                ]
+            },
+            "metadata": {
+                "designer": {
+                    "x": 600,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "scope": {
+                            "label": "One cycle"
+                        },
+                        "variables": {
+                            "items": [
+                                null,
+                                null,
+                                null,
+                                null
+                            ]
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "variables",
+                        "spec": [
+                            {
+                                "name": "name",
+                                "type": "text",
+                                "label": "Variable name",
+                                "required": true
+                            },
+                            {
+                                "name": "value",
+                                "type": "any",
+                                "label": "Variable value"
+                            }
+                        ],
+                        "type": "array",
+                        "label": "Variables"
+                    },
+                    {
+                        "name": "scope",
+                        "type": "select",
+                        "label": "Variable lifetime",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "roundtrip",
+                                "execution"
+                            ]
+                        }
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "line1",
+                        "type": "any",
+                        "label": "line1"
+                    },
+                    {
+                        "name": "line2",
+                        "type": "any",
+                        "label": "line2"
+                    },
+                    {
+                        "name": "line3",
+                        "type": "any",
+                        "label": "line3"
+                    },
+                    {
+                        "name": "line4",
+                        "type": "any",
+                        "label": "line4"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 6,
+            "module": "util:SetVariables",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "scope": "roundtrip",
+                "variables": [
+                    {
+                        "name": "owners",
+                        "value": "{{trim(lower(replace(3.line1; \"@\"; \"\")))}}"
+                    },
+                    {
+                        "name": "dueDate",
+                        "value": "{{3.line2}}"
+                    },
+                    {
+                        "name": "taskTypeRaw",
+                        "value": "{{lower(3.line3)}}"
+                    },
+                    {
+                        "name": "notes",
+                        "value": "{{join(slice(2.lines; 3); newline)}}"
+                    }
+                ]
+            },
+            "metadata": {
+                "designer": {
+                    "x": 900,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "scope": {
+                            "label": "One cycle"
+                        },
+                        "variables": {
+                            "items": [
+                                null,
+                                null,
+                                null,
+                                null
+                            ]
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "variables",
+                        "spec": [
+                            {
+                                "name": "name",
+                                "type": "text",
+                                "label": "Variable name",
+                                "required": true
+                            },
+                            {
+                                "name": "value",
+                                "type": "any",
+                                "label": "Variable value"
+                            }
+                        ],
+                        "type": "array",
+                        "label": "Variables"
+                    },
+                    {
+                        "name": "scope",
+                        "type": "select",
+                        "label": "Variable lifetime",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "roundtrip",
+                                "execution"
+                            ]
+                        }
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "owners",
+                        "type": "any",
+                        "label": "owners"
+                    },
+                    {
+                        "name": "dueDate",
+                        "type": "any",
+                        "label": "dueDate"
+                    },
+                    {
+                        "name": "taskTypeRaw",
+                        "type": "any",
+                        "label": "taskTypeRaw"
+                    },
+                    {
+                        "name": "notes",
+                        "type": "any",
+                        "label": "notes"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 7,
+            "module": "util:SetVariable2",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "name": "taskType",
+                "scope": "roundtrip",
+                "value": "{{switch(lower(trim(6.taskTypeRaw)); \"general\"; \"General\"; \"pp\"; \"Payment Plan\"; \"payment plan\"; \"Payment Plan\"; \"refund\"; \"Refund\"; \"decline\"; \"Decline\"; \"revoked\"; \"Revoked\"; \"renewal\"; \"Renewal\"; \"relo\"; \"Relocation\"; \"relocation\"; \"Relocation\"; \"opp\"; \"Opportunity\"; \"opportunity\"; \"Opportunity\"; \"ic\"; \"Issue Call\"; \"issue call\"; \"Issue Call\"; \"General\")}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 1200,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "scope": {
+                            "label": "One cycle"
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "name",
+                        "type": "text",
+                        "label": "Variable name",
+                        "required": true
+                    },
+                    {
+                        "name": "scope",
+                        "type": "select",
+                        "label": "Variable lifetime",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "roundtrip",
+                                "execution"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "value",
+                        "type": "any",
+                        "label": "Variable value"
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "taskType",
+                        "type": "any",
+                        "label": "taskType"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 8,
+            "module": "convertapi:convert",
+            "version": 1,
+            "parameters": {
+                "__IMTCONN__": 4103020
+            },
+            "mapper": {
+                "to": "pdf",
+                "File": "{{1.attachments[1].data}}",
+                "Pdfa": false,
+                "from": "eml",
+                "Merge": true,
+                "FileName": "{{1.attachments[1].fileName}}",
+                "PageSize": "a4",
+                "MarginTop": "5",
+                "StoreFile": false,
+                "FileMethod": "fileValue",
+                "MarginLeft": "5",
+                "MarginRight": "5",
+                "MarginBottom": "5",
+                "ConvertHeader": true,
+                "PageOrientation": "portrait",
+                "ConvertAttachments": false
+            },
+            "metadata": {
+                "designer": {
+                    "x": 1500,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "to": {
+                            "mode": "chose",
+                            "label": "PDF"
+                        },
+                        "Pdfa": {
+                            "mode": "chose"
+                        },
+                        "from": {
+                            "mode": "chose",
+                            "label": "EML"
+                        },
+                        "Merge": {
+                            "mode": "chose"
+                        },
+                        "PageSize": {
+                            "mode": "chose",
+                            "label": "A4"
+                        },
+                        "StoreFile": {
+                            "mode": "chose"
+                        },
+                        "FileMethod": {
+                            "mode": "chose",
+                            "label": "Upload a File"
+                        },
+                        "ConvertHeader": {
+                            "mode": "chose"
+                        },
+                        "PageOrientation": {
+                            "mode": "chose",
+                            "label": "Portrait"
+                        },
+                        "ConvertAttachments": {
+                            "mode": "chose"
+                        }
+                    },
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "convertapi2"
+                            },
+                            "label": "My ConvertAPI connection (edward@salemseats.com)"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:convertapi2",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "FileMethod",
+                        "type": "select",
+                        "label": "File Adding Method",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "fileValue",
+                                "fileUrlValue",
+                                "fileIdValue"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "from",
+                        "type": "select",
+                        "label": "From",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "vsd",
+                                "vsdx",
+                                "template",
+                                "eps",
+                                "ps",
+                                "prn",
+                                "pdf",
+                                "pdfa",
+                                "odc",
+                                "odf",
+                                "odp",
+                                "ods",
+                                "odt",
+                                "odg",
+                                "log",
+                                "txt",
+                                "docx",
+                                "doc",
+                                "rtf",
+                                "dot",
+                                "dotx",
+                                "wpd",
+                                "xml",
+                                "pub",
+                                "potx",
+                                "pps",
+                                "ppsx",
+                                "ppt",
+                                "pptx",
+                                "xls",
+                                "xlsx",
+                                "xltx",
+                                "csv",
+                                "xlsb",
+                                "office",
+                                "html",
+                                "mhtml",
+                                "xlt",
+                                "md",
+                                "key",
+                                "numbers",
+                                "pages",
+                                "tif",
+                                "tiff",
+                                "png",
+                                "gif",
+                                "ico",
+                                "webp",
+                                "svg",
+                                "psd",
+                                "heic",
+                                "heif",
+                                "jpg",
+                                "jpeg",
+                                "bmp",
+                                "ai",
+                                "mdi",
+                                "jfif",
+                                "images",
+                                "web",
+                                "email",
+                                "eml",
+                                "msg",
+                                "epub",
+                                "mobi",
+                                "djvu",
+                                "dwf",
+                                "dwfx",
+                                "dwg",
+                                "dwgx",
+                                "dxf",
+                                "zip",
+                                "any",
+                                "po"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Password",
+                        "type": "text",
+                        "label": "Document Password"
+                    },
+                    {
+                        "name": "StoreFile",
+                        "type": "boolean",
+                        "label": "Store File"
+                    },
+                    {
+                        "name": "Timeout",
+                        "type": "uinteger",
+                        "validate": {
+                            "max": 1200,
+                            "min": 10
+                        }
+                    },
+                    {
+                        "name": "File",
+                        "type": "buffer",
+                        "required": true
+                    },
+                    {
+                        "name": "FileName",
+                        "type": "filename",
+                        "label": "File Name",
+                        "required": true
+                    },
+                    {
+                        "name": "to",
+                        "type": "select",
+                        "label": "To Format",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "jpg",
+                                "png",
+                                "tiff",
+                                "webp",
+                                "pdf"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "ConvertHeader",
+                        "type": "boolean",
+                        "label": "Convert Header"
+                    },
+                    {
+                        "name": "ConvertAttachments",
+                        "type": "boolean",
+                        "label": "Convert attachments"
+                    },
+                    {
+                        "name": "Merge",
+                        "type": "boolean",
+                        "label": "Merge body and attachments"
+                    },
+                    {
+                        "name": "PageOrientation",
+                        "type": "select",
+                        "label": "Page orientation",
+                        "validate": {
+                            "enum": [
+                                "portrait",
+                                "landscape"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "PageSize",
+                        "type": "select",
+                        "label": "Page size",
+                        "validate": {
+                            "enum": [
+                                "a0",
+                                "a1",
+                                "a2",
+                                "a3",
+                                "a4",
+                                "a5",
+                                "a6",
+                                "a7",
+                                "a8",
+                                "a9",
+                                "b0",
+                                "b1",
+                                "b2",
+                                "b3",
+                                "b4",
+                                "b5",
+                                "letter",
+                                "legal",
+                                "ledger"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "MarginTop",
+                        "type": "integer",
+                        "label": "Margin top",
+                        "validate": {
+                            "max": 500,
+                            "min": 0
+                        }
+                    },
+                    {
+                        "name": "MarginRight",
+                        "type": "integer",
+                        "label": "Margin right",
+                        "validate": {
+                            "max": 500,
+                            "min": 0
+                        }
+                    },
+                    {
+                        "name": "MarginBottom",
+                        "type": "integer",
+                        "label": "Margin bottom",
+                        "validate": {
+                            "max": 500,
+                            "min": 0
+                        }
+                    },
+                    {
+                        "name": "MarginLeft",
+                        "type": "integer",
+                        "label": "Margin left",
+                        "validate": {
+                            "max": 500,
+                            "min": 0
+                        }
+                    },
+                    {
+                        "name": "Pdfa",
+                        "type": "boolean",
+                        "label": "Create PDF/A"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 10,
+            "module": "util:SetVariable2",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "name": "emlText",
+                "scope": "roundtrip",
+                "value": "{{toString(1.attachments[1].data; \"utf8\")}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 1800,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "scope": {
+                            "label": "One cycle"
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "name",
+                        "type": "text",
+                        "label": "Variable name",
+                        "required": true
+                    },
+                    {
+                        "name": "scope",
+                        "type": "select",
+                        "label": "Variable lifetime",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "roundtrip",
+                                "execution"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "value",
+                        "type": "any",
+                        "label": "Variable value"
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "emlText",
+                        "type": "any",
+                        "label": "emlText"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 11,
+            "module": "regexp:Parser",
+            "version": 1,
+            "parameters": {
+                "global": false,
+                "pattern": "Subject: (.+)",
+                "multiline": false,
+                "sensitive": false,
+                "singleline": false,
+                "continueWhenNoRes": true
+            },
+            "mapper": {
+                "text": "{{10.emlText}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 2100,
+                    "y": 0
+                },
+                "restore": {},
+                "parameters": [
+                    {
+                        "name": "pattern",
+                        "type": "text",
+                        "label": "Pattern",
+                        "required": true
+                    },
+                    {
+                        "name": "global",
+                        "type": "boolean",
+                        "label": "Global match",
+                        "required": true
+                    },
+                    {
+                        "name": "sensitive",
+                        "type": "boolean",
+                        "label": "Case sensitive",
+                        "required": true
+                    },
+                    {
+                        "name": "multiline",
+                        "type": "boolean",
+                        "label": "Multiline",
+                        "required": true
+                    },
+                    {
+                        "name": "singleline",
+                        "type": "boolean",
+                        "label": "Singleline",
+                        "required": true
+                    },
+                    {
+                        "name": "continueWhenNoRes",
+                        "type": "boolean",
+                        "label": "Continue the execution of the route even if the module finds no matches",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "text",
+                        "type": "text",
+                        "label": "Text"
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "$1",
+                        "type": "text",
+                        "label": "$1"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 12,
+            "module": "regexp:Parser",
+            "version": 1,
+            "parameters": {
+                "global": false,
+                "pattern": "\\nFrom: [^<\\n]*<?['\"\\s]*([^\\s<>,'\\\"]+@[^\\s<>,'\\\"]+)>?",
+                "multiline": false,
+                "sensitive": false,
+                "singleline": false,
+                "continueWhenNoRes": true
+            },
+            "mapper": {
+                "text": "{{10.emlText}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 2400,
+                    "y": 0
+                },
+                "restore": {},
+                "parameters": [
+                    {
+                        "name": "pattern",
+                        "type": "text",
+                        "label": "Pattern",
+                        "required": true
+                    },
+                    {
+                        "name": "global",
+                        "type": "boolean",
+                        "label": "Global match",
+                        "required": true
+                    },
+                    {
+                        "name": "sensitive",
+                        "type": "boolean",
+                        "label": "Case sensitive",
+                        "required": true
+                    },
+                    {
+                        "name": "multiline",
+                        "type": "boolean",
+                        "label": "Multiline",
+                        "required": true
+                    },
+                    {
+                        "name": "singleline",
+                        "type": "boolean",
+                        "label": "Singleline",
+                        "required": true
+                    },
+                    {
+                        "name": "continueWhenNoRes",
+                        "type": "boolean",
+                        "label": "Continue the execution of the route even if the module finds no matches",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "text",
+                        "type": "text",
+                        "label": "Text"
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "$1",
+                        "type": "text",
+                        "label": "$1"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 13,
+            "module": "regexp:Parser",
+            "version": 1,
+            "parameters": {
+                "global": false,
+                "pattern": "\\nTo: ['\"\\s]*<?([^\\s<>,'\\\"]+@[^\\s<>,'\\\"]+)>?",
+                "multiline": false,
+                "sensitive": false,
+                "singleline": false,
+                "continueWhenNoRes": true
+            },
+            "mapper": {
+                "text": "{{10.emlText}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 2700,
+                    "y": 0
+                },
+                "restore": {},
+                "parameters": [
+                    {
+                        "name": "pattern",
+                        "type": "text",
+                        "label": "Pattern",
+                        "required": true
+                    },
+                    {
+                        "name": "global",
+                        "type": "boolean",
+                        "label": "Global match",
+                        "required": true
+                    },
+                    {
+                        "name": "sensitive",
+                        "type": "boolean",
+                        "label": "Case sensitive",
+                        "required": true
+                    },
+                    {
+                        "name": "multiline",
+                        "type": "boolean",
+                        "label": "Multiline",
+                        "required": true
+                    },
+                    {
+                        "name": "singleline",
+                        "type": "boolean",
+                        "label": "Singleline",
+                        "required": true
+                    },
+                    {
+                        "name": "continueWhenNoRes",
+                        "type": "boolean",
+                        "label": "Continue the execution of the route even if the module finds no matches",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "text",
+                        "type": "text",
+                        "label": "Text"
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "$1",
+                        "type": "text",
+                        "label": "$1"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 14,
+            "module": "util:SetVariable2",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "name": "formattedDate",
+                "scope": "roundtrip",
+                "value": "{{if(contains(6.dueDate; \"+\"); formatDate(addDays(now; replace(6.dueDate; \"+\"; )); \"YYYY-MM-DD\"); if(length(split(6.dueDate; \"/\")) = 3; formatDate(parseDate(6.dueDate; \"MM/DD/YY\"); \"YYYY-MM-DD\"); formatDate(parseDate(6.dueDate + \"/\" + formatDate(now; \"YY\"); \"MM/DD/YY\"); \"YYYY-MM-DD\")))}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 3000,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "scope": {
+                            "label": "One cycle"
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "name",
+                        "type": "text",
+                        "label": "Variable name",
+                        "required": true
+                    },
+                    {
+                        "name": "scope",
+                        "type": "select",
+                        "label": "Variable lifetime",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "roundtrip",
+                                "execution"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "value",
+                        "type": "any",
+                        "label": "Variable value"
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "formattedDate",
+                        "type": "any",
+                        "label": "formattedDate"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 15,
+            "module": "util:SetVariable2",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "name": "ownerID",
+                "scope": "roundtrip",
+                "value": "{{switch(lower(trim(6.owners)); \"dayna\"; 52969342; \"ruzzell\"; 60625739; \"garet\"; 63291818; \"elia\"; 75370319; \"eliana\"; 72940829; \"chinedu\"; 67009895; )}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 3300,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "scope": {
+                            "label": "One cycle"
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "name",
+                        "type": "text",
+                        "label": "Variable name",
+                        "required": true
+                    },
+                    {
+                        "name": "scope",
+                        "type": "select",
+                        "label": "Variable lifetime",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "roundtrip",
+                                "execution"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "value",
+                        "type": "any",
+                        "label": "Variable value"
+                    }
+                ],
+                "interface": [
+                    {
+                        "name": "ownerID",
+                        "type": "any",
+                        "label": "ownerID"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 16,
+            "module": "monday:createItem2",
+            "version": 1,
+            "parameters": {
+                "__IMTCONN__": 3641033
+            },
+            "mapper": {
+                "name": "{{1.subject}}",
+                "boardId": "18383923820",
+                "columnIds": [
+                    "date4",
+                    "email_mkxvy5nq",
+                    "long_text_mkxv1vhb",
+                    "person",
+                    "text_mkxxn3hz",
+                    "email_mkxv1hyd",
+                    "status"
+                ],
+                "columnValues": {
+                    "date4": {
+                        "date": "{{14.formattedDate}}",
+                        "dateOrDatetime": "date"
+                    },
+                    "person": {
+                        "teams": [],
+                        "persons": "{{15.ownerID}}"
+                    },
+                    "status": {
+                        "index": "",
+                        "label": "{{7.taskType}}"
+                    },
+                    "text_mkxxn3hz": "",
+                    "email_mkxv1hyd": {
+                        "text": "{{13.`$1`}}",
+                        "email": "{{13.`$1`}}"
+                    },
+                    "email_mkxvy5nq": {
+                        "text": "{{12.`$1`}}",
+                        "email": "{{12.`$1`}}"
+                    },
+                    "long_text_mkxv1vhb": {
+                        "text": "{{6.notes}}"
+                    }
+                },
+                "create_labels_if_missing": false
+            },
+            "metadata": {
+                "designer": {
+                    "x": 3600,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "boardId": {
+                            "label": "Forwarding Tasks  ::  public"
+                        },
+                        "groupId": {
+                            "mode": "chose"
+                        },
+                        "columnIds": {
+                            "label": [
+                                "Date",
+                                "From",
+                                "Notes",
+                                "Owner",
+                                "Slack Thread ID",
+                                "To",
+                                "Type"
+                            ]
+                        },
+                        "columnValues": {
+                            "nested": {
+                                "date4": {
+                                    "nested": {
+                                        "dateOrDatetime": {
+                                            "label": "Date only"
+                                        }
+                                    }
+                                },
+                                "person": {
+                                    "nested": {
+                                        "teams": {
+                                            "mode": "chose"
+                                        },
+                                        "persons": {
+                                            "mode": "edit"
+                                        }
+                                    }
+                                },
+                                "status": {
+                                    "nested": {
+                                        "index": {
+                                            "mode": "chose",
+                                            "label": "Empty"
+                                        },
+                                        "label": {
+                                            "mode": "edit"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "monday"
+                            },
+                            "label": "SalemSeats Ed Monday Connection"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:monday",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "name",
+                        "type": "text",
+                        "label": "Item Name",
+                        "required": true
+                    },
+                    {
+                        "name": "boardId",
+                        "type": "select",
+                        "label": "Board",
+                        "required": true
+                    },
+                    {
+                        "name": "create_labels_if_missing",
+                        "type": "boolean",
+                        "label": "Create Labels if Missing",
+                        "required": true
+                    },
+                    {
+                        "name": "groupId",
+                        "type": "select",
+                        "label": "Group"
+                    },
+                    {
+                        "name": "columnIds",
+                        "type": "select",
+                        "label": "Columns",
+                        "multiple": true
+                    },
+                    {
+                        "name": "columnValues",
+                        "spec": [
+                            {
+                                "name": "date4",
+                                "spec": [
+                                    {
+                                        "name": "dateOrDatetime",
+                                        "type": "select",
+                                        "label": "Date / Datetime",
+                                        "validate": {
+                                            "enum": [
+                                                "date",
+                                                "datetime"
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        "name": "date",
+                                        "type": "text",
+                                        "label": "Date",
+                                        "required": true
+                                    }
+                                ],
+                                "type": "collection",
+                                "label": "Date",
+                                "metadata": {
+                                    "mondayType": "date"
+                                }
+                            },
+                            {
+                                "name": "email_mkxvy5nq",
+                                "spec": [
+                                    {
+                                        "name": "email",
+                                        "type": "email",
+                                        "label": "Email"
+                                    },
+                                    {
+                                        "name": "text",
+                                        "type": "text",
+                                        "label": "Text"
+                                    }
+                                ],
+                                "type": "collection",
+                                "label": "From",
+                                "metadata": {
+                                    "mondayType": "email"
+                                }
+                            },
+                            {
+                                "name": "long_text_mkxv1vhb",
+                                "spec": [
+                                    {
+                                        "name": "text",
+                                        "type": "text",
+                                        "label": "Text"
+                                    }
+                                ],
+                                "type": "collection",
+                                "label": "Notes",
+                                "metadata": {
+                                    "mondayType": "long_text"
+                                }
+                            },
+                            {
+                                "name": "person",
+                                "spec": [
+                                    {
+                                        "name": "persons",
+                                        "type": "select",
+                                        "label": "Persons",
+                                        "multiple": true
+                                    },
+                                    {
+                                        "name": "teams",
+                                        "type": "select",
+                                        "label": "Teams",
+                                        "multiple": true
+                                    }
+                                ],
+                                "type": "collection",
+                                "label": "Owner",
+                                "metadata": {
+                                    "mondayType": "people"
+                                }
+                            },
+                            {
+                                "name": "text_mkxxn3hz",
+                                "type": "text",
+                                "label": "Slack Thread ID",
+                                "metadata": {
+                                    "mondayType": "text"
+                                }
+                            },
+                            {
+                                "name": "email_mkxv1hyd",
+                                "spec": [
+                                    {
+                                        "name": "email",
+                                        "type": "email",
+                                        "label": "Email"
+                                    },
+                                    {
+                                        "name": "text",
+                                        "type": "text",
+                                        "label": "Text"
+                                    }
+                                ],
+                                "type": "collection",
+                                "label": "To",
+                                "metadata": {
+                                    "mondayType": "email"
+                                }
+                            },
+                            {
+                                "name": "status",
+                                "spec": [
+                                    {
+                                        "name": "index",
+                                        "type": "select",
+                                        "label": "Index"
+                                    },
+                                    {
+                                        "name": "label",
+                                        "type": "select",
+                                        "label": "Label"
+                                    }
+                                ],
+                                "type": "collection",
+                                "label": "Type",
+                                "metadata": {
+                                    "mondayType": "status"
+                                }
+                            }
+                        ],
+                        "type": "collection",
+                        "label": "Column Values"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 21,
+            "module": "monday:GetUser",
+            "version": 1,
+            "parameters": {
+                "__IMTCONN__": 3641033
+            },
+            "mapper": {
+                "userId": "{{15.ownerID}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 3477,
+                    "y": 418
+                },
+                "restore": {
+                    "expect": {
+                        "userId": {
+                            "mode": "edit"
+                        }
+                    },
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "monday"
+                            },
+                            "label": "SalemSeats Ed Monday Connection"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:monday",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "userId",
+                        "type": "select",
+                        "label": "User ID",
+                        "required": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 22,
+            "module": "slack:SearchUser",
+            "version": 4,
+            "parameters": {
+                "__IMTCONN__": 4128718
+            },
+            "mapper": {
+                "email": "{{21.email}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 3777,
+                    "y": 418
+                },
+                "restore": {
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "slack2"
+                            },
+                            "label": "Slack Bot (user) connection (bod)"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:slack2",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "email",
+                        "type": "email",
+                        "label": "Email",
+                        "required": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 23,
+            "module": "monday:CreateUpdate",
+            "version": 1,
+            "parameters": {
+                "__IMTCONN__": 3641033
+            },
+            "mapper": {
+                "body": "{{6.notes}}",
+                "itemId": "{{16.id}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 4077,
+                    "y": 418
+                },
+                "restore": {
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "monday"
+                            },
+                            "label": "SalemSeats Ed Monday Connection"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:monday",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "itemId",
+                        "type": "uinteger",
+                        "label": "Item ID",
+                        "required": true
+                    },
+                    {
+                        "name": "body",
+                        "type": "text",
+                        "label": "Body",
+                        "required": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 24,
+            "module": "monday:AddFileToUpdate",
+            "version": 1,
+            "parameters": {
+                "__IMTCONN__": 3641033
+            },
+            "mapper": {
+                "data": "{{8.Files[1].FileData}}",
+                "filename": "{{8.Files[1].FileName}}",
+                "updateId": "{{23.id}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 4377,
+                    "y": 418
+                },
+                "restore": {
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "monday"
+                            },
+                            "label": "SalemSeats Ed Monday Connection"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:monday",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "updateId",
+                        "type": "uinteger",
+                        "label": "ID",
+                        "required": true
+                    },
+                    {
+                        "name": "filename",
+                        "type": "text",
+                        "label": "Filename",
+                        "required": true
+                    },
+                    {
+                        "name": "data",
+                        "type": "buffer",
+                        "label": "Data",
+                        "required": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 17,
+            "module": "monday:AddFileToFileColumnValue",
+            "version": 1,
+            "parameters": {
+                "__IMTCONN__": 3641033
+            },
+            "mapper": {
+                "data": "{{8.Files[1].FileData}}",
+                "itemId": "{{16.id}}",
+                "boardId": "18383923820",
+                "columnId": "file_mkxv6aa0",
+                "filename": "{{8.Files[1].FileName}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 3900,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "itemId": {
+                            "mode": "edit"
+                        },
+                        "boardId": {
+                            "mode": "chose",
+                            "label": "Forwarding Tasks  ::  public"
+                        },
+                        "columnId": {
+                            "mode": "chose",
+                            "label": "File"
+                        }
+                    },
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "monday"
+                            },
+                            "label": "SalemSeats Ed Monday Connection"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:monday",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "boardId",
+                        "type": "select",
+                        "label": "Board ID",
+                        "required": true
+                    },
+                    {
+                        "name": "filename",
+                        "type": "text",
+                        "label": "Filename",
+                        "required": true
+                    },
+                    {
+                        "name": "data",
+                        "type": "buffer",
+                        "label": "Data",
+                        "required": true
+                    },
+                    {
+                        "name": "itemId",
+                        "type": "select",
+                        "label": "Item ID",
+                        "required": true
+                    },
+                    {
+                        "name": "columnId",
+                        "type": "select",
+                        "label": "Column ID",
+                        "required": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 18,
+            "module": "slack:CreateMessage",
+            "version": 4,
+            "parameters": {
+                "__IMTCONN__": 3604542
+            },
+            "mapper": {
+                "text": "\ud83d\udcec *New {{7.taskType}} Email*\n\n\ud83d\udccb *Subject:* {{1.subject}}\n\n\ud83d\udc64 *Assigned to:* <@{{22.id}}>\n\n\ud83d\udcc5 *Due:* {{14.formattedDate}}\n\n\ud83d\udcdd *Notes:*\n{{6.notes}}\n\n\u2709\ufe0f *From:* {{12.$1}}\n\n\ud83d\udce5 *To:* {{13.$1}}\n\n\ud83d\udd17 <https://salemseats.monday.com/boards/18383923820/pulses/{{16.id}}|View in Monday>",
+                "parse": false,
+                "mrkdwn": true,
+                "channel": "C08QCFC4Y0H",
+                "link_names": true,
+                "channelType": "private",
+                "channelWType": "list"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 4200,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "parse": {
+                            "mode": "chose"
+                        },
+                        "mrkdwn": {
+                            "mode": "chose"
+                        },
+                        "channel": {
+                            "mode": "chose",
+                            "label": "season-tickets"
+                        },
+                        "link_names": {
+                            "mode": "chose"
+                        },
+                        "channelType": {
+                            "label": "Private channel"
+                        },
+                        "channelWType": {
+                            "label": "Select from the list"
+                        },
+                        "unfurl_links": {
+                            "mode": "chose"
+                        },
+                        "unfurl_media": {
+                            "mode": "chose"
+                        },
+                        "reply_broadcast": {
+                            "mode": "chose"
+                        }
+                    },
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "slack3"
+                            },
+                            "label": "Salem Seats AI Slack (bot) Connection (salemseatsai)"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:slack2,slack3",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "channelWType",
+                        "type": "select",
+                        "label": "Enter a channel ID or name",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "manualy",
+                                "list"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "text",
+                        "type": "text",
+                        "label": "Text"
+                    },
+                    {
+                        "name": "blocks",
+                        "type": "text",
+                        "label": "Blocks"
+                    },
+                    {
+                        "name": "thread_ts",
+                        "type": "text",
+                        "label": "Thread message ID (time stamp)"
+                    },
+                    {
+                        "name": "reply_broadcast",
+                        "type": "boolean",
+                        "label": "Reply broadcast"
+                    },
+                    {
+                        "name": "link_names",
+                        "type": "boolean",
+                        "label": "Link names"
+                    },
+                    {
+                        "name": "parse",
+                        "type": "boolean",
+                        "label": "Parse message text"
+                    },
+                    {
+                        "name": "mrkdwn",
+                        "type": "boolean",
+                        "label": "Use markdown"
+                    },
+                    {
+                        "name": "unfurl_links",
+                        "type": "boolean",
+                        "label": "Unfurl primarily text-based content"
+                    },
+                    {
+                        "name": "unfurl_media",
+                        "type": "boolean",
+                        "label": "Unfurl media content"
+                    },
+                    {
+                        "name": "icon_emoji",
+                        "type": "text",
+                        "label": "Icon emoji"
+                    },
+                    {
+                        "name": "icon_url",
+                        "type": "url",
+                        "label": "Icon url"
+                    },
+                    {
+                        "name": "username",
+                        "type": "text",
+                        "label": "User name"
+                    },
+                    {
+                        "name": "channelType",
+                        "type": "select",
+                        "label": "Channel type",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "public",
+                                "private",
+                                "im",
+                                "mpim"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "channel",
+                        "type": "select",
+                        "label": "Private channel",
+                        "required": true
+                    }
+                ],
+                "advanced": true
+            }
+        },
+        {
+            "id": 19,
+            "module": "slack:uploadAFile",
+            "version": 4,
+            "parameters": {
+                "__IMTCONN__": 4128718
+            },
+            "mapper": {
+                "data": "{{8.Files[1].FileData}}",
+                "channel": "C08QCFC4Y0H",
+                "channels": "private",
+                "fileName": "{{8.Files[1].FileName}}",
+                "thread_ts": "{{18.ts}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 4500,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "channel": {
+                            "mode": "chose",
+                            "label": "season-tickets"
+                        },
+                        "channels": {
+                            "label": "Private channel"
+                        }
+                    },
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "slack2"
+                            },
+                            "label": "Slack Bot (user) connection (bod)"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:slack2",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "channels",
+                        "type": "select",
+                        "label": "Channel type",
+                        "required": true,
+                        "validate": {
+                            "enum": [
+                                "public",
+                                "private",
+                                "im",
+                                "mpim"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "fileName",
+                        "type": "filename",
+                        "label": "File name",
+                        "required": true
+                    },
+                    {
+                        "name": "data",
+                        "type": "buffer",
+                        "label": "Data",
+                        "required": true
+                    },
+                    {
+                        "name": "title",
+                        "type": "text",
+                        "label": "Title"
+                    },
+                    {
+                        "name": "thread_ts",
+                        "type": "text",
+                        "label": "Thread ID (timestamp)"
+                    },
+                    {
+                        "name": "initial_comment",
+                        "type": "text",
+                        "label": "Initial comment"
+                    },
+                    {
+                        "name": "channel",
+                        "type": "select",
+                        "label": "Private channel",
+                        "required": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 25,
+            "module": "monday:ChangeMultipleColumnValues",
+            "version": 1,
+            "parameters": {
+                "__IMTCONN__": 3641033
+            },
+            "mapper": {
+                "itemId": "{{16.id}}",
+                "boardId": "18383923820",
+                "columnValuesToChange": [
+                    {
+                        "columnId": "text_mkxxn3hz",
+                        "columnValue": "{{18.ts}}"
+                    }
+                ],
+                "create_labels_if_missing": false
+            },
+            "metadata": {
+                "designer": {
+                    "x": 4800,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "itemId": {
+                            "mode": "edit"
+                        },
+                        "boardId": {
+                            "mode": "chose",
+                            "label": "Forwarding Tasks  ::  public"
+                        },
+                        "columnValuesToChange": {
+                            "mode": "chose",
+                            "items": [
+                                {
+                                    "columnId": {
+                                        "mode": "chose",
+                                        "label": "Slack Thread ID"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "parameters": {
+                        "__IMTCONN__": {
+                            "data": {
+                                "scoped": "true",
+                                "connection": "monday"
+                            },
+                            "label": "SalemSeats Ed Monday Connection"
+                        }
+                    }
+                },
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:monday",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "boardId",
+                        "type": "select",
+                        "label": "Board ID",
+                        "required": true
+                    },
+                    {
+                        "name": "create_labels_if_missing",
+                        "type": "boolean",
+                        "label": "Create Labels if Missing",
+                        "required": true
+                    },
+                    {
+                        "name": "itemId",
+                        "type": "select",
+                        "label": "Item ID",
+                        "required": true
+                    },
+                    {
+                        "name": "columnValuesToChange",
+                        "spec": [
+                            {
+                                "name": "columnId",
+                                "type": "select",
+                                "label": "Column ID",
+                                "dynamic": true,
+                                "options": {
+                                    "store": []
+                                },
+                                "required": true,
+                                "validate": false
+                            }
+                        ],
+                        "type": "array",
+                        "label": "Column Values to Change",
+                        "required": true
+                    }
+                ]
+            }
+        }
+    ],
+    "metadata": {
+        "instant": true,
+        "version": 1,
+        "scenario": {
+            "roundtrips": 1,
+            "maxErrors": 3,
+            "autoCommit": true,
+            "autoCommitTriggerLast": true,
+            "sequential": false,
+            "slots": null,
+            "confidential": false,
+            "dataloss": false,
+            "dlq": false,
+            "freshVariables": false
+        },
+        "designer": {
+            "orphans": []
+        },
+        "zone": "us1.make.com",
+        "notes": []
+    }
+}
