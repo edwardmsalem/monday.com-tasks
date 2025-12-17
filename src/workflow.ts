@@ -89,7 +89,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   const mondayItem = await monday.createItem({
     name: email.subject,
     dueDate: formattedDueDate,
-    ownerId: user.mondayId,
+    ownerIds: [user.mondayId],  // Support multiple owners
     taskType,
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,

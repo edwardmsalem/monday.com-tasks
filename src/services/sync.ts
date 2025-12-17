@@ -242,7 +242,7 @@ export async function createQuickTask(input: QuickTaskInput): Promise<{
   const mondayItem = await monday.createItem({
     name: input.name,
     dueDate,
-    ownerId: assignee.mondayId,
+    ownerIds: [assignee.mondayId],  // Support multiple owners
     taskType: input.taskType ?? 'General',
     fromEmail: null,
     toEmail: null,
@@ -566,7 +566,7 @@ export async function confirmSmartTask(
     const mondayItem = await monday.createItem({
       name: parsed.name,
       dueDate: parsed.dueDate,
-      ownerId: assignee.mondayId,
+      ownerIds: [assignee.mondayId],  // Support multiple owners
       taskType: parsed.taskType ?? 'General',
       fromEmail: null,
       toEmail: null,

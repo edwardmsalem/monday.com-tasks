@@ -44,7 +44,7 @@ async function executeQuery<T>(query: string, variables?: Record<string, unknown
 interface CreateItemInput {
   name: string;
   dueDate: string;
-  ownerId: number;
+  ownerIds: number[];  // Support multiple owners
   taskType: string;
   fromEmail: string | null;
   toEmail: string | null;
@@ -57,10 +57,10 @@ interface CreateItemInput {
 export async function createItem(input: CreateItemInput): Promise<MondayItem> {
   const { columns } = config.monday;
 
-  // Build column values JSON
+  // Build column values JSON - support multiple owners
   const columnValues: Record<string, unknown> = {
     [columns.date]: { date: input.dueDate },
-    [columns.owner]: { personsAndTeams: [{ id: input.ownerId, kind: 'person' }] },
+    [columns.owner]: { personsAndTeams: input.ownerIds.map(id => ({ id, kind: 'person' })) },
     [columns.status]: { label: input.taskType },
     [columns.notes]: { text: input.notes },
   };

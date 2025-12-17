@@ -1,7 +1,7 @@
 /**
  * Auto Follow-Up Service
  *
- * Automatically sends reminders for tasks based on:
+ * Sends natural, conversational check-ins for tasks based on:
  * - Due date approaching (1 day before, day of)
  * - No activity/updates on a task for X days
  * - Overdue tasks
@@ -12,27 +12,32 @@
 import { config } from '../config/environment.js';
 import * as monday from './monday.js';
 import * as slack from './slack.js';
-import { getAllUsers } from './userResolver.js';
+import { getAllUsers, type UnifiedUser } from './userResolver.js';
 
-// Track which reminders we've already sent (to avoid duplicates)
-const sentReminders = new Map<string, number>(); // key -> timestamp
+// Track which follow-ups we've already sent (to avoid duplicates)
+const sentFollowUps = new Map<string, number>(); // key -> timestamp
 
 // Cleanup old entries every hour
 setInterval(() => {
   const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-  for (const [key, timestamp] of sentReminders.entries()) {
+  for (const [key, timestamp] of sentFollowUps.entries()) {
     if (timestamp < oneDayAgo) {
-      sentReminders.delete(key);
+      sentFollowUps.delete(key);
     }
   }
 }, 60 * 60 * 1000);
+
+interface Owner {
+  id: number;
+  name: string;
+  slackId: string | null;
+}
 
 interface TaskForFollowUp {
   id: string;
   name: string;
   dueDate: string;
-  ownerId: number;
-  ownerName: string;
+  owners: Owner[];
   slackThreadTs: string | null;
   lastActivityDate: string | null;
   status: string;
@@ -64,16 +69,16 @@ export async function checkAndSendFollowUps(): Promise<void> {
       // Check different follow-up scenarios
       if (daysUntilDue < 0) {
         // Overdue
-        await sendOverdueReminder(task, Math.abs(daysUntilDue));
+        await sendOverdueFollowUp(task, Math.abs(daysUntilDue));
       } else if (daysUntilDue === 0) {
         // Due today
-        await sendDueTodayReminder(task);
+        await sendDueTodayFollowUp(task);
       } else if (daysUntilDue === 1) {
         // Due tomorrow
-        await sendDueTomorrowReminder(task);
+        await sendDueTomorrowFollowUp(task);
       } else if (daysSinceActivity !== null && daysSinceActivity >= 3 && daysUntilDue <= 5) {
         // No activity for 3+ days and due within 5 days
-        await sendNoActivityReminder(task, daysSinceActivity);
+        await sendCheckInFollowUp(task, daysSinceActivity);
       }
     }
 
@@ -149,16 +154,25 @@ async function getOpenTasksWithDueDates(): Promise<TaskForFollowUp[]> {
     const getValue = (columnId: string) =>
       item.column_values.find(cv => cv.id === columnId)?.text ?? '';
 
+    // Parse ALL owners (not just the first one)
     const ownerValue = item.column_values.find(cv => cv.id === config.monday.columns.owner)?.value;
-    let ownerId = 0;
-    let ownerName = 'Unknown';
+    const owners: Owner[] = [];
 
     if (ownerValue) {
       try {
         const parsed = JSON.parse(ownerValue);
-        ownerId = parsed?.personsAndTeams?.[0]?.id ?? 0;
-        const user = users.find(u => u.mondayId === ownerId);
-        ownerName = user?.name ?? 'Unknown';
+        const personsAndTeams = parsed?.personsAndTeams ?? [];
+
+        for (const person of personsAndTeams) {
+          if (person.kind === 'person') {
+            const user = users.find(u => u.mondayId === person.id);
+            owners.push({
+              id: person.id,
+              name: user?.name ?? 'Unknown',
+              slackId: user?.slackId ?? null,
+            });
+          }
+        }
       } catch {
         // Ignore parse errors
       }
@@ -168,8 +182,7 @@ async function getOpenTasksWithDueDates(): Promise<TaskForFollowUp[]> {
       id: item.id,
       name: item.name,
       dueDate: getValue(config.monday.columns.date),
-      ownerId,
-      ownerName,
+      owners,
       slackThreadTs: getValue(config.monday.columns.slackThreadId) || null,
       lastActivityDate: item.updates[0]?.created_at ?? null,
       status: getValue(config.monday.columns.status),
@@ -178,113 +191,158 @@ async function getOpenTasksWithDueDates(): Promise<TaskForFollowUp[]> {
 }
 
 /**
- * Send reminder for overdue task
+ * Format owner mentions for Slack
  */
-async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): Promise<void> {
-  const reminderKey = `overdue-${task.id}-${daysOverdue}`;
-  if (hasRecentReminder(reminderKey)) return;
+function formatOwnerMentions(owners: Owner[]): string {
+  const mentions = owners
+    .filter(o => o.slackId)
+    .map(o => `<@${o.slackId}>`);
 
-  const users = await getAllUsers();
-  const owner = users.find(u => u.mondayId === task.ownerId);
-
-  if (!owner?.slackId) return;
-
-  const message = `:rotating_light: *Overdue Task*\n\n` +
-    `*${task.name}*\n` +
-    `Was due ${daysOverdue} day${daysOverdue > 1 ? 's' : ''} ago\n\n` +
-    `<${monday.getItemUrl(task.id)}|View in Monday.com>`;
-
-  // Send DM to owner
-  await slack.postEphemeral(owner.slackId, owner.slackId, message);
-
-  // Also post to thread if exists
-  if (task.slackThreadTs) {
-    await slack.postToThread(
-      task.slackThreadTs,
-      `:rotating_light: *Reminder:* This task is ${daysOverdue} day${daysOverdue > 1 ? 's' : ''} overdue. <@${owner.slackId}> - any update?`
-    );
+  if (mentions.length === 0) {
+    return owners.map(o => o.name).join(', ') || 'team';
   }
 
-  markReminderSent(reminderKey);
-  console.log(`Sent overdue reminder for task ${task.id}`);
+  if (mentions.length === 1) return mentions[0];
+  if (mentions.length === 2) return `${mentions[0]} and ${mentions[1]}`;
+  return `${mentions.slice(0, -1).join(', ')}, and ${mentions[mentions.length - 1]}`;
 }
 
 /**
- * Send reminder for task due today
+ * Get first names for more casual messages
  */
-async function sendDueTodayReminder(task: TaskForFollowUp): Promise<void> {
-  const reminderKey = `due-today-${task.id}`;
-  if (hasRecentReminder(reminderKey)) return;
+function getFirstNames(owners: Owner[]): string {
+  const names = owners.map(o => o.name.split(' ')[0]);
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+}
 
-  const users = await getAllUsers();
-  const owner = users.find(u => u.mondayId === task.ownerId);
+// Natural conversation starters for variety
+const OVERDUE_MESSAGES = [
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `Hey ${mentions}, just checking in - "${task.name}" was due ${days} day${days > 1 ? 's' : ''} ago. Everything okay? Let us know if you need help or if the timeline changed.`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `${mentions} - wanted to follow up on "${task.name}". It's ${days} day${days > 1 ? 's' : ''} past due. Any blockers we should know about?`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `Quick check-in ${mentions}: "${task.name}" is overdue by ${days} day${days > 1 ? 's' : ''}. What's the status? Need any support?`,
+];
 
-  if (!owner?.slackId) return;
+const DUE_TODAY_MESSAGES = [
+  (task: TaskForFollowUp, mentions: string) =>
+    `Hey ${mentions}, "${task.name}" is due today. How's it looking?`,
+  (task: TaskForFollowUp, mentions: string) =>
+    `${mentions} - just a heads up that "${task.name}" is due today. Let us know if you need anything!`,
+  (task: TaskForFollowUp, mentions: string) =>
+    `Today's the day for "${task.name}", ${mentions}. You've got this!`,
+];
 
-  if (task.slackThreadTs) {
-    await slack.postToThread(
-      task.slackThreadTs,
-      `:calendar: *Reminder:* This task is due today! <@${owner.slackId}>`
-    );
-  }
+const DUE_TOMORROW_MESSAGES = [
+  (task: TaskForFollowUp, mentions: string) =>
+    `Hey ${mentions}, "${task.name}" is coming up tomorrow. How's progress?`,
+  (task: TaskForFollowUp, mentions: string) =>
+    `${mentions} - quick reminder that "${task.name}" is due tomorrow. Anything you need?`,
+  (task: TaskForFollowUp, mentions: string) =>
+    `Just a heads up ${mentions}: "${task.name}" is due tomorrow. Let us know how it's going!`,
+];
 
-  markReminderSent(reminderKey);
-  console.log(`Sent due-today reminder for task ${task.id}`);
+const CHECK_IN_MESSAGES = [
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `Hey ${mentions}, haven't heard anything on "${task.name}" in a few days. Everything on track?`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `${mentions} - checking in on "${task.name}". Any updates to share?`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `Quick check-in ${mentions}: how's "${task.name}" going? Just want to make sure nothing's stuck.`,
+];
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 /**
- * Send reminder for task due tomorrow
+ * Send follow-up for overdue task
  */
-async function sendDueTomorrowReminder(task: TaskForFollowUp): Promise<void> {
-  const reminderKey = `due-tomorrow-${task.id}`;
-  if (hasRecentReminder(reminderKey)) return;
+async function sendOverdueFollowUp(task: TaskForFollowUp, daysOverdue: number): Promise<void> {
+  const followUpKey = `overdue-${task.id}-${daysOverdue}`;
+  if (hasRecentFollowUp(followUpKey)) return;
 
-  const users = await getAllUsers();
-  const owner = users.find(u => u.mondayId === task.ownerId);
+  const ownersWithSlack = task.owners.filter(o => o.slackId);
+  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return;
 
-  if (!owner?.slackId) return;
+  const mentions = formatOwnerMentions(task.owners);
+  const message = pickRandom(OVERDUE_MESSAGES)(task, daysOverdue, mentions);
 
-  if (task.slackThreadTs) {
-    await slack.postToThread(
-      task.slackThreadTs,
-      `:clock1: *Heads up:* This task is due tomorrow. <@${owner.slackId}> - how's it going?`
-    );
-  }
+  await slack.postToThread(task.slackThreadTs, message);
 
-  markReminderSent(reminderKey);
-  console.log(`Sent due-tomorrow reminder for task ${task.id}`);
+  markFollowUpSent(followUpKey);
+  console.log(`Sent overdue follow-up for task ${task.id}`);
 }
 
 /**
- * Send reminder for task with no recent activity
+ * Send follow-up for task due today
  */
-async function sendNoActivityReminder(task: TaskForFollowUp, daysSinceActivity: number): Promise<void> {
-  const reminderKey = `no-activity-${task.id}-${Math.floor(daysSinceActivity / 3)}`;
-  if (hasRecentReminder(reminderKey)) return;
+async function sendDueTodayFollowUp(task: TaskForFollowUp): Promise<void> {
+  const followUpKey = `due-today-${task.id}`;
+  if (hasRecentFollowUp(followUpKey)) return;
 
-  const users = await getAllUsers();
-  const owner = users.find(u => u.mondayId === task.ownerId);
+  const ownersWithSlack = task.owners.filter(o => o.slackId);
+  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return;
 
-  if (!owner?.slackId || !task.slackThreadTs) return;
+  const mentions = formatOwnerMentions(task.owners);
+  const message = pickRandom(DUE_TODAY_MESSAGES)(task, mentions);
 
-  await slack.postToThread(
-    task.slackThreadTs,
-    `:wave: *Check-in:* No updates on this task for ${daysSinceActivity} days. <@${owner.slackId}> - any progress to share?`
-  );
+  await slack.postToThread(task.slackThreadTs, message);
 
-  markReminderSent(reminderKey);
-  console.log(`Sent no-activity reminder for task ${task.id}`);
+  markFollowUpSent(followUpKey);
+  console.log(`Sent due-today follow-up for task ${task.id}`);
 }
 
-function hasRecentReminder(key: string): boolean {
-  const lastSent = sentReminders.get(key);
+/**
+ * Send follow-up for task due tomorrow
+ */
+async function sendDueTomorrowFollowUp(task: TaskForFollowUp): Promise<void> {
+  const followUpKey = `due-tomorrow-${task.id}`;
+  if (hasRecentFollowUp(followUpKey)) return;
+
+  const ownersWithSlack = task.owners.filter(o => o.slackId);
+  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return;
+
+  const mentions = formatOwnerMentions(task.owners);
+  const message = pickRandom(DUE_TOMORROW_MESSAGES)(task, mentions);
+
+  await slack.postToThread(task.slackThreadTs, message);
+
+  markFollowUpSent(followUpKey);
+  console.log(`Sent due-tomorrow follow-up for task ${task.id}`);
+}
+
+/**
+ * Send check-in for task with no recent activity
+ */
+async function sendCheckInFollowUp(task: TaskForFollowUp, daysSinceActivity: number): Promise<void> {
+  const followUpKey = `check-in-${task.id}-${Math.floor(daysSinceActivity / 3)}`;
+  if (hasRecentFollowUp(followUpKey)) return;
+
+  const ownersWithSlack = task.owners.filter(o => o.slackId);
+  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return;
+
+  const mentions = formatOwnerMentions(task.owners);
+  const message = pickRandom(CHECK_IN_MESSAGES)(task, daysSinceActivity, mentions);
+
+  await slack.postToThread(task.slackThreadTs, message);
+
+  markFollowUpSent(followUpKey);
+  console.log(`Sent check-in follow-up for task ${task.id}`);
+}
+
+function hasRecentFollowUp(key: string): boolean {
+  const lastSent = sentFollowUps.get(key);
   if (!lastSent) return false;
-  // Don't send same reminder within 12 hours
+  // Don't send same follow-up within 12 hours
   return Date.now() - lastSent < 12 * 60 * 60 * 1000;
 }
 
-function markReminderSent(key: string): void {
-  sentReminders.set(key, Date.now());
+function markFollowUpSent(key: string): void {
+  sentFollowUps.set(key, Date.now());
 }
 
 /**
