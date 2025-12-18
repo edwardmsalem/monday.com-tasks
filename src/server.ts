@@ -225,7 +225,13 @@ app.post(
     console.log('Body fields:', Object.keys(req.body));
 
     const files = req.files as Express.Multer.File[] | undefined;
-    console.log('Files:', files?.map(f => ({ fieldname: f.fieldname, mimetype: f.mimetype, size: f.size })));
+    console.log('Files:', files?.map(f => ({
+      fieldname: f.fieldname,
+      mimetype: f.mimetype,
+      size: f.size,
+      originalname: f.originalname,
+      originalnameType: typeof f.originalname,
+    })));
 
     try {
       // Get form fields
@@ -251,7 +257,26 @@ app.post(
         return;
       }
 
-      console.log('Found EML file:', emlFile.fieldname, emlFile.originalname, emlFile.size, 'bytes');
+      // Safely extract filename - Make.com may send it as an object
+      let emlFilename = 'forwarded.eml';
+      if (typeof emlFile.originalname === 'string' && emlFile.originalname) {
+        emlFilename = emlFile.originalname;
+      } else if (emlFile.originalname && typeof emlFile.originalname === 'object') {
+        // Make.com sometimes sends filename as an object with a name property
+        const nameObj = emlFile.originalname as Record<string, unknown>;
+        if (typeof nameObj.name === 'string') {
+          emlFilename = nameObj.name;
+        } else if (typeof nameObj.filename === 'string') {
+          emlFilename = nameObj.filename;
+        }
+      }
+
+      // Ensure filename ends with .eml
+      if (!emlFilename.toLowerCase().endsWith('.eml')) {
+        emlFilename = emlFilename + '.eml';
+      }
+
+      console.log('Found EML file:', emlFile.fieldname, emlFilename, emlFile.size, 'bytes');
 
       // Create a mock "forwarding email" with the .eml as an attachment
       // This matches what the workflow expects
@@ -261,7 +286,7 @@ app.post(
         fromEmail: from,
         toEmail: null,
         attachments: [{
-          filename: emlFile.originalname || 'forwarded.eml',
+          filename: emlFilename,
           content: emlFile.buffer,
           contentType: 'message/rfc822',
         }],
