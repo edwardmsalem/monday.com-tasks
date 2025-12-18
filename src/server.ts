@@ -22,7 +22,7 @@ import { executeWorkflowSafe } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
-import { startFollowUpScheduler, checkAndSendFollowUps } from './services/autoFollowUp.js';
+import { startFollowUpScheduler, checkAndSendFollowUps, debugFollowUps } from './services/autoFollowUp.js';
 
 const app = express();
 
@@ -525,16 +525,19 @@ app.post('/webhook/slack/cleanup', express.urlencoded({ extended: true }), async
 /**
  * /followup slash command - Manually trigger follow-up reminders
  * Usage: /followup (sends reminders for all overdue/unacknowledged tasks)
+ * Usage: /followup debug (shows task info without sending)
  * Admin only - restricted to specific user IDs
  */
 app.post('/webhook/slack/followup', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
   try {
-    const { user_id, response_url } = req.body as {
+    const { text, user_id, response_url } = req.body as {
+      text: string;
       user_id: string;
       response_url: string;
     };
 
-    console.log(`Followup command received from ${user_id}`);
+    const isDebug = text?.trim().toLowerCase() === 'debug';
+    console.log(`Followup command received from ${user_id}${isDebug ? ' (debug mode)' : ''}`);
 
     // Check if user is admin
     if (!CLEANUP_ADMIN_USERS.includes(user_id)) {
@@ -545,7 +548,37 @@ app.post('/webhook/slack/followup', express.urlencoded({ extended: true }), asyn
       return;
     }
 
-    // Respond immediately (Slack requires response within 3s)
+    if (isDebug) {
+      // Debug mode - show task info without sending
+      res.json({
+        response_type: 'ephemeral',
+        text: ':mag: Analyzing tasks...',
+      });
+
+      const debug = await debugFollowUps();
+
+      let message = `*Task Debug Info* (${debug.total} total tasks)\n\n`;
+
+      if (debug.tasks.length === 0) {
+        message += '_No tasks found in Monday.com board_';
+      } else {
+        for (const task of debug.tasks) {
+          const statusEmoji = task.skipReason ? ':white_circle:' : ':large_green_circle:';
+          message += `${statusEmoji} *${task.name}*\n`;
+          message += `   Status: \`${task.status}\` | Due: ${task.dueDate || 'none'} | Overdue: ${task.daysOverdue} days\n`;
+          message += `   Thread: ${task.hasThread ? 'yes' : 'NO'} | Owners: ${task.hasOwners ? task.ownersWithSlack + ' with Slack' : 'NO'}\n`;
+          if (task.skipReason) {
+            message += `   :arrow_right: _Skip: ${task.skipReason}_\n`;
+          }
+          message += '\n';
+        }
+      }
+
+      await slack.sendResponseUrl(response_url, message);
+      return;
+    }
+
+    // Normal mode - send reminders
     res.json({
       response_type: 'ephemeral',
       text: ':hourglass: Checking tasks and sending follow-up reminders...',

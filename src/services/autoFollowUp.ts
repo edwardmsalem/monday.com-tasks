@@ -170,6 +170,70 @@ export async function checkAndSendFollowUps(force: boolean = false): Promise<{ s
   }
 }
 
+interface TaskDebugInfo {
+  id: string;
+  name: string;
+  status: string;
+  dueDate: string | null;
+  daysOverdue: number;
+  hasThread: boolean;
+  hasOwners: boolean;
+  ownersWithSlack: number;
+  skipReason: string | null;
+}
+
+/**
+ * Debug function to see what tasks exist and why they would/wouldn't get reminders
+ */
+export async function debugFollowUps(): Promise<{ tasks: TaskDebugInfo[]; total: number }> {
+  const tasks = await getOpenTasks();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const debugInfo: TaskDebugInfo[] = tasks.map(task => {
+    const status = task.workflowStatus.toLowerCase();
+    let daysOverdue = 0;
+
+    if (task.dueDate) {
+      const dueDate = new Date(task.dueDate);
+      dueDate.setHours(0, 0, 0, 0);
+      daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
+    }
+
+    const ownersWithSlack = task.owners.filter(o => o.slackId).length;
+
+    // Determine skip reason
+    let skipReason: string | null = null;
+    if (status === 'complete' || status === 'done' || status === 'completed' || status === 'closed') {
+      skipReason = `Status is "${task.workflowStatus}"`;
+    } else if (!task.slackThreadTs) {
+      skipReason = 'No Slack thread ID';
+    } else if (task.owners.length === 0) {
+      skipReason = 'No owners assigned';
+    } else if (ownersWithSlack === 0) {
+      skipReason = 'No owners have Slack IDs';
+    } else if (daysOverdue <= 0 && task.workflowStatus) {
+      skipReason = 'Not overdue and already acknowledged';
+    } else if (daysOverdue <= 0 && !task.dueDate) {
+      skipReason = 'No due date set';
+    }
+
+    return {
+      id: task.id,
+      name: task.name.substring(0, 50) + (task.name.length > 50 ? '...' : ''),
+      status: task.workflowStatus || '(none)',
+      dueDate: task.dueDate,
+      daysOverdue,
+      hasThread: !!task.slackThreadTs,
+      hasOwners: task.owners.length > 0,
+      ownersWithSlack,
+      skipReason,
+    };
+  });
+
+  return { tasks: debugInfo, total: tasks.length };
+}
+
 /**
  * Get all open tasks
  */
