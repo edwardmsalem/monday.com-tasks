@@ -27,6 +27,7 @@ import * as calendar from './services/calendar.js';
 import { findUserByName, getUserNamesString } from './services/userResolver.js';
 import { getTaskTypeDisplayName } from './config/taskTypes.js';
 import { parseDate, formatDateForDisplay } from './utils/dateParser.js';
+import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject } from './services/gmail.js';
 
 export interface WorkflowInput {
   email: ParsedEmail;
@@ -85,9 +86,11 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   console.log('PDF generated:', pdfFile.filename);
 
   // Step 8: Create Monday.com item
+  // Use normalized subject (strip FWD:/RE:) as task name
+  const taskName = normalizeSubject(email.subject);
   console.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
-    name: email.subject,
+    name: taskName,
     dueDate: formattedDueDate,
     ownerIds: [user.mondayId],  // Support multiple owners
     taskType,
@@ -98,6 +101,25 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   });
   console.log('Monday item created:', mondayItem.id);
 
+  // Step 8.5: Check for /scan command in email body
+  // If present, search Gmail for related recipients and create subtasks
+  if (shouldScanForRecipients(email.text)) {
+    console.log('/scan detected - searching for related recipients...');
+    try {
+      const recipients = await findRelatedRecipients(email.subject);
+      if (recipients.length > 0) {
+        console.log(`Found ${recipients.length} related recipients, creating subtasks...`);
+        const subtasks = await monday.createSubitems(mondayItem.id, recipients);
+        console.log(`Created ${subtasks.length} subtasks for recipients`);
+      } else {
+        console.log('No related recipients found in the last 48 hours');
+      }
+    } catch (error) {
+      console.error('/scan failed:', error);
+      // Don't fail the whole workflow if scan fails
+    }
+  }
+
   // Step 9: Use Slack ID from unified user mapping (already matched by email)
   const slackMention = user.slackId || user.name;
 
@@ -105,7 +127,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   console.log('Sending Slack notification...');
   const slackMessage = await slack.sendNotification({
     taskType,
-    subject: email.subject,
+    subject: taskName,  // Use normalized subject (no FWD:/RE:)
     assigneeSlackId: slackMention,
     dueDate: formatDateForDisplay(formattedDueDate),
     priority: analysisResult.priority,
@@ -133,7 +155,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   if (calendar.isCalendarEnabled()) {
     console.log('Creating Google Calendar event...');
     const calendarEvent = await calendar.createTaskEvent({
-      title: `[${taskType}] ${email.subject}`,
+      title: `[${taskType}] ${taskName}`,
       description: analysisResult.notes,
       dueDate: formattedDueDate,
       assigneeEmail: user.email,
@@ -149,7 +171,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     console.log('Setting Slack reminder...');
     await slack.setReminder({
       userId: user.slackId,
-      text: `Task due: ${email.subject}\n${monday.getItemUrl(mondayItem.id)}`,
+      text: `Task due: ${taskName}\n${monday.getItemUrl(mondayItem.id)}`,
       dueDate: formattedDueDate,
     });
   }

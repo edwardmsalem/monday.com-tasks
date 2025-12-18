@@ -374,6 +374,51 @@ export async function updateType(itemId: string, taskType: string): Promise<void
 }
 
 /**
+ * Create a subitem (subtask) on a parent item
+ * Used for /scan feature to create recipient subtasks
+ */
+export async function createSubitem(parentItemId: string, name: string): Promise<{ id: string; name: string }> {
+  const query = `
+    mutation CreateSubitem($parentItemId: ID!, $itemName: String!) {
+      create_subitem(
+        parent_item_id: $parentItemId
+        item_name: $itemName
+      ) {
+        id
+        name
+      }
+    }
+  `;
+
+  const result = await executeQuery<{ create_subitem: { id: string; name: string } }>(query, {
+    parentItemId,
+    itemName: name,
+  });
+
+  return result.create_subitem;
+}
+
+/**
+ * Create multiple subitems at once
+ * Returns array of created subitem IDs
+ */
+export async function createSubitems(parentItemId: string, names: string[]): Promise<Array<{ id: string; name: string }>> {
+  const results: Array<{ id: string; name: string }> = [];
+
+  for (const name of names) {
+    try {
+      const subitem = await createSubitem(parentItemId, name);
+      results.push(subitem);
+      console.log(`Created subitem: ${name}`);
+    } catch (error) {
+      console.error(`Failed to create subitem "${name}":`, error);
+    }
+  }
+
+  return results;
+}
+
+/**
  * Get item details including name and workflow status
  */
 export async function getItem(itemId: string): Promise<{

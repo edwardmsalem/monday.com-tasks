@@ -75,11 +75,13 @@ export const config = {
     apiKey: getEnvVar('ANTHROPIC_API_KEY', ''),
   },
 
-  // Google Calendar (optional)
+  // Google (Gmail API + Calendar)
   google: {
     enabled: getEnvVar('GOOGLE_CALENDAR_ENABLED', 'false') === 'true',
     calendarId: getEnvVar('GOOGLE_CALENDAR_ID', 'primary'),
     timeZone: getEnvVar('GOOGLE_CALENDAR_TIMEZONE', 'America/New_York'),
+    // Forwarding inbox email for /scan feature
+    forwardingEmail: getEnvVar('GOOGLE_FORWARDING_EMAIL', 'forwarding@salemseats.com'),
     // Service Account (recommended for server-side automation)
     serviceAccountKey: getEnvVarOptional('GOOGLE_SERVICE_ACCOUNT_KEY'),
     // OR OAuth (for personal use)
