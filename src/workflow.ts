@@ -27,7 +27,7 @@ import * as calendar from './services/calendar.js';
 import { findUserByName, getUserNamesString } from './services/userResolver.js';
 import { getTaskTypeDisplayName } from './config/taskTypes.js';
 import { parseDate, formatDateForDisplay } from './utils/dateParser.js';
-import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject } from './services/gmail.js';
+import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from './services/gmail.js';
 
 export interface WorkflowInput {
   email: ParsedEmail;
@@ -110,14 +110,16 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   console.log('Monday item created:', mondayItem.id);
 
   // Step 8.5: Check for /scan command in email body
-  // If present, search Gmail for related recipients and create subtasks
+  // If present, search Gmail for related recipients and create subtasks with appointment times
   if (shouldScanForRecipients(email.text)) {
-    console.log('/scan detected - searching for related recipients...');
+    console.log('/scan detected - searching for related recipients and appointments...');
     try {
       const recipients = await findRelatedRecipients(email.subject);
       if (recipients.length > 0) {
         console.log(`Found ${recipients.length} related recipients, creating subtasks...`);
-        const subtasks = await monday.createSubitems(mondayItem.id, recipients);
+        // Format subtask names with appointment times (e.g., "john@client.com - Tue Dec 20, 2:00 PM")
+        const subtaskNames = recipients.map(formatRecipientSubtaskName);
+        const subtasks = await monday.createSubitems(mondayItem.id, subtaskNames);
         console.log(`Created ${subtasks.length} subtasks for recipients`);
       } else {
         console.log('No related recipients found in the last 48 hours');
