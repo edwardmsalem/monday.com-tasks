@@ -49,7 +49,7 @@ const US_HOLIDAYS: string[] = [
 
 /**
  * Check if current time is within business hours
- * Business hours: Monday-Friday, 9am-5pm Eastern Time
+ * Business hours: Monday-Friday, 10am-6pm Eastern Time
  */
 function isBusinessHours(): boolean {
   // Get current time in Eastern timezone
@@ -64,8 +64,8 @@ function isBusinessHours(): boolean {
     return false;
   }
 
-  // Check if outside 9am-5pm
-  if (hour < 9 || hour >= 17) {
+  // Check if outside 10am-6pm
+  if (hour < 10 || hour >= 18) {
     return false;
   }
 
