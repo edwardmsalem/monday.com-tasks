@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { WebClient, type ChatPostMessageResponse } from '@slack/web-api';
 import { config } from '../config/environment.js';
 import type { SlackMessage } from '../types/index.js';
@@ -66,8 +67,8 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   const client = getClient();
   const mondayUrl = monday.getItemUrl(input.mondayItemId);
 
-  // Build Block Kit message
-  const blocks = [
+  // Build Block Kit message - use any[] to avoid type issues with mixed block types
+  const blocks: any[] = [
     {
       type: 'header',
       text: {
@@ -349,7 +350,7 @@ export async function setReminder(input: ReminderInput): Promise<boolean> {
 export async function postToThread(
   threadTs: string,
   text: string,
-  blocks?: unknown[]
+  blocks?: any[]
 ): Promise<SlackMessage> {
   const client = getClient();
 
@@ -357,7 +358,7 @@ export async function postToThread(
     channel: config.slack.channelId,
     thread_ts: threadTs,
     text,
-    blocks: blocks as ChatPostMessageResponse['blocks'],
+    blocks,
     unfurl_links: false,
     unfurl_media: false,
   });
@@ -421,7 +422,7 @@ export async function postEphemeral(
   channelId: string,
   userId: string,
   text: string,
-  blocks?: unknown[]
+  blocks?: any[]
 ): Promise<void> {
   const client = getClient();
 
@@ -429,7 +430,7 @@ export async function postEphemeral(
     channel: channelId,
     user: userId,
     text,
-    blocks: blocks as ChatPostMessageResponse['blocks'],
+    blocks,
   });
 }
 

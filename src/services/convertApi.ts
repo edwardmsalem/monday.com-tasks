@@ -1,12 +1,14 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import ConvertApi from 'convertapi';
 import { config } from '../config/environment.js';
 import type { ConvertedFile } from '../types/index.js';
 
-let convertApiClient: ConvertApi | null = null;
+// ConvertApi doesn't have proper TypeScript definitions
+let convertApiClient: any = null;
 
-function getClient(): ConvertApi {
+function getClient(): any {
   if (!convertApiClient) {
-    convertApiClient = new ConvertApi(config.convertApi.secret);
+    convertApiClient = new (ConvertApi as any)(config.convertApi.secret);
   }
   return convertApiClient;
 }
@@ -23,11 +25,11 @@ export async function convertEmlToPdf(
 ): Promise<ConvertedFile> {
   const client = getClient();
 
-  // Convert EML to PDF
+  // Convert EML to PDF using the convertapi library
   const result = await client.convert(
     'pdf',
     {
-      File: new ConvertApi.FileParam(emlContent, filename),
+      File: { name: filename, data: emlContent },
       PageSize: 'a4',
       MarginTop: 5,
       MarginRight: 5,

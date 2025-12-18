@@ -1,10 +1,21 @@
-import { simpleParser, type ParsedMail } from 'mailparser';
+import { simpleParser, type ParsedMail, type AddressObject } from 'mailparser';
 import type {
   ParsedEmail,
   EmailAttachment,
   TaskDetails,
   EmlHeaders,
 } from '../types/index.js';
+
+/**
+ * Get text from AddressObject which can be single or array
+ */
+function getAddressText(address: AddressObject | AddressObject[] | undefined): string {
+  if (!address) return '';
+  if (Array.isArray(address)) {
+    return address.map(a => a.text).join(', ');
+  }
+  return address.text || '';
+}
 
 /**
  * Parse an incoming email (the trigger email with .eml attachment)
@@ -17,8 +28,8 @@ export async function parseIncomingEmail(
   return {
     subject: parsed.subject ?? '',
     text: parsed.text ?? '',
-    fromEmail: extractEmail(parsed.from?.text ?? ''),
-    toEmail: extractEmail(parsed.to?.text ?? ''),
+    fromEmail: extractEmail(getAddressText(parsed.from)),
+    toEmail: extractEmail(getAddressText(parsed.to)),
     attachments: parseAttachments(parsed),
   };
 }
@@ -65,8 +76,8 @@ export async function parseEmlAttachment(
 
   return {
     subject: parsed.subject ?? null,
-    from: extractEmail(parsed.from?.text ?? ''),
-    to: extractEmail(parsed.to?.text ?? ''),
+    from: extractEmail(getAddressText(parsed.from)),
+    to: extractEmail(getAddressText(parsed.to)),
     body: parsed.text ?? null,  // Extract the email body text
   };
 }
