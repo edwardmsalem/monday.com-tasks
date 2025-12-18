@@ -276,7 +276,27 @@ app.post(
         emlFilename = emlFilename + '.eml';
       }
 
-      console.log('Found EML file:', emlFile.fieldname, emlFilename, emlFile.size, 'bytes');
+      // Validate buffer is actually a Buffer
+      const emlBuffer = emlFile.buffer;
+      const isBuffer = Buffer.isBuffer(emlBuffer);
+      console.log('Found EML file:', {
+        fieldname: emlFile.fieldname,
+        filename: emlFilename,
+        size: emlFile.size,
+        isBuffer,
+        bufferType: typeof emlBuffer,
+        bufferLength: isBuffer ? emlBuffer.length : 'N/A',
+      });
+
+      if (!isBuffer) {
+        console.error('EML buffer is not a Buffer:', typeof emlBuffer);
+        res.status(400).json({
+          success: false,
+          error: 'Invalid file data received. Expected Buffer.',
+          bufferType: typeof emlBuffer,
+        });
+        return;
+      }
 
       // Create a mock "forwarding email" with the .eml as an attachment
       // This matches what the workflow expects
@@ -287,7 +307,7 @@ app.post(
         toEmail: null,
         attachments: [{
           filename: emlFilename,
-          content: emlFile.buffer,
+          content: emlBuffer,
           contentType: 'message/rfc822',
         }],
       };
