@@ -56,7 +56,7 @@ export function parseTaskDetails(emailText: string): TaskDetails {
 }
 
 /**
- * Parse an .eml file attachment to extract headers
+ * Parse an .eml file attachment to extract headers and body
  */
 export async function parseEmlAttachment(
   emlContent: Buffer | string
@@ -67,6 +67,7 @@ export async function parseEmlAttachment(
     subject: parsed.subject ?? null,
     from: extractEmail(parsed.from?.text ?? ''),
     to: extractEmail(parsed.to?.text ?? ''),
+    body: parsed.text ?? null,  // Extract the email body text
   };
 }
 

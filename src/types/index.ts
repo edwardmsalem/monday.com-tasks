@@ -28,6 +28,7 @@ export interface EmlHeaders {
   subject: string | null;
   from: string | null;
   to: string | null;
+  body: string | null;  // The actual email content
 }
 
 export interface ConvertedFile {

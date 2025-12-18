@@ -60,6 +60,10 @@ When analyzing an email, extract:
    - medium: Standard task with a deadline, customer waiting
    - low: FYI, informational, no rush, when you get a chance
 5. **Notes**: Any additional context or important details from the email.
+6. **Meeting Request**: Detect if the email contains a meeting/appointment request:
+   - Look for phrases like "let's meet", "can we schedule", "are you available", "let's set up a call"
+   - Extract proposed date(s) and time(s) if mentioned
+   - Note the timezone if specified (default to EST/America/New_York)
 
 Be smart about inferring information. For example:
 - "Send this to Dayna for next Friday" → owner: dayna, due date: calculate days until Friday
@@ -104,17 +108,36 @@ function buildExtractTaskTool(userNames: string): Anthropic.Tool {
           type: 'number',
           description: 'Confidence score from 0 to 1 for the extraction',
         },
+        hasMeetingRequest: {
+          type: 'boolean',
+          description: 'True if the email contains a meeting or appointment request',
+        },
+        meetingDateTime: {
+          type: 'string',
+          description: 'If meeting requested, the proposed date and time in ISO 8601 format (e.g., "2025-12-20T14:00:00"). Null if no specific time mentioned.',
+        },
+        meetingDateTimeAlt: {
+          type: 'string',
+          description: 'If multiple times proposed, the alternative date/time in ISO 8601 format. Null if only one option.',
+        },
       },
-      required: ['owner', 'dueDate', 'taskType', 'priority', 'notes', 'confidence'],
+      required: ['owner', 'dueDate', 'taskType', 'priority', 'notes', 'confidence', 'hasMeetingRequest'],
     },
   };
 }
 
 export type Priority = 'high' | 'medium' | 'low';
 
+export interface MeetingInfo {
+  hasMeetingRequest: boolean;
+  meetingDateTime: string | null;
+  meetingDateTimeAlt: string | null;
+}
+
 export interface AnalysisResult extends TaskDetails {
   priority: Priority;
   confidence: number;
+  meeting: MeetingInfo;
 }
 
 /**
@@ -125,7 +148,8 @@ export async function analyzeEmail(
   emailBody: string,
   emlSubject?: string | null,
   emlFrom?: string | null,
-  emlTo?: string | null
+  emlTo?: string | null,
+  emlBody?: string | null
 ): Promise<AnalysisResult> {
   const client = getClient();
 
@@ -147,6 +171,11 @@ export async function analyzeEmail(
     if (emlSubject) content += `- Subject: ${emlSubject}\n`;
     if (emlFrom) content += `- From: ${emlFrom}\n`;
     if (emlTo) content += `- To: ${emlTo}\n`;
+  }
+
+  // Include the actual email content from the EML attachment
+  if (emlBody) {
+    content += `\n**Original Email Content (from EML attachment):**\n${emlBody}\n`;
   }
 
   console.log('Sending email to Claude for analysis...');
@@ -181,6 +210,9 @@ export async function analyzeEmail(
     priority: Priority;
     notes: string;
     confidence: number;
+    hasMeetingRequest: boolean;
+    meetingDateTime?: string;
+    meetingDateTimeAlt?: string;
   };
 
   console.log('Claude analysis result:', input);
@@ -192,6 +224,11 @@ export async function analyzeEmail(
     priority: input.priority,
     notes: input.notes,
     confidence: input.confidence,
+    meeting: {
+      hasMeetingRequest: input.hasMeetingRequest,
+      meetingDateTime: input.meetingDateTime ?? null,
+      meetingDateTimeAlt: input.meetingDateTimeAlt ?? null,
+    },
   };
 }
 
@@ -203,10 +240,11 @@ export async function analyzeEmailSafe(
   emailBody: string,
   emlSubject?: string | null,
   emlFrom?: string | null,
-  emlTo?: string | null
+  emlTo?: string | null,
+  emlBody?: string | null
 ): Promise<AnalysisResult> {
   try {
-    return await analyzeEmail(emailSubject, emailBody, emlSubject, emlFrom, emlTo);
+    return await analyzeEmail(emailSubject, emailBody, emlSubject, emlFrom, emlTo, emlBody);
   } catch (error) {
     console.error('Claude analysis failed, using fallback:', error);
 
@@ -229,6 +267,11 @@ export async function analyzeEmailSafe(
       priority,
       notes: lines.slice(3).join('\n').trim(),
       confidence: 0.3, // Low confidence for fallback parsing
+      meeting: {
+        hasMeetingRequest: false,
+        meetingDateTime: null,
+        meetingDateTimeAlt: null,
+      },
     };
   }
 }

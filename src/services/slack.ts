@@ -14,6 +14,12 @@ function getClient(): WebClient {
 
 type Priority = 'high' | 'medium' | 'low';
 
+interface MeetingInfo {
+  hasMeetingRequest: boolean;
+  meetingDateTime: string | null;
+  meetingDateTimeAlt: string | null;
+}
+
 interface SlackNotificationInput {
   taskType: string;
   subject: string;
@@ -24,6 +30,7 @@ interface SlackNotificationInput {
   fromEmail: string | null;
   toEmail: string | null;
   mondayItemId: string;
+  meeting?: MeetingInfo;
 }
 
 // Priority display config
@@ -32,6 +39,25 @@ const PRIORITY_CONFIG: Record<Priority, { emoji: string; label: string }> = {
   medium: { emoji: '🟡', label: 'Medium' },
   low: { emoji: '🟢', label: 'Low' },
 };
+
+/**
+ * Format ISO datetime string for display
+ */
+function formatMeetingTime(isoString: string): string {
+  try {
+    const date = new Date(isoString);
+    return date.toLocaleString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+  } catch {
+    return isoString;
+  }
+}
 
 /**
  * Send a notification message using Block Kit for rich formatting
@@ -108,6 +134,34 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
         text: `*Notes:*\n${input.notes || '_No notes provided_'}`,
       },
     },
+  ];
+
+  // Add meeting section if there's a meeting request
+  if (input.meeting?.hasMeetingRequest) {
+    let meetingText = '📅 *Meeting Requested*';
+    if (input.meeting.meetingDateTime) {
+      meetingText += `\n• ${formatMeetingTime(input.meeting.meetingDateTime)}`;
+    }
+    if (input.meeting.meetingDateTimeAlt) {
+      meetingText += `\n• ${formatMeetingTime(input.meeting.meetingDateTimeAlt)} _(alt)_`;
+    }
+    if (!input.meeting.meetingDateTime && !input.meeting.meetingDateTimeAlt) {
+      meetingText += '\n_No specific time mentioned_';
+    }
+
+    blocks.push(
+      { type: 'divider' },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: meetingText,
+        },
+      }
+    );
+  }
+
+  blocks.push(
     {
       type: 'divider',
     },

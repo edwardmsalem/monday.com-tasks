@@ -47,22 +47,30 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     throw new Error('No EML attachment found in the email');
   }
 
-  // Step 2: Parse EML headers first (needed for Claude analysis)
+  // Step 2: Parse EML headers and body (needed for Claude analysis)
   console.log('Parsing EML attachment...');
   const emlHeaders = await parseEmlAttachment(emlAttachment.content);
   console.log('EML headers:', emlHeaders);
+  if (emlHeaders.body) {
+    console.log('EML body length:', emlHeaders.body.length, 'chars');
+  }
 
   // Step 3: Use Claude AI to analyze the email and extract task details
+  // Now includes the actual EML body for meeting detection, etc.
   console.log('Analyzing email with Claude AI...');
   const analysisResult = await analyzeEmailSafe(
     email.subject,
     email.text,
     emlHeaders.subject,
     emlHeaders.from,
-    emlHeaders.to
+    emlHeaders.to,
+    emlHeaders.body  // Pass the EML body content
   );
   console.log('Claude analysis:', analysisResult);
   console.log(`Confidence: ${(analysisResult.confidence * 100).toFixed(0)}%`);
+  if (analysisResult.meeting.hasMeetingRequest) {
+    console.log('Meeting detected:', analysisResult.meeting);
+  }
 
   // Step 4: Resolve the task type (Claude might return alias or display name)
   const taskType = getTaskTypeDisplayName(analysisResult.taskType);
@@ -135,6 +143,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
     mondayItemId: mondayItem.id,
+    meeting: analysisResult.meeting,  // Include meeting info
   });
   console.log('Slack message sent:', slackMessage.ts);
 
