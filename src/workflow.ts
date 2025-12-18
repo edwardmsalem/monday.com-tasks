@@ -28,6 +28,7 @@ import { findUserByName, getUserNamesString } from './services/userResolver.js';
 import { getTaskTypeDisplayName } from './config/taskTypes.js';
 import { parseDate, formatDateForDisplay } from './utils/dateParser.js';
 import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from './services/gmail.js';
+import { createRecipientSheet, shouldCreateSheet } from './services/sheets.js';
 
 export interface WorkflowInput {
   email: ParsedEmail;
@@ -111,6 +112,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
 
   // Step 8.5: Check for /scan command in email body
   // If present, search Gmail for related recipients and create subtasks with appointment times
+  let sheetUrl: string | null = null;
   if (shouldScanForRecipients(email.text)) {
     console.log('/scan detected - searching for related recipients and appointments...');
     try {
@@ -121,6 +123,24 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
         const subtaskNames = recipients.map(formatRecipientSubtaskName);
         const subtasks = await monday.createSubitems(mondayItem.id, subtaskNames);
         console.log(`Created ${subtasks.length} subtasks for recipients`);
+
+        // Create Google Sheet for presale/relocation emails
+        if (shouldCreateSheet(taskName)) {
+          console.log('Creating Google Sheet for recipient tracking...');
+          try {
+            const sheet = await createRecipientSheet(taskName, recipients);
+            sheetUrl = sheet.spreadsheetUrl;
+            console.log(`Google Sheet created: ${sheetUrl}`);
+
+            // Post sheet link as Monday update
+            await monday.createUpdate(
+              mondayItem.id,
+              `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
+            );
+          } catch (sheetError) {
+            console.error('Failed to create Google Sheet:', sheetError);
+          }
+        }
       } else {
         console.log('No related recipients found in the last 48 hours');
       }
@@ -156,6 +176,15 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     slack.uploadFileToThread(slackMessage.ts, pdfFile.filename, pdfFile.data, 'Email PDF'),
   ]);
   console.log('PDF uploaded to both services');
+
+  // Step 11.5: Post Google Sheet link to Slack thread (if created)
+  if (sheetUrl) {
+    console.log('Posting Google Sheet link to Slack thread...');
+    await slack.postToThread(
+      slackMessage.ts,
+      `📊 *Recipient Tracking Sheet*\n${sheetUrl}\n_Edit this spreadsheet to track status and add notes._`
+    );
+  }
 
   // Step 12: Update Monday with Slack thread ID
   console.log('Updating Monday with Slack thread ID...');
