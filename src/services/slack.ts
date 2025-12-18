@@ -448,39 +448,39 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
     const botUserId = authResponse.user_id;
 
     console.log(`Bot user ID: ${botUserId}`);
-    console.log(`Deleting messages from the last ${minutesAgo} minutes...`);
+    console.log(`Deleting bot messages from the last ${minutesAgo} minutes...`);
 
-    // Get channel history
-    const cutoffTime = String(Math.floor((Date.now() - minutesAgo * 60 * 1000) / 1000));
+    // Calculate cutoff timestamp
+    const cutoffTimestamp = (Date.now() - minutesAgo * 60 * 1000) / 1000;
 
+    // Get more channel history (last 500 messages or 7 days) to find threads with recent replies
     const historyResponse = await client.conversations.history({
       channel: config.slack.channelId,
-      oldest: cutoffTime,
-      limit: 200,
+      limit: 500,
     });
 
     if (!historyResponse.messages) {
-      console.log('No messages found');
+      console.log('No messages found in channel');
       return 0;
     }
 
-    console.log(`Found ${historyResponse.messages.length} messages to check`);
+    console.log(`Found ${historyResponse.messages.length} messages in channel`);
 
-    // Check each message and its thread
+    // Check each message and its thread for recent bot messages
     for (const message of historyResponse.messages) {
-      // If this message has a thread, check thread replies
+      // Check threads for bot replies
       if (message.thread_ts && message.reply_count && message.reply_count > 0) {
         try {
           const threadResponse = await client.conversations.replies({
             channel: config.slack.channelId,
             ts: message.thread_ts,
-            oldest: cutoffTime,
           });
 
           if (threadResponse.messages) {
             for (const reply of threadResponse.messages) {
-              // Delete bot's thread replies (but not the parent if it's not ours)
-              if (reply.user === botUserId && reply.ts) {
+              // Only delete bot's replies that are within the time window
+              const replyTimestamp = parseFloat(reply.ts || '0');
+              if (reply.user === botUserId && reply.ts && replyTimestamp >= cutoffTimestamp) {
                 try {
                   await client.chat.delete({
                     channel: config.slack.channelId,
@@ -499,8 +499,9 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
         }
       }
 
-      // Delete main channel messages from bot
-      if (message.user === botUserId && message.ts) {
+      // Delete main channel messages from bot within time window
+      const msgTimestamp = parseFloat(message.ts || '0');
+      if (message.user === botUserId && message.ts && msgTimestamp >= cutoffTimestamp) {
         try {
           await client.chat.delete({
             channel: config.slack.channelId,
