@@ -59,6 +59,26 @@ export function normalizeSubject(subject: string): string {
     .trim();
 }
 
+// Keywords that indicate emails may contain appointment times
+const APPOINTMENT_KEYWORDS = [
+  'presale',
+  'pre-sale',
+  'relocation',
+  'selection',
+  'appointment',
+  'scheduled',
+  'your time',
+  'your slot',
+];
+
+/**
+ * Check if text contains appointment-related keywords
+ */
+function hasAppointmentKeywords(text: string): boolean {
+  const lowerText = text.toLowerCase();
+  return APPOINTMENT_KEYWORDS.some(keyword => lowerText.includes(keyword));
+}
+
 /**
  * Recipient with their appointment information
  */
@@ -76,6 +96,10 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
   const gmail = await getGmailClient();
 
   const normalizedSubject = normalizeSubject(subject);
+
+  // Check if subject contains appointment-related keywords
+  const shouldExtractAppointments = hasAppointmentKeywords(normalizedSubject);
+  console.log(`Subject "${normalizedSubject}" - extract appointments: ${shouldExtractAppointments}`);
 
   // Build search query - last 48 hours
   const twoDaysAgo = new Date();
@@ -121,11 +145,15 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
       // Get recipient email(s)
       const recipientEmails = extractEmailAddresses(toHeader.value);
 
-      // Get email body text
-      const bodyText = extractEmailBody(msgResponse.data.payload);
+      // Only extract appointment times if keywords detected in subject
+      let appointmentInfo = { appointmentDate: null as string | null, rawDateTime: null as string | null };
 
-      // Extract appointment time using Claude
-      const appointmentInfo = await extractAppointmentTime(bodyText);
+      if (shouldExtractAppointments) {
+        // Get email body text
+        const bodyText = extractEmailBody(msgResponse.data.payload);
+        // Extract appointment time using Claude
+        appointmentInfo = await extractAppointmentTime(bodyText);
+      }
 
       // Add each recipient with their appointment info
       for (const email of recipientEmails) {
