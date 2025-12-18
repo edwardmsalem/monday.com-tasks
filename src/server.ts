@@ -268,8 +268,104 @@ app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<v
 // Slack Slash Commands (AI-powered with follow-up questions)
 // ============================================================================
 
+// Allowed channels for /seasontask command (restrict to season tickets channels)
+const SEASONTASK_ALLOWED_CHANNELS = ['C06BSL06WJK', 'C08QCFC4Y0H'];
+
 /**
- * Slack slash command handler
+ * /seasontask slash command handler - Restricted to specific channels
+ * Uses Claude AI to understand natural language and asks follow-up questions
+ * for missing required fields (assignee, due date)
+ *
+ * Examples:
+ *   /seasontask Fix the login bug
+ *   /seasontask Review the Yankees tickets for John by Friday
+ *   /seasontask urgent: follow up on Knicks renewal @sarah
+ */
+app.post('/webhook/slack/seasontask', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { text, user_id, channel_id, command } = req.body as {
+      text: string;
+      user_id: string;
+      channel_id: string;
+      command: string;
+    };
+
+    console.log(`Slash command received: ${command} ${text} in channel ${channel_id}`);
+
+    // Check if channel is allowed
+    if (!SEASONTASK_ALLOWED_CHANNELS.includes(channel_id)) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:no_entry: This command only works in the season tickets channels.\n\n` +
+          `If you need to create a task elsewhere, please use the appropriate channel.`,
+      });
+      return;
+    }
+
+    const trimmedText = text.trim().toLowerCase();
+
+    // Handle help
+    if (trimmedText === 'help' || trimmedText === '') {
+      res.json({
+        response_type: 'ephemeral',
+        text: `*Season Tickets - Smart Task Creation*\n\n` +
+          `Just describe your task naturally! I'll ask for any missing details.\n\n` +
+          `*Examples:*\n` +
+          `• \`/seasontask Follow up on Yankees renewal\`\n` +
+          `• \`/seasontask Call John about Knicks tickets by friday\`\n` +
+          `• \`/seasontask urgent: Rangers invoice needs review\`\n` +
+          `• \`/seasontask Schedule Giants meeting next week @sarah\`\n\n` +
+          `*Required info (I'll ask if missing):*\n` +
+          `• Task description\n` +
+          `• Assignee (who's responsible?)\n` +
+          `• Due date (when is it due?)\n\n` +
+          `*Team names I recognize:*\n` +
+          `Yankees, Mets, Knicks, Nets, Rangers, Islanders, Giants, Jets, etc.\n\n` +
+          `_Tip: Mention the team name and I'll automatically tag it!_`,
+      });
+      return;
+    }
+
+    // Handle cancel
+    if (trimmedText === 'cancel') {
+      const result = sync.cancelSmartTask(user_id, channel_id);
+      res.json({
+        response_type: 'ephemeral',
+        text: result.message,
+      });
+      return;
+    }
+
+    // Check if there's a pending task (user is answering a question)
+    if (sync.hasPendingTask(user_id, channel_id)) {
+      const result = await sync.continueSmartTaskCreation(text, user_id, channel_id);
+      res.json({
+        response_type: 'ephemeral',
+        text: result.message ?? '',
+        blocks: result.blocks,
+      });
+      return;
+    }
+
+    // Start new task creation with AI
+    const result = await sync.startSmartTaskCreation(text, user_id, channel_id);
+
+    res.json({
+      response_type: 'ephemeral',
+      text: result.message ?? '',
+      blocks: result.blocks,
+    });
+  } catch (error) {
+    console.error('Seasontask command error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: ':x: Error processing command. Please try again.',
+    });
+  }
+});
+
+/**
+ * Slack slash command handler (/monday - general purpose)
  * Uses Claude AI to understand natural language and asks follow-up questions
  * for missing required fields (assignee, due date)
  *
@@ -502,7 +598,8 @@ function start() {
     console.log(`  Email webhook:   http://localhost:${config.port}/webhook/email`);
     console.log(`  JSON webhook:    http://localhost:${config.port}/webhook/json`);
     console.log(`  Slack events:    http://localhost:${config.port}/webhook/slack/events`);
-    console.log(`  Slack command:   http://localhost:${config.port}/webhook/slack/command`);
+    console.log(`  Slack /monday:   http://localhost:${config.port}/webhook/slack/command`);
+    console.log(`  Slack /seasontask: http://localhost:${config.port}/webhook/slack/seasontask`);
     console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log('');
