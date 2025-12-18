@@ -3,6 +3,8 @@
  *
  * Searches the forwarding inbox for related emails by subject
  * Used for the /scan feature to find all recipients with their appointment times
+ *
+ * Uses OAuth2 with refresh token (no domain-wide delegation needed)
  */
 
 import { google } from 'googleapis';
@@ -13,29 +15,30 @@ let gmailClient: ReturnType<typeof google.gmail> | null = null;
 let anthropicClient: Anthropic | null = null;
 
 /**
- * Initialize Gmail API client with service account
+ * Initialize Gmail API client with OAuth2 refresh token
  */
 async function getGmailClient() {
   if (gmailClient) return gmailClient;
 
-  const serviceAccountKey = config.google.serviceAccountKey;
-  if (!serviceAccountKey) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY not configured');
+  const { clientId, clientSecret, refreshToken } = config.google;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error(
+      'Gmail OAuth not configured. Required: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN'
+    );
   }
 
-  const credentials = JSON.parse(serviceAccountKey);
+  const oauth2Client = new google.auth.OAuth2(
+    clientId,
+    clientSecret,
+    'https://developers.google.com/oauthplayground' // redirect URI used during token generation
+  );
 
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-    // Impersonate the forwarding inbox
-    clientOptions: {
-      subject: config.google.forwardingEmail,
-    },
+  oauth2Client.setCredentials({
+    refresh_token: refreshToken,
   });
 
-  const authClient = await auth.getClient();
-  gmailClient = google.gmail({ version: 'v1', auth: authClient as any });
+  gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
 
   return gmailClient;
 }
