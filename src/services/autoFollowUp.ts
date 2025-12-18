@@ -6,11 +6,77 @@
  * - Past due → remind to complete with ✅
  *
  * Run this on a schedule (e.g., cron job, setInterval)
+ * Only sends during business hours (M-F 9am-5pm EST, excluding US holidays)
  */
 
 import { config } from '../config/environment.js';
 import * as slack from './slack.js';
 import { getAllUsers, type UnifiedUser } from './userResolver.js';
+
+// US Federal Holidays (fixed dates and observed dates for 2024-2025)
+const US_HOLIDAYS: string[] = [
+  // 2024
+  '2024-01-01', // New Year's Day
+  '2024-01-15', // MLK Day
+  '2024-02-19', // Presidents Day
+  '2024-05-27', // Memorial Day
+  '2024-06-19', // Juneteenth
+  '2024-07-04', // Independence Day
+  '2024-09-02', // Labor Day
+  '2024-10-14', // Columbus Day
+  '2024-11-11', // Veterans Day
+  '2024-11-28', // Thanksgiving
+  '2024-11-29', // Day after Thanksgiving
+  '2024-12-24', // Christmas Eve
+  '2024-12-25', // Christmas
+  '2024-12-31', // New Year's Eve
+  // 2025
+  '2025-01-01', // New Year's Day
+  '2025-01-20', // MLK Day
+  '2025-02-17', // Presidents Day
+  '2025-05-26', // Memorial Day
+  '2025-06-19', // Juneteenth
+  '2025-07-04', // Independence Day
+  '2025-09-01', // Labor Day
+  '2025-10-13', // Columbus Day
+  '2025-11-11', // Veterans Day
+  '2025-11-27', // Thanksgiving
+  '2025-11-28', // Day after Thanksgiving
+  '2025-12-24', // Christmas Eve
+  '2025-12-25', // Christmas
+  '2025-12-31', // New Year's Eve
+];
+
+/**
+ * Check if current time is within business hours
+ * Business hours: Monday-Friday, 9am-5pm Eastern Time
+ */
+function isBusinessHours(): boolean {
+  // Get current time in Eastern timezone
+  const now = new Date();
+  const eastern = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  const dayOfWeek = eastern.getDay(); // 0 = Sunday, 6 = Saturday
+  const hour = eastern.getHours();
+
+  // Check if weekend
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return false;
+  }
+
+  // Check if outside 9am-5pm
+  if (hour < 9 || hour >= 17) {
+    return false;
+  }
+
+  // Check if holiday
+  const dateStr = eastern.toISOString().split('T')[0];
+  if (US_HOLIDAYS.includes(dateStr)) {
+    return false;
+  }
+
+  return true;
+}
 
 // Track which follow-ups we've already sent (to avoid duplicates)
 const sentFollowUps = new Map<string, number>(); // key -> timestamp
@@ -43,9 +109,18 @@ interface TaskForFollowUp {
 
 /**
  * Check all open tasks and send appropriate follow-ups
+ * @param force - If true, bypasses business hours check (for manual triggers)
  */
-export async function checkAndSendFollowUps(): Promise<void> {
+export async function checkAndSendFollowUps(force: boolean = false): Promise<{ sent: number; skipped: string }> {
   console.log('Checking tasks for follow-ups...');
+
+  // Skip if outside business hours (unless forced)
+  if (!force && !isBusinessHours()) {
+    console.log('Outside business hours - skipping follow-ups');
+    return { sent: 0, skipped: 'outside_business_hours' };
+  }
+
+  let sentCount = 0;
 
   try {
     const tasks = await getOpenTasks();
@@ -70,7 +145,8 @@ export async function checkAndSendFollowUps(): Promise<void> {
 
       // 1. Not acknowledged after 4 hours → remind to add 👀
       if (!task.workflowStatus && hoursSinceCreation >= 4) {
-        await sendAcknowledgeReminder(task);
+        const sent = await sendAcknowledgeReminder(task);
+        if (sent) sentCount++;
       }
 
       // 2. Past due and not complete → remind to add ✅
@@ -80,14 +156,17 @@ export async function checkAndSendFollowUps(): Promise<void> {
         const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
 
         if (daysOverdue > 0) {
-          await sendOverdueReminder(task, daysOverdue);
+          const sent = await sendOverdueReminder(task, daysOverdue);
+          if (sent) sentCount++;
         }
       }
     }
 
-    console.log('Follow-up check complete');
+    console.log(`Follow-up check complete. Sent ${sentCount} reminders.`);
+    return { sent: sentCount, skipped: '' };
   } catch (error) {
     console.error('Error checking follow-ups:', error);
+    return { sent: sentCount, skipped: 'error' };
   }
 }
 
@@ -243,13 +322,14 @@ function pickRandom<T>(arr: T[]): T {
 
 /**
  * Send reminder to acknowledge with 👀
+ * @returns true if message was sent, false if skipped
  */
-async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<void> {
+async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<boolean> {
   const followUpKey = `ack-${task.id}`;
-  if (hasRecentFollowUp(followUpKey)) return;
+  if (hasRecentFollowUp(followUpKey)) return false;
 
   const ownersWithSlack = task.owners.filter(o => o.slackId);
-  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return;
+  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return false;
 
   const mentions = formatOwnerMentions(task.owners);
   const message = pickRandom(ACKNOWLEDGE_REMINDERS)(task, mentions);
@@ -258,20 +338,22 @@ async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<void> {
 
   markFollowUpSent(followUpKey);
   console.log(`Sent acknowledge reminder for task ${task.id}`);
+  return true;
 }
 
 /**
  * Send reminder for overdue task to mark ✅
  * Day 1: Regular reminder to owner
  * Day 2+: Escalated reminder with manager visibility
+ * @returns true if message was sent, false if skipped
  */
-async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): Promise<void> {
+async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): Promise<boolean> {
   // Send daily reminders for overdue tasks
   const followUpKey = `overdue-${task.id}-${daysOverdue}`;
-  if (hasRecentFollowUp(followUpKey)) return;
+  if (hasRecentFollowUp(followUpKey)) return false;
 
   const ownersWithSlack = task.owners.filter(o => o.slackId);
-  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return;
+  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return false;
 
   const mentions = formatOwnerMentions(task.owners);
 
@@ -284,6 +366,7 @@ async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): 
 
   markFollowUpSent(followUpKey);
   console.log(`Sent ${daysOverdue >= 2 ? 'escalated ' : ''}overdue reminder for task ${task.id} (${daysOverdue} days)`);
+  return true;
 }
 
 function hasRecentFollowUp(key: string): boolean {

@@ -22,7 +22,7 @@ import { executeWorkflowSafe } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
-import { startFollowUpScheduler } from './services/autoFollowUp.js';
+import { startFollowUpScheduler, checkAndSendFollowUps } from './services/autoFollowUp.js';
 
 const app = express();
 
@@ -518,6 +518,56 @@ app.post('/webhook/slack/cleanup', express.urlencoded({ extended: true }), async
     res.json({
       response_type: 'ephemeral',
       text: ':x: Error running cleanup.',
+    });
+  }
+});
+
+/**
+ * /followup slash command - Manually trigger follow-up reminders
+ * Usage: /followup (sends reminders for all overdue/unacknowledged tasks)
+ * Admin only - restricted to specific user IDs
+ */
+app.post('/webhook/slack/followup', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { user_id, response_url } = req.body as {
+      user_id: string;
+      response_url: string;
+    };
+
+    console.log(`Followup command received from ${user_id}`);
+
+    // Check if user is admin
+    if (!CLEANUP_ADMIN_USERS.includes(user_id)) {
+      res.json({
+        response_type: 'ephemeral',
+        text: ':no_entry: You do not have permission to use this command.',
+      });
+      return;
+    }
+
+    // Respond immediately (Slack requires response within 3s)
+    res.json({
+      response_type: 'ephemeral',
+      text: ':hourglass: Checking tasks and sending follow-up reminders...',
+    });
+
+    // Run follow-ups with force=true to bypass business hours check
+    const result = await checkAndSendFollowUps(true);
+    console.log(`Followup complete: sent ${result.sent} reminders`);
+
+    // Send completion message via response_url
+    await slack.sendResponseUrl(
+      response_url,
+      result.sent > 0
+        ? `:white_check_mark: Follow-up complete! Sent ${result.sent} reminder${result.sent !== 1 ? 's' : ''}.`
+        : ':information_source: No follow-ups needed - all tasks are acknowledged or up to date.'
+    );
+
+  } catch (error) {
+    console.error('Followup command error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: ':x: Error running follow-ups.',
     });
   }
 });
