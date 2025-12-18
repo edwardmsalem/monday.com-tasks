@@ -221,17 +221,31 @@ app.post(
   '/webhook/make',
   upload.any(),
   async (req: Request, res: Response): Promise<void> => {
-    console.log('Received Make.com webhook request');
+    console.log('=== Make.com webhook request ===');
+    console.log('Content-Type:', req.headers['content-type']);
     console.log('Body fields:', Object.keys(req.body));
 
+    // Log each body field type and preview
+    for (const [key, value] of Object.entries(req.body)) {
+      const valType = typeof value;
+      const preview = valType === 'string'
+        ? (value as string).substring(0, 100) + ((value as string).length > 100 ? '...' : '')
+        : valType === 'object' ? JSON.stringify(value).substring(0, 100) : String(value);
+      console.log(`  ${key}: (${valType}) ${preview}`);
+    }
+
     const files = req.files as Express.Multer.File[] | undefined;
-    console.log('Files:', files?.map(f => ({
-      fieldname: f.fieldname,
-      mimetype: f.mimetype,
-      size: f.size,
-      originalname: f.originalname,
-      originalnameType: typeof f.originalname,
-    })));
+    console.log('Files count:', files?.length || 0);
+    if (files && files.length > 0) {
+      console.log('Files:', files.map(f => ({
+        fieldname: f.fieldname,
+        mimetype: f.mimetype,
+        size: f.size,
+        originalname: f.originalname,
+        originalnameType: typeof f.originalname,
+        hasBuffer: Buffer.isBuffer(f.buffer),
+      })));
+    }
 
     try {
       // Get form fields
@@ -277,13 +291,21 @@ app.post(
         console.log('Using base64 data from body:', emlFilename, emlBuffer.length, 'bytes');
       } else {
         console.log('No EML data found in request');
-        console.log('Body fields:', Object.keys(req.body));
-        console.log('Files:', files?.map(f => ({ fieldname: f.fieldname, mimetype: f.mimetype, hasBuffer: Buffer.isBuffer(f.buffer) })));
+        // Build debug info
+        const debugInfo: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(req.body)) {
+          debugInfo[key] = {
+            type: typeof value,
+            length: typeof value === 'string' ? value.length : undefined,
+            preview: typeof value === 'string' ? value.substring(0, 50) : typeof value,
+          };
+        }
         res.status(400).json({
           success: false,
           error: 'No EML attachment found. Send as file upload (field: "email") or base64 in body (field: "emlData")',
-          receivedBodyFields: Object.keys(req.body),
-          receivedFiles: files?.map(f => f.fieldname) || [],
+          hint: 'Use {{toString(3.Attachments[1].Data; "base64")}} for emlData field',
+          receivedBodyFields: debugInfo,
+          receivedFiles: files?.map(f => ({ name: f.fieldname, type: f.mimetype, hasBuffer: Buffer.isBuffer(f.buffer) })) || [],
         });
         return;
       }
