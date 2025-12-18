@@ -239,36 +239,53 @@ app.post(
       const bodyText = req.body['body-plain'] || req.body.text || '';
       const from = req.body.from || '';
 
-      // Find the .eml file - check various field names
+      let emlBuffer: Buffer;
+      let emlFilename = 'forwarded.eml';
+
+      // Method 1: Check for file upload (multipart form data)
       const emlFile = files?.find(
         f => f.fieldname === 'email' ||
              f.fieldname === 'attachment-1' ||
-             f.originalname?.endsWith('.eml') ||
+             (typeof f.originalname === 'string' && f.originalname?.endsWith('.eml')) ||
              f.mimetype === 'message/rfc822'
       );
 
-      if (!emlFile) {
-        console.log('No EML file found in request');
+      // Method 2: Check for base64-encoded EML in body (easier for Make.com)
+      const emlBase64 = req.body.emlData || req.body.attachmentData || req.body.fileData;
+      const emlFilenameFromBody = req.body.emlFilename || req.body.attachmentFilename || req.body.fileName;
+
+      if (emlFile && Buffer.isBuffer(emlFile.buffer)) {
+        // Use uploaded file
+        emlBuffer = emlFile.buffer;
+        if (typeof emlFile.originalname === 'string' && emlFile.originalname) {
+          emlFilename = emlFile.originalname;
+        } else if (emlFile.originalname && typeof emlFile.originalname === 'object') {
+          const nameObj = emlFile.originalname as Record<string, unknown>;
+          if (typeof nameObj.name === 'string') {
+            emlFilename = nameObj.name;
+          } else if (typeof nameObj.filename === 'string') {
+            emlFilename = nameObj.filename;
+          }
+        }
+        console.log('Using uploaded file:', emlFile.fieldname, emlFilename, emlBuffer.length, 'bytes');
+      } else if (emlBase64 && typeof emlBase64 === 'string') {
+        // Use base64-encoded data from body
+        emlBuffer = Buffer.from(emlBase64, 'base64');
+        if (typeof emlFilenameFromBody === 'string' && emlFilenameFromBody) {
+          emlFilename = emlFilenameFromBody;
+        }
+        console.log('Using base64 data from body:', emlFilename, emlBuffer.length, 'bytes');
+      } else {
+        console.log('No EML data found in request');
+        console.log('Body fields:', Object.keys(req.body));
+        console.log('Files:', files?.map(f => ({ fieldname: f.fieldname, mimetype: f.mimetype, hasBuffer: Buffer.isBuffer(f.buffer) })));
         res.status(400).json({
           success: false,
-          error: 'No EML attachment found. Send the .eml file in a field named "email"',
+          error: 'No EML attachment found. Send as file upload (field: "email") or base64 in body (field: "emlData")',
+          receivedBodyFields: Object.keys(req.body),
           receivedFiles: files?.map(f => f.fieldname) || [],
         });
         return;
-      }
-
-      // Safely extract filename - Make.com may send it as an object
-      let emlFilename = 'forwarded.eml';
-      if (typeof emlFile.originalname === 'string' && emlFile.originalname) {
-        emlFilename = emlFile.originalname;
-      } else if (emlFile.originalname && typeof emlFile.originalname === 'object') {
-        // Make.com sometimes sends filename as an object with a name property
-        const nameObj = emlFile.originalname as Record<string, unknown>;
-        if (typeof nameObj.name === 'string') {
-          emlFilename = nameObj.name;
-        } else if (typeof nameObj.filename === 'string') {
-          emlFilename = nameObj.filename;
-        }
       }
 
       // Ensure filename ends with .eml
@@ -276,37 +293,17 @@ app.post(
         emlFilename = emlFilename + '.eml';
       }
 
-      // Validate buffer is actually a Buffer
-      const emlBuffer = emlFile.buffer;
-      const isBuffer = Buffer.isBuffer(emlBuffer);
-      console.log('Found EML file:', {
-        fieldname: emlFile.fieldname,
-        filename: emlFilename,
-        size: emlFile.size,
-        isBuffer,
-        bufferType: typeof emlBuffer,
-        bufferLength: isBuffer ? emlBuffer.length : 'N/A',
-      });
-
-      if (!isBuffer) {
-        console.error('EML buffer is not a Buffer:', typeof emlBuffer);
-        res.status(400).json({
-          success: false,
-          error: 'Invalid file data received. Expected Buffer.',
-          bufferType: typeof emlBuffer,
-        });
-        return;
-      }
+      console.log('Processing EML:', { filename: emlFilename, size: emlBuffer.length });
 
       // Create a mock "forwarding email" with the .eml as an attachment
       // This matches what the workflow expects
       const email = {
-        subject: subject,
-        text: bodyText,
-        fromEmail: from,
+        subject: String(subject),
+        text: String(bodyText),
+        fromEmail: from ? String(from) : null,
         toEmail: null,
         attachments: [{
-          filename: emlFilename,
+          filename: String(emlFilename),
           content: emlBuffer,
           contentType: 'message/rfc822',
         }],
