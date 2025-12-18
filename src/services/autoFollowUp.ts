@@ -53,8 +53,11 @@ export async function checkAndSendFollowUps(): Promise<void> {
     today.setHours(0, 0, 0, 0);
 
     for (const task of tasks) {
-      // Skip completed tasks
-      if (task.workflowStatus === 'Complete') continue;
+      // Skip completed tasks (check multiple possible values)
+      const status = task.workflowStatus.toLowerCase();
+      if (status === 'complete' || status === 'done' || status === 'completed' || status === 'closed') {
+        continue;
+      }
 
       // Skip tasks without a Slack thread (can't send reminders)
       if (!task.slackThreadTs) continue;

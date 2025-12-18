@@ -21,6 +21,7 @@ import { parseIncomingEmail } from './services/emailParser.js';
 import { executeWorkflowSafe } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
+import * as slack from './services/slack.js';
 import { startFollowUpScheduler } from './services/autoFollowUp.js';
 
 const app = express();
@@ -39,6 +40,26 @@ app.use('/webhook/slack', express.raw({ type: 'application/json' }));
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+/**
+ * One-time cleanup endpoint - deletes recent bot messages
+ * Usage: POST /cleanup?minutes=60
+ */
+app.post('/cleanup', async (req: Request, res: Response): Promise<void> => {
+  const minutes = parseInt(req.query.minutes as string) || 60;
+  console.log(`Cleanup requested: deleting bot messages from last ${minutes} minutes`);
+
+  try {
+    const deleted = await slack.deleteRecentBotMessages(minutes);
+    res.json({ success: true, deletedCount: deleted });
+  } catch (error) {
+    console.error('Cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
 });
 
 /**

@@ -435,6 +435,62 @@ export async function postEphemeral(
 }
 
 /**
+ * Delete recent bot messages from a channel (one-time cleanup)
+ * @param minutesAgo - Delete messages from the last N minutes
+ */
+export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<number> {
+  const client = getClient();
+  let deletedCount = 0;
+
+  try {
+    // Get bot's own user ID
+    const authResponse = await client.auth.test();
+    const botUserId = authResponse.user_id;
+
+    console.log(`Bot user ID: ${botUserId}`);
+    console.log(`Deleting messages from the last ${minutesAgo} minutes...`);
+
+    // Get channel history
+    const cutoffTime = String(Math.floor((Date.now() - minutesAgo * 60 * 1000) / 1000));
+
+    const historyResponse = await client.conversations.history({
+      channel: config.slack.channelId,
+      oldest: cutoffTime,
+      limit: 200,
+    });
+
+    if (!historyResponse.messages) {
+      console.log('No messages found');
+      return 0;
+    }
+
+    console.log(`Found ${historyResponse.messages.length} messages to check`);
+
+    // Find and delete bot's messages
+    for (const message of historyResponse.messages) {
+      if (message.user === botUserId && message.ts) {
+        try {
+          await client.chat.delete({
+            channel: config.slack.channelId,
+            ts: message.ts,
+          });
+          deletedCount++;
+          console.log(`Deleted message: ${message.ts}`);
+        } catch (e: any) {
+          console.warn(`Failed to delete message ${message.ts}:`, e.message);
+        }
+      }
+    }
+
+    console.log(`Deleted ${deletedCount} bot messages`);
+    return deletedCount;
+  } catch (error) {
+    console.error('Error deleting bot messages:', error);
+    return deletedCount;
+  }
+}
+
+/**
  * Verify a Slack request signature
  */
 export function verifySlackSignature(
