@@ -207,6 +207,91 @@ app.post('/webhook/json', express.json(), async (req: Request, res: Response): P
   }
 });
 
+/**
+ * Make.com webhook endpoint
+ * Accepts the .eml attachment directly (not nested in a forwarding email)
+ *
+ * Expected fields:
+ * - from: sender email
+ * - subject: email subject
+ * - body-plain: email body text
+ * - email: the .eml file attachment (file upload)
+ */
+app.post(
+  '/webhook/make',
+  upload.any(),
+  async (req: Request, res: Response): Promise<void> => {
+    console.log('Received Make.com webhook request');
+    console.log('Body fields:', Object.keys(req.body));
+
+    const files = req.files as Express.Multer.File[] | undefined;
+    console.log('Files:', files?.map(f => ({ fieldname: f.fieldname, mimetype: f.mimetype, size: f.size })));
+
+    try {
+      // Get form fields
+      const subject = req.body.subject || req.body['subject'] || 'No Subject';
+      const bodyText = req.body['body-plain'] || req.body.text || '';
+      const from = req.body.from || '';
+
+      // Find the .eml file - check various field names
+      const emlFile = files?.find(
+        f => f.fieldname === 'email' ||
+             f.fieldname === 'attachment-1' ||
+             f.originalname?.endsWith('.eml') ||
+             f.mimetype === 'message/rfc822'
+      );
+
+      if (!emlFile) {
+        console.log('No EML file found in request');
+        res.status(400).json({
+          success: false,
+          error: 'No EML attachment found. Send the .eml file in a field named "email"',
+          receivedFiles: files?.map(f => f.fieldname) || [],
+        });
+        return;
+      }
+
+      console.log('Found EML file:', emlFile.fieldname, emlFile.originalname, emlFile.size, 'bytes');
+
+      // Create a mock "forwarding email" with the .eml as an attachment
+      // This matches what the workflow expects
+      const email = {
+        subject: subject,
+        text: bodyText,
+        fromEmail: from,
+        toEmail: null,
+        attachments: [{
+          filename: emlFile.originalname || 'forwarded.eml',
+          content: emlFile.buffer,
+          contentType: 'message/rfc822',
+        }],
+      };
+
+      // Execute the workflow
+      const result = await executeWorkflowSafe({ email });
+
+      if (result.success) {
+        res.json({
+          success: true,
+          mondayItemId: result.mondayItemId,
+          slackThreadTs: result.slackThreadTs,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error,
+        });
+      }
+    } catch (error) {
+      console.error('Make.com webhook error:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+);
+
 // ============================================================================
 // Slack Events API
 // ============================================================================
