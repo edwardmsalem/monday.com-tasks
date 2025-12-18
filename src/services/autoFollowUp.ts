@@ -215,7 +215,7 @@ const ACKNOWLEDGE_REMINDERS = [
     `${mentions} - add a 👀 reaction to acknowledge you're on this.`,
 ];
 
-// Reminder messages for overdue tasks
+// Reminder messages for overdue tasks (day 1)
 const OVERDUE_REMINDERS = [
   (task: TaskForFollowUp, days: number, mentions: string) =>
     `${mentions} - "${task.name}" is ${days} day${days > 1 ? 's' : ''} overdue. React with ✅ when complete.`,
@@ -223,6 +223,18 @@ const OVERDUE_REMINDERS = [
     `Hey ${mentions}, this task is past due. Add ✅ once it's done.`,
   (task: TaskForFollowUp, days: number, mentions: string) =>
     `${mentions} - overdue by ${days} day${days > 1 ? 's' : ''}. Mark complete with ✅ when finished.`,
+];
+
+// Escalation reminder messages (day 2+) - includes manager visibility
+const ESCALATION_SLACK_ID = 'U0144K906KA'; // Edward Salem - for visibility on repeat overdue
+
+const ESCALATION_REMINDERS = [
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `${mentions} - "${task.name}" is now ${days} days overdue. <@${ESCALATION_SLACK_ID}> for visibility. Please update or mark ✅ when complete.`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `Hey ${mentions}, this task has been overdue for ${days} days. Looping in <@${ESCALATION_SLACK_ID}>. Add ✅ once it's done.`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `${mentions} - ${days} days overdue now. cc <@${ESCALATION_SLACK_ID}>. Mark complete with ✅ when finished.`,
 ];
 
 function pickRandom<T>(arr: T[]): T {
@@ -250,6 +262,8 @@ async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<void> {
 
 /**
  * Send reminder for overdue task to mark ✅
+ * Day 1: Regular reminder to owner
+ * Day 2+: Escalated reminder with manager visibility
  */
 async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): Promise<void> {
   // Send daily reminders for overdue tasks
@@ -260,12 +274,16 @@ async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): 
   if (ownersWithSlack.length === 0 || !task.slackThreadTs) return;
 
   const mentions = formatOwnerMentions(task.owners);
-  const message = pickRandom(OVERDUE_REMINDERS)(task, daysOverdue, mentions);
+
+  // Use escalation reminders (with manager cc) on day 2+
+  const message = daysOverdue >= 2
+    ? pickRandom(ESCALATION_REMINDERS)(task, daysOverdue, mentions)
+    : pickRandom(OVERDUE_REMINDERS)(task, daysOverdue, mentions);
 
   await slack.postToThread(task.slackThreadTs, message);
 
   markFollowUpSent(followUpKey);
-  console.log(`Sent overdue reminder for task ${task.id} (${daysOverdue} days)`);
+  console.log(`Sent ${daysOverdue >= 2 ? 'escalated ' : ''}overdue reminder for task ${task.id} (${daysOverdue} days)`);
 }
 
 function hasRecentFollowUp(key: string): boolean {
