@@ -471,7 +471,7 @@ app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async
  * Usage: /cleanup 60 (deletes messages from last 60 minutes)
  * Admin only - restricted to specific user IDs
  */
-const CLEANUP_ADMIN_USERS = ['U08PKPYSZ2Z']; // Add your Slack user ID here
+const CLEANUP_ADMIN_USERS = ['U0144K906KA']; // Edward Salem
 
 app.post('/webhook/slack/cleanup', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
   try {
