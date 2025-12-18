@@ -475,9 +475,10 @@ const CLEANUP_ADMIN_USERS = ['U0144K906KA']; // Edward Salem
 
 app.post('/webhook/slack/cleanup', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
   try {
-    const { text, user_id } = req.body as {
+    const { text, user_id, response_url } = req.body as {
       text: string;
       user_id: string;
+      response_url: string;
     };
 
     console.log(`Cleanup command received from ${user_id}: ${text}`);
@@ -497,12 +498,20 @@ app.post('/webhook/slack/cleanup', express.urlencoded({ extended: true }), async
     // Respond immediately (Slack requires response within 3s)
     res.json({
       response_type: 'ephemeral',
-      text: `:hourglass: Deleting bot messages from the last ${minutes} minutes...`,
+      text: `:hourglass: Deleting bot messages from the last ${minutes} minutes... (checking channel and threads)`,
     });
 
-    // Run cleanup asynchronously
+    // Run cleanup asynchronously and send follow-up
     const deleted = await slack.deleteRecentBotMessages(minutes);
     console.log(`Cleanup complete: deleted ${deleted} messages`);
+
+    // Send completion message via response_url
+    await slack.sendResponseUrl(
+      response_url,
+      deleted > 0
+        ? `:white_check_mark: Cleanup complete! Deleted ${deleted} bot message${deleted !== 1 ? 's' : ''}.`
+        : `:information_source: No bot messages found in the last ${minutes} minutes.`
+    );
 
   } catch (error) {
     console.error('Cleanup command error:', error);

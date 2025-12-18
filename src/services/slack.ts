@@ -435,7 +435,7 @@ export async function postEphemeral(
 }
 
 /**
- * Delete recent bot messages from a channel (one-time cleanup)
+ * Delete recent bot messages from a channel (including threads)
  * @param minutesAgo - Delete messages from the last N minutes
  */
 export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<number> {
@@ -466,8 +466,40 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
 
     console.log(`Found ${historyResponse.messages.length} messages to check`);
 
-    // Find and delete bot's messages
+    // Check each message and its thread
     for (const message of historyResponse.messages) {
+      // If this message has a thread, check thread replies
+      if (message.thread_ts && message.reply_count && message.reply_count > 0) {
+        try {
+          const threadResponse = await client.conversations.replies({
+            channel: config.slack.channelId,
+            ts: message.thread_ts,
+            oldest: cutoffTime,
+          });
+
+          if (threadResponse.messages) {
+            for (const reply of threadResponse.messages) {
+              // Delete bot's thread replies (but not the parent if it's not ours)
+              if (reply.user === botUserId && reply.ts) {
+                try {
+                  await client.chat.delete({
+                    channel: config.slack.channelId,
+                    ts: reply.ts,
+                  });
+                  deletedCount++;
+                  console.log(`Deleted thread reply: ${reply.ts}`);
+                } catch (e: any) {
+                  console.warn(`Failed to delete thread reply ${reply.ts}:`, e.message);
+                }
+              }
+            }
+          }
+        } catch (e: any) {
+          console.warn(`Failed to fetch thread ${message.thread_ts}:`, e.message);
+        }
+      }
+
+      // Delete main channel messages from bot
       if (message.user === botUserId && message.ts) {
         try {
           await client.chat.delete({
@@ -482,11 +514,30 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
       }
     }
 
-    console.log(`Deleted ${deletedCount} bot messages`);
+    console.log(`Cleanup complete: deleted ${deletedCount} bot messages`);
     return deletedCount;
   } catch (error) {
     console.error('Error deleting bot messages:', error);
     return deletedCount;
+  }
+}
+
+/**
+ * Send a follow-up message to a Slack response_url
+ */
+export async function sendResponseUrl(responseUrl: string, text: string): Promise<void> {
+  try {
+    await fetch(responseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        response_type: 'ephemeral',
+        text,
+        replace_original: false,
+      }),
+    });
+  } catch (error) {
+    console.error('Failed to send response_url message:', error);
   }
 }
 
