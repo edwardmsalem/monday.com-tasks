@@ -84,7 +84,8 @@ function hasAppointmentKeywords(text: string): boolean {
  */
 export interface RecipientWithAppointment {
   email: string;
-  appointmentDate: string | null;  // e.g., "Tue Dec 20, 2:00 PM"
+  appointmentDate: string | null;  // e.g., "Tue Dec 20" (date only)
+  appointmentTime: string | null;  // e.g., "2:00 PM" (time only)
   rawDateTime: string | null;      // ISO format for sorting
 }
 
@@ -146,7 +147,11 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
       const recipientEmails = extractEmailAddresses(toHeader.value);
 
       // Only extract appointment times if keywords detected in subject
-      let appointmentInfo = { appointmentDate: null as string | null, rawDateTime: null as string | null };
+      let appointmentInfo = {
+        appointmentDate: null as string | null,
+        appointmentTime: null as string | null,
+        rawDateTime: null as string | null
+      };
 
       if (shouldExtractAppointments) {
         // Get email body text
@@ -167,6 +172,7 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
           recipientMap.set(normalizedEmail, {
             email: normalizedEmail,
             appointmentDate: appointmentInfo.appointmentDate,
+            appointmentTime: appointmentInfo.appointmentTime,
             rawDateTime: appointmentInfo.rawDateTime,
           });
         }
@@ -226,10 +232,11 @@ function extractEmailBody(payload: any): string {
  */
 async function extractAppointmentTime(emailBody: string): Promise<{
   appointmentDate: string | null;
+  appointmentTime: string | null;
   rawDateTime: string | null;
 }> {
   if (!emailBody || emailBody.length < 20) {
-    return { appointmentDate: null, rawDateTime: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
   }
 
   try {
@@ -245,10 +252,11 @@ async function extractAppointmentTime(emailBody: string): Promise<{
 - Scheduled times for ticket-related events
 
 Return ONLY a JSON object with:
-- appointmentDate: Human readable format like "Tue Dec 20, 2:00 PM" or null if not found
+- appointmentDate: Human readable DATE only like "Tue Dec 20" or "December 20, 2025" or null if not found
+- appointmentTime: Human readable TIME only like "2:00 PM" or "14:00" or null if not found
 - rawDateTime: ISO 8601 format like "2025-12-20T14:00:00" or null if not found
 
-If no appointment time is mentioned, return null for both fields.`,
+If no appointment is mentioned, return null for all fields.`,
       messages: [
         {
           role: 'user',
@@ -259,7 +267,7 @@ If no appointment time is mentioned, return null for both fields.`,
 
     const textContent = response.content.find(c => c.type === 'text');
     if (!textContent || textContent.type !== 'text') {
-      return { appointmentDate: null, rawDateTime: null };
+      return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
     }
 
     // Parse JSON from response
@@ -268,14 +276,15 @@ If no appointment time is mentioned, return null for both fields.`,
       const parsed = JSON.parse(jsonMatch[0]);
       return {
         appointmentDate: parsed.appointmentDate || null,
+        appointmentTime: parsed.appointmentTime || null,
         rawDateTime: parsed.rawDateTime || null,
       };
     }
 
-    return { appointmentDate: null, rawDateTime: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
   } catch (error) {
     console.error('Error extracting appointment time:', error);
-    return { appointmentDate: null, rawDateTime: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
   }
 }
 
@@ -311,8 +320,14 @@ export function shouldScanForRecipients(emailBody: string): boolean {
  * Format recipient with appointment for subtask name
  */
 export function formatRecipientSubtaskName(recipient: RecipientWithAppointment): string {
+  if (recipient.appointmentDate && recipient.appointmentTime) {
+    return `${recipient.email} - ${recipient.appointmentDate}, ${recipient.appointmentTime}`;
+  }
   if (recipient.appointmentDate) {
     return `${recipient.email} - ${recipient.appointmentDate}`;
+  }
+  if (recipient.appointmentTime) {
+    return `${recipient.email} - ${recipient.appointmentTime}`;
   }
   return recipient.email;
 }

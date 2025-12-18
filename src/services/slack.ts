@@ -161,26 +161,22 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     );
   }
 
-  blocks.push(
-    {
-      type: 'divider',
-    },
-    {
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: 'View in Monday',
-            emoji: true,
-          },
-          url: mondayUrl,
-          action_id: 'view_monday',
+  blocks.push({ type: 'divider' });
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: 'View in Monday',
+          emoji: true,
         },
-      ],
-    },
-  ];
+        url: mondayUrl,
+        action_id: 'view_monday',
+      },
+    ],
+  });
 
   // Fallback text for notifications
   const fallbackText = `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;

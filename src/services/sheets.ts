@@ -85,10 +85,11 @@ export async function createRecipientSheet(
   const spreadsheetUrl = createResponse.data.spreadsheetUrl!;
 
   // Build the data rows
-  const headerRow = ['Email', 'Appointment Date/Time', 'Status', 'Notes'];
+  const headerRow = ['Email', 'Date', 'Time', 'Status', 'Notes'];
   const dataRows = recipients.map(r => [
     r.email,
-    r.appointmentDate || 'Not scheduled',
+    r.appointmentDate || '',
+    r.appointmentTime || '',
     '', // Status column for manual tracking
     '', // Notes column
   ]);
@@ -131,7 +132,7 @@ export async function createRecipientSheet(
               sheetId: 0,
               dimension: 'COLUMNS',
               startIndex: 0,
-              endIndex: 4,
+              endIndex: 5,
             },
           },
         },
