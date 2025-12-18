@@ -466,6 +466,53 @@ app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async
   }
 });
 
+/**
+ * /cleanup slash command - Delete recent bot messages
+ * Usage: /cleanup 60 (deletes messages from last 60 minutes)
+ * Admin only - restricted to specific user IDs
+ */
+const CLEANUP_ADMIN_USERS = ['U08PKPYSZ2Z']; // Add your Slack user ID here
+
+app.post('/webhook/slack/cleanup', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { text, user_id } = req.body as {
+      text: string;
+      user_id: string;
+    };
+
+    console.log(`Cleanup command received from ${user_id}: ${text}`);
+
+    // Check if user is admin
+    if (!CLEANUP_ADMIN_USERS.includes(user_id)) {
+      res.json({
+        response_type: 'ephemeral',
+        text: ':no_entry: You do not have permission to use this command.',
+      });
+      return;
+    }
+
+    // Parse minutes from text (default 60)
+    const minutes = parseInt(text.trim()) || 60;
+
+    // Respond immediately (Slack requires response within 3s)
+    res.json({
+      response_type: 'ephemeral',
+      text: `:hourglass: Deleting bot messages from the last ${minutes} minutes...`,
+    });
+
+    // Run cleanup asynchronously
+    const deleted = await slack.deleteRecentBotMessages(minutes);
+    console.log(`Cleanup complete: deleted ${deleted} messages`);
+
+  } catch (error) {
+    console.error('Cleanup command error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: ':x: Error running cleanup.',
+    });
+  }
+});
+
 // ============================================================================
 // Slack Interactive Messages (button clicks, etc.)
 // ============================================================================
