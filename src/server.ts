@@ -539,8 +539,10 @@ interface SlackEvent {
  * Handles: message events (thread replies), reaction events (checkmarks)
  */
 app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<void> => {
+  console.log('=== Slack event received ===');
   try {
     const body = JSON.parse(req.body.toString()) as SlackEvent;
+    console.log('Slack event type:', body.type, body.event?.type);
 
     // Handle URL verification challenge
     if (body.type === 'url_verification' && body.challenge) {
