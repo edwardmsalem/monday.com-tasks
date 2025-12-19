@@ -136,29 +136,13 @@ export async function uploadFileToItem(
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  const query = `
-    mutation AddFile($itemId: ID!, $columnId: String!) {
-      add_file_to_column(
-        item_id: $itemId
-        column_id: $columnId
-        file: "file"
-      ) {
-        id
-      }
-    }
-  `;
+  // Monday.com file upload uses multipart form data
+  // The mutation references "variables.file" which maps to the uploaded file
+  const query = `mutation ($file: File!) { add_file_to_column (item_id: ${itemId}, column_id: "${config.monday.fileColumnId}", file: $file) { id } }`;
 
-  // Monday.com file upload requires multipart form data
   const form = new FormData();
   form.append('query', query);
-  form.append(
-    'variables',
-    JSON.stringify({
-      itemId,
-      columnId: config.monday.fileColumnId,
-    })
-  );
-  form.append('file', fileData, { filename });
+  form.append('variables[file]', fileData, { filename, contentType: 'application/pdf' });
 
   const response = await fetch(MONDAY_FILE_URL, {
     method: 'POST',
