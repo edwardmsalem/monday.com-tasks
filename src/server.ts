@@ -451,7 +451,7 @@ app.post(
       const taskName = normalizeSubject(subject);
       console.log('Task name:', taskName);
 
-      // Create Monday item
+      // Create Monday item (notes go to update, not notes column)
       console.log('Creating Monday.com item...');
       const mondayItem = await monday.createItem({
         name: taskName,
@@ -461,7 +461,7 @@ app.post(
         source: 'Forwarding Tasks',
         fromEmail: fromEmail,
         toEmail: toEmail,
-        notes: analysisResult.notes,
+        notes: '',  // Notes go to update instead
       });
       console.log('Monday item created:', mondayItem.id);
 
