@@ -22,6 +22,7 @@ import { executeWorkflowSafe } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
+import { startFollowUpScheduler } from './services/autoFollowUp.js';
 
 const app = express();
 
@@ -931,6 +932,10 @@ function start() {
     console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log('');
+
+    // Start auto follow-up scheduler (checks every hour)
+    startFollowUpScheduler();
+    console.log('Auto follow-up scheduler started (hourly)');
   });
 }
 
