@@ -106,9 +106,14 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     source: 'Forwarding Tasks',
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
-    notes: analysisResult.notes,
   });
   console.log('Monday item created:', mondayItem.id);
+
+  // Create initial update (comment) on the Monday item with notes
+  if (analysisResult.notes) {
+    console.log('Creating Monday update with notes...');
+    await monday.createUpdate(mondayItem.id, analysisResult.notes);
+  }
 
   // Step 8.5: Check for /scan command in email body
   // If present, search Gmail for related recipients and create subtasks with appointment times

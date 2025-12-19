@@ -44,7 +44,6 @@ export const config = {
     columns: {
       date: 'date4',
       from: 'email_mkxvy5nq',
-      notes: 'long_text_mkxv1vhb',
       owner: 'person',
       support: 'multiple_person_mky0vdq1',
       slackThreadId: 'text_mkxxn3hz',

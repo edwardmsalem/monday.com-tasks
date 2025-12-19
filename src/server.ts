@@ -22,7 +22,6 @@ import { executeWorkflowSafe } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
-import { startFollowUpScheduler, checkAndSendFollowUps, debugFollowUps } from './services/autoFollowUp.js';
 
 const app = express();
 
@@ -40,26 +39,6 @@ app.use('/webhook/slack', express.raw({ type: 'application/json' }));
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-/**
- * One-time cleanup endpoint - deletes recent bot messages
- * Usage: POST /cleanup?minutes=60
- */
-app.post('/cleanup', async (req: Request, res: Response): Promise<void> => {
-  const minutes = parseInt(req.query.minutes as string) || 60;
-  console.log(`Cleanup requested: deleting bot messages from last ${minutes} minutes`);
-
-  try {
-    const deleted = await slack.deleteRecentBotMessages(minutes);
-    res.json({ success: true, deletedCount: deleted });
-  } catch (error) {
-    console.error('Cleanup error:', error);
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
 });
 
 /**
@@ -447,8 +426,9 @@ app.post(
       }
       console.log('Resolved user:', user.name, 'Monday ID:', user.mondayId, 'Slack ID:', user.slackId);
 
-      // Normalize subject (strip FWD:/RE:)
+      // Use original subject as task name (just strip FWD:/RE: prefixes)
       const taskName = normalizeSubject(subject);
+      console.log('Task name:', taskName);
 
       // Create Monday item
       console.log('Creating Monday.com item...');
@@ -460,9 +440,14 @@ app.post(
         source: 'Forwarding Tasks',
         fromEmail: fromEmail,
         toEmail: toEmail,
-        notes: analysisResult.notes,
       });
       console.log('Monday item created:', mondayItem.id);
+
+      // Create initial update (comment) on the Monday item with notes
+      if (analysisResult.notes) {
+        console.log('Creating Monday update with notes...');
+        await monday.createUpdate(mondayItem.id, analysisResult.notes);
+      }
 
       // Send Slack notification
       console.log('Sending Slack notification...');
@@ -790,145 +775,6 @@ app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async
   }
 });
 
-/**
- * /cleanup slash command - Delete recent bot messages
- * Usage: /cleanup 60 (deletes messages from last 60 minutes)
- * Admin only - restricted to specific user IDs
- */
-const CLEANUP_ADMIN_USERS = ['U0144K906KA']; // Edward Salem
-
-app.post('/webhook/slack/cleanup', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { text, user_id, response_url } = req.body as {
-      text: string;
-      user_id: string;
-      response_url: string;
-    };
-
-    console.log(`Cleanup command received from ${user_id}: ${text}`);
-
-    // Check if user is admin
-    if (!CLEANUP_ADMIN_USERS.includes(user_id)) {
-      res.json({
-        response_type: 'ephemeral',
-        text: ':no_entry: You do not have permission to use this command.',
-      });
-      return;
-    }
-
-    // Parse minutes from text (default 60)
-    const minutes = parseInt(text.trim()) || 60;
-
-    // Respond immediately (Slack requires response within 3s)
-    res.json({
-      response_type: 'ephemeral',
-      text: `:hourglass: Deleting bot messages from the last ${minutes} minutes... (checking channel and threads)`,
-    });
-
-    // Run cleanup asynchronously and send follow-up
-    const deleted = await slack.deleteRecentBotMessages(minutes);
-    console.log(`Cleanup complete: deleted ${deleted} messages`);
-
-    // Send completion message via response_url
-    await slack.sendResponseUrl(
-      response_url,
-      deleted > 0
-        ? `:white_check_mark: Cleanup complete! Deleted ${deleted} bot message${deleted !== 1 ? 's' : ''}.`
-        : `:information_source: No bot messages found in the last ${minutes} minutes.`
-    );
-
-  } catch (error) {
-    console.error('Cleanup command error:', error);
-    res.json({
-      response_type: 'ephemeral',
-      text: ':x: Error running cleanup.',
-    });
-  }
-});
-
-/**
- * /followup slash command - Manually trigger follow-up reminders
- * Usage: /followup (sends reminders for all overdue/unacknowledged tasks)
- * Usage: /followup debug (shows task info without sending)
- * Admin only - restricted to specific user IDs
- */
-app.post('/webhook/slack/followup', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { text, user_id, response_url } = req.body as {
-      text: string;
-      user_id: string;
-      response_url: string;
-    };
-
-    const isDebug = text?.trim().toLowerCase() === 'debug';
-    console.log(`Followup command received from ${user_id}${isDebug ? ' (debug mode)' : ''}`);
-
-    // Check if user is admin
-    if (!CLEANUP_ADMIN_USERS.includes(user_id)) {
-      res.json({
-        response_type: 'ephemeral',
-        text: ':no_entry: You do not have permission to use this command.',
-      });
-      return;
-    }
-
-    if (isDebug) {
-      // Debug mode - show task info without sending
-      res.json({
-        response_type: 'ephemeral',
-        text: ':mag: Analyzing tasks...',
-      });
-
-      const debug = await debugFollowUps();
-
-      let message = `*Task Debug Info* (${debug.total} total tasks)\n\n`;
-
-      if (debug.tasks.length === 0) {
-        message += '_No tasks found in Monday.com board_';
-      } else {
-        for (const task of debug.tasks) {
-          const statusEmoji = task.skipReason ? ':white_circle:' : ':large_green_circle:';
-          message += `${statusEmoji} *${task.name}*\n`;
-          message += `   Status: \`${task.status}\` | Due: ${task.dueDate || 'none'} | Overdue: ${task.daysOverdue} days\n`;
-          message += `   Thread: ${task.hasThread ? 'yes' : 'NO'} | Owners: ${task.hasOwners ? task.ownersWithSlack + ' with Slack' : 'NO'}\n`;
-          if (task.skipReason) {
-            message += `   :arrow_right: _Skip: ${task.skipReason}_\n`;
-          }
-          message += '\n';
-        }
-      }
-
-      await slack.sendResponseUrl(response_url, message);
-      return;
-    }
-
-    // Normal mode - send reminders
-    res.json({
-      response_type: 'ephemeral',
-      text: ':hourglass: Checking tasks and sending follow-up reminders...',
-    });
-
-    // Run follow-ups with force=true to bypass business hours check
-    const result = await checkAndSendFollowUps(true);
-    console.log(`Followup complete: sent ${result.sent} reminders`);
-
-    // Send completion message via response_url
-    await slack.sendResponseUrl(
-      response_url,
-      result.sent > 0
-        ? `:white_check_mark: Follow-up complete! Sent ${result.sent} reminder${result.sent !== 1 ? 's' : ''}.`
-        : ':information_source: No follow-ups needed - all tasks are acknowledged or up to date.'
-    );
-
-  } catch (error) {
-    console.error('Followup command error:', error);
-    res.json({
-      response_type: 'ephemeral',
-      text: ':x: Error running follow-ups.',
-    });
-  }
-});
-
 // ============================================================================
 // Slack Interactive Messages (button clicks, etc.)
 // ============================================================================
@@ -1087,10 +933,6 @@ function start() {
     console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log('');
-
-    // Start auto follow-up scheduler (checks every hour)
-    startFollowUpScheduler();
-    console.log('Auto follow-up scheduler started (hourly)');
   });
 }
 

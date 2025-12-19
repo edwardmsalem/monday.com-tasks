@@ -50,7 +50,6 @@ interface CreateItemInput {
   team?: string;       // Sports team (optional)
   fromEmail: string | null;
   toEmail: string | null;
-  notes: string;
 }
 
 /**
@@ -65,7 +64,6 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
     [columns.owner]: { personsAndTeams: input.ownerIds.map(id => ({ id, kind: 'person' })) },
     [columns.type]: { label: input.taskType },
     [columns.source]: { label: input.source },
-    [columns.notes]: { text: input.notes },
   };
 
   // Set team if provided (dropdown column uses labels array)
@@ -130,19 +128,34 @@ export async function updateSlackThreadId(itemId: string, threadTs: string): Pro
 
 /**
  * Upload a file to an item's file column
+ * Uses Monday's /v2/file endpoint with proper multipart format
  */
 export async function uploadFileToItem(
   itemId: string,
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  // Monday.com file upload - using their specific multipart format
-  const query = `mutation add_file($file: File!) { add_file_to_column (file: $file, item_id: ${itemId}, column_id: "${config.monday.fileColumnId}") { id } }`;
+  // GraphQL mutation with File! variable - item_id and column_id as variables too
+  const query = `
+    mutation ($file: File!, $item_id: ID!, $column_id: String!) {
+      add_file_to_column(
+        item_id: $item_id,
+        column_id: $column_id,
+        file: $file
+      ) {
+        id
+      }
+    }
+  `;
 
   const form = new FormData();
   form.append('query', query);
-  // Map tells GraphQL which form field contains the file for which variable
-  form.append('map', JSON.stringify({ 'variables[file]': ['variables.file'] }));
+  // Variables for item_id and column_id (file comes via multipart)
+  form.append('variables', JSON.stringify({
+    item_id: itemId,
+    column_id: config.monday.fileColumnId,
+  }));
+  // The actual file as multipart - this maps to $file variable
   form.append('variables[file]', fileData, { filename, contentType: 'application/pdf' });
 
   const response = await fetch(MONDAY_FILE_URL, {
@@ -167,7 +180,7 @@ export async function uploadFileToItem(
       throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
     }
   } catch (e) {
-    // If not JSON, that's fine
+    // If parse fails, that's fine - response was successful
   }
 }
 
