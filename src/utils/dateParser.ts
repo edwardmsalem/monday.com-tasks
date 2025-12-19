@@ -43,6 +43,7 @@ export function parseDate(dateStr: string): string {
 
 /**
  * Parse full date parts into ISO format
+ * If the resulting date is in the past, roll forward to next year
  */
 function parseFullDate(month: string, day: string, year: string): string {
   const m = parseInt(month, 10);
@@ -55,7 +56,15 @@ function parseFullDate(month: string, day: string, year: string): string {
   }
 
   // Create date and format
-  const date = new Date(y, m - 1, d);
+  let date = new Date(y, m - 1, d);
+
+  // If date is in the past, roll forward to next year
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (date < today) {
+    date = new Date(y + 1, m - 1, d);
+  }
+
   return formatDate(date);
 }
 

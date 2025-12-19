@@ -564,8 +564,12 @@ app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<v
       if (event.type === 'message' && event.thread_ts && event.text && event.user) {
         // Ignore bot messages to prevent loops
         if (!event.text.startsWith('[From Monday')) {
-          console.log('Slack thread reply detected, syncing to Monday...');
-          await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
+          console.log('Slack thread reply detected:', { thread_ts: event.thread_ts, user: event.user, text: event.text.substring(0, 50) });
+          try {
+            await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
+          } catch (syncError) {
+            console.error('Failed to sync Slack to Monday:', syncError);
+          }
         }
       }
 
