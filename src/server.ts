@@ -356,6 +356,169 @@ app.post(
   }
 );
 
+/**
+ * Make.com webhook endpoint for PRE-CONVERTED PDF
+ * Make.com handles: email receiving + EML→PDF conversion
+ * Server handles: AI analysis, user resolution, Monday/Slack creation
+ *
+ * Expected fields:
+ * - subject: forwarding email subject
+ * - body: forwarding email body (contains @owner, due date, task type, notes)
+ * - fromEmail: original sender email (from the .eml)
+ * - toEmail: original recipient email (from the .eml)
+ * - pdfData: base64-encoded PDF file (converted by Make.com)
+ * - pdfFilename: PDF filename
+ */
+app.post(
+  '/webhook/make/parsed',
+  upload.any(),
+  async (req: Request, res: Response): Promise<void> => {
+    console.log('=== Make.com PARSED webhook request ===');
+    console.log('Body fields:', Object.keys(req.body));
+
+    try {
+      // Extract fields from Make.com
+      const subject = String(req.body.subject || 'No Subject');
+      const bodyText = String(req.body.body || req.body['body-plain'] || req.body.text || '');
+      const fromEmail = req.body.fromEmail || req.body.from || null;
+      const toEmail = req.body.toEmail || req.body.to || null;
+
+      // Get PDF data - either from base64 in body or file upload
+      let pdfBuffer: Buffer | null = null;
+      let pdfFilename = 'email.pdf';
+
+      const files = req.files as Express.Multer.File[] | undefined;
+      const pdfFile = files?.find(f =>
+        f.fieldname === 'pdf' ||
+        f.fieldname === 'pdfFile' ||
+        f.mimetype === 'application/pdf'
+      );
+
+      if (pdfFile && Buffer.isBuffer(pdfFile.buffer)) {
+        pdfBuffer = pdfFile.buffer;
+        pdfFilename = typeof pdfFile.originalname === 'string' ? pdfFile.originalname : 'email.pdf';
+        console.log('Using uploaded PDF:', pdfFilename, pdfBuffer.length, 'bytes');
+      } else if (req.body.pdfData && typeof req.body.pdfData === 'string') {
+        pdfBuffer = Buffer.from(req.body.pdfData, 'base64');
+        pdfFilename = String(req.body.pdfFilename || 'email.pdf');
+        console.log('Using base64 PDF:', pdfFilename, pdfBuffer.length, 'bytes');
+      }
+
+      console.log('Received data:', { subject, bodyText: bodyText.substring(0, 100), fromEmail, toEmail, hasPdf: !!pdfBuffer });
+
+      // Import required modules
+      const { analyzeEmailSafe } = await import('./services/claude.js');
+      const { findUserByName, getUserNamesString } = await import('./services/userResolver.js');
+      const monday = await import('./services/monday.js');
+      const slack = await import('./services/slack.js');
+      const { parseDate, formatDateForDisplay } = await import('./utils/dateParser.js');
+      const { getTaskTypeDisplayName } = await import('./config/taskTypes.js');
+      const { normalizeSubject } = await import('./services/gmail.js');
+
+      // Use Claude AI to analyze the email and extract task details
+      console.log('Analyzing email with Claude AI...');
+      const analysisResult = await analyzeEmailSafe(
+        subject,      // forwarding email subject
+        bodyText,     // forwarding email body (contains @owner, due date, etc.)
+        subject,      // EML subject (use same as forwarding for now)
+        fromEmail,    // from the EML
+        toEmail,      // from the EML
+        null          // no EML body needed
+      );
+      console.log('Claude analysis:', analysisResult);
+
+      // Resolve task type
+      const taskType = getTaskTypeDisplayName(analysisResult.taskType);
+      console.log('Task type:', taskType);
+
+      // Parse due date
+      const formattedDueDate = parseDate(analysisResult.dueDate);
+      console.log('Due date:', formattedDueDate);
+
+      // Resolve user
+      const user = await findUserByName(analysisResult.owner);
+      if (!user) {
+        const availableUsers = await getUserNamesString();
+        res.status(400).json({
+          success: false,
+          error: `Unknown user: ${analysisResult.owner}. Available users: ${availableUsers}`,
+        });
+        return;
+      }
+      console.log('Resolved user:', user.name, 'Monday ID:', user.mondayId, 'Slack ID:', user.slackId);
+
+      // Normalize subject (strip FWD:/RE:)
+      const taskName = normalizeSubject(subject);
+
+      // Create Monday item
+      console.log('Creating Monday.com item...');
+      const mondayItem = await monday.createItem({
+        name: taskName,
+        dueDate: formattedDueDate,
+        ownerIds: [user.mondayId],
+        taskType: taskType,
+        source: 'Forwarding Tasks',
+        fromEmail: fromEmail,
+        toEmail: toEmail,
+        notes: analysisResult.notes,
+      });
+      console.log('Monday item created:', mondayItem.id);
+
+      // Send Slack notification
+      console.log('Sending Slack notification...');
+      const slackMessage = await slack.sendNotification({
+        taskType: taskType,
+        subject: taskName,
+        assigneeSlackId: user.slackId || user.name,
+        dueDate: formatDateForDisplay(formattedDueDate),
+        priority: analysisResult.priority,
+        notes: analysisResult.notes,
+        fromEmail: fromEmail,
+        toEmail: toEmail,
+        mondayItemId: mondayItem.id,
+        meeting: analysisResult.meeting,
+      });
+      console.log('Slack message sent:', slackMessage.ts);
+
+      // Upload PDF if available
+      if (pdfBuffer) {
+        console.log('Uploading PDF to Monday and Slack...');
+        await Promise.all([
+          monday.uploadFileToItem(mondayItem.id, pdfFilename, pdfBuffer),
+          slack.uploadFileToThread(slackMessage.ts, pdfFilename, pdfBuffer, 'Email PDF'),
+        ]);
+        console.log('PDF uploaded to both services');
+      }
+
+      // Update Monday with Slack thread ID
+      await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
+
+      // Set Slack reminder
+      if (user.slackId && formattedDueDate) {
+        await slack.setReminder({
+          userId: user.slackId,
+          text: `Task due: ${taskName}\n${monday.getItemUrl(mondayItem.id)}`,
+          dueDate: formattedDueDate,
+        });
+      }
+
+      console.log('Workflow completed successfully!');
+
+      res.json({
+        success: true,
+        mondayItemId: mondayItem.id,
+        slackThreadTs: slackMessage.ts,
+      });
+    } catch (error) {
+      console.error('Make.com parsed webhook error:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+);
+
 // ============================================================================
 // Slack Events API
 // ============================================================================
