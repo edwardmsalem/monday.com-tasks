@@ -490,14 +490,8 @@ app.post(
       // Update Monday with Slack thread ID
       await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
 
-      // Set Slack reminder
-      if (user.slackId && formattedDueDate) {
-        await slack.setReminder({
-          userId: user.slackId,
-          text: `Task due: ${taskName}\n${monday.getItemUrl(mondayItem.id)}`,
-          dueDate: formattedDueDate,
-        });
-      }
+      // Note: Slack reminders require a user token, not a bot token
+      // Skipping reminder - users can set their own via Monday due date notifications
 
       console.log('Workflow completed successfully!');
 

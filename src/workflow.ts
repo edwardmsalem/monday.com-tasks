@@ -211,15 +211,8 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     }
   }
 
-  // Step 14: Set Slack reminder for assignee (if they have a Slack ID)
-  if (user.slackId) {
-    console.log('Setting Slack reminder...');
-    await slack.setReminder({
-      userId: user.slackId,
-      text: `Task due: ${taskName}\n${monday.getItemUrl(mondayItem.id)}`,
-      dueDate: formattedDueDate,
-    });
-  }
+  // Note: Slack reminders require a user token, not a bot token
+  // Skipping reminder - users can set their own via Monday due date notifications
 
   console.log('Workflow completed successfully!');
 
