@@ -59,13 +59,20 @@ When analyzing an email, extract:
    - high: Contains "ASAP", "urgent", "immediately", "critical", "emergency", angry customer, escalation
    - medium: Standard task with a deadline, customer waiting
    - low: FYI, informational, no rush, when you get a chance
-5. **Notes**: Extract verbatim any notes or comments written by the person forwarding the email. Do NOT paraphrase, summarize, or add your own interpretation. Only include text that was explicitly written as notes/comments in the forwarding message. If there are no explicit notes beyond the assignment info (owner, date, type), leave notes empty.
+5. **Notes**: Take any notes or comments from the forwarding email and clean them up for clarity and professional formatting. You should:
+   - Fix grammar, spelling, and punctuation
+   - Improve clarity and readability
+   - Format as clear action items or context
+   - Keep the same meaning and intent
+   - Do NOT add information that wasn't mentioned
+   - Do NOT invent details or make assumptions
+   - If there are no notes beyond the assignment info (owner, date, type), leave notes empty.
 6. **Meeting Request**: Detect if the email contains a meeting/appointment request:
    - Look for phrases like "let's meet", "can we schedule", "are you available", "let's set up a call"
    - Extract proposed date(s) and time(s) if mentioned
    - Note the timezone if specified (default to EST/America/New_York)
 
-IMPORTANT: Do NOT embellish or add content that wasn't explicitly stated. Extract information exactly as written.
+IMPORTANT: You may enhance and clean up the notes for clarity, but do NOT add content or details that weren't mentioned in the original email.
 
 Be smart about inferring the owner, date, and task type. For example:
 - "Send this to Dayna for next Friday" → owner: dayna, due date: calculate days until Friday
