@@ -22,6 +22,7 @@ import { executeWorkflowSafe } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
+import { startFollowUpScheduler } from './services/autoFollowUp.js';
 
 const app = express();
 
@@ -490,14 +491,8 @@ app.post(
       // Update Monday with Slack thread ID
       await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
 
-      // Set Slack reminder
-      if (user.slackId && formattedDueDate) {
-        await slack.setReminder({
-          userId: user.slackId,
-          text: `Task due: ${taskName}\n${monday.getItemUrl(mondayItem.id)}`,
-          dueDate: formattedDueDate,
-        });
-      }
+      // Note: Slack reminders require a user token, not a bot token
+      // Skipping reminder - users can set their own via Monday due date notifications
 
       console.log('Workflow completed successfully!');
 
@@ -937,6 +932,10 @@ function start() {
     console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log('');
+
+    // Start auto follow-up scheduler (checks every hour)
+    startFollowUpScheduler();
+    console.log('Auto follow-up scheduler started (hourly)');
   });
 }
 
