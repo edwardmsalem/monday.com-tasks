@@ -89,13 +89,17 @@ export async function syncSlackToMonday(
   messageText: string,
   slackUserId: string
 ): Promise<void> {
+  console.log(`Looking up Monday item for Slack thread: ${slackThreadTs}`);
+
   // Find the Monday item ID from the Slack thread
   const mondayItemId = await monday.findItemBySlackThread(slackThreadTs);
 
   if (!mondayItemId) {
-    console.warn(`No Monday item found for Slack thread ${slackThreadTs}`);
+    console.warn(`No Monday item found for Slack thread ${slackThreadTs} - check if thread ID is stored correctly in Monday`);
     return;
   }
+
+  console.log(`Found Monday item ${mondayItemId} for thread ${slackThreadTs}`);
 
   // Translate Slack mentions to Monday format
   const translatedText = await translateSlackMentionsToMonday(messageText);
