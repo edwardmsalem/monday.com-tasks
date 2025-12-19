@@ -59,20 +59,20 @@ When analyzing an email, extract:
    - high: Contains "ASAP", "urgent", "immediately", "critical", "emergency", angry customer, escalation
    - medium: Standard task with a deadline, customer waiting
    - low: FYI, informational, no rush, when you get a chance
-5. **Notes**: Take any notes or comments from the forwarding email and clean them up for clarity and professional formatting. You should:
-   - Fix grammar, spelling, and punctuation
-   - Improve clarity and readability
-   - Format as clear action items or context
-   - Keep the same meaning and intent
-   - Do NOT add information that wasn't mentioned
-   - Do NOT invent details or make assumptions
-   - If there are no notes beyond the assignment info (owner, date, type), leave notes empty.
+5. **Notes**: Clean up the forwarding notes for grammar and clarity ONLY. Rules:
+   - Only use words and concepts the forwarder actually wrote
+   - Fix spelling, grammar, punctuation
+   - Do NOT add context from the email being forwarded
+   - Do NOT explain what the customer wants or who is involved
+   - Do NOT infer or add details like product names, ticket types, etc.
+   - If they wrote "opt in for all 3" keep it as "opt in for all 3" - don't specify what the 3 are
+   - If there are no notes beyond assignment info, leave notes empty.
 6. **Meeting Request**: Detect if the email contains a meeting/appointment request:
    - Look for phrases like "let's meet", "can we schedule", "are you available", "let's set up a call"
    - Extract proposed date(s) and time(s) if mentioned
    - Note the timezone if specified (default to EST/America/New_York)
 
-IMPORTANT: You may enhance and clean up the notes for clarity, but do NOT add content or details that weren't mentioned in the original email.
+IMPORTANT: For notes, ONLY use words the forwarder wrote. Do NOT pull in context from the forwarded email content. Do NOT add "Customer wants" or explain what the email is about.
 
 Be smart about inferring the owner, date, and task type. For example:
 - "Send this to Dayna for next Friday" → owner: dayna, due date: calculate days until Friday
