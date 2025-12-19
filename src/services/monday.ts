@@ -129,30 +129,18 @@ export async function updateSlackThreadId(itemId: string, threadTs: string): Pro
 /**
  * Upload a file to an item's file column
  * Uses Monday's /v2/file endpoint with proper multipart format
- * Note: Monday only accepts $file as a variable - item_id and column_id must be in query
  */
 export async function uploadFileToItem(
   itemId: string,
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  // Monday only accepts $file as variable - item_id and column_id must be hardcoded in query
-  const query = `
-    mutation ($file: File!) {
-      add_file_to_column(
-        item_id: ${itemId},
-        column_id: "${config.monday.fileColumnId}",
-        file: $file
-      ) {
-        id
-      }
-    }
-  `;
+  const query = `mutation ($file: File!) { add_file_to_column (item_id: ${itemId}, column_id: "${config.monday.fileColumnId}", file: $file) { id } }`;
 
   const form = new FormData();
   form.append('query', query);
-  // The actual file as multipart - this maps to $file variable
-  form.append('variables[file]', fileData, { filename, contentType: 'application/pdf' });
+  form.append('map', JSON.stringify({ 'image': 'variables.file' }));
+  form.append('image', fileData, { filename, contentType: 'application/pdf' });
 
   const response = await fetch(MONDAY_FILE_URL, {
     method: 'POST',

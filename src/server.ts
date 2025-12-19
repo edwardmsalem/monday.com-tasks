@@ -441,6 +441,7 @@ app.post(
         source: 'Forwarding Tasks',
         fromEmail: fromEmail,
         toEmail: toEmail,
+        team: analysisResult.team ?? undefined,
       });
       console.log('Monday item created:', mondayItem.id);
 
@@ -448,6 +449,11 @@ app.post(
       if (analysisResult.notes) {
         console.log('Creating Monday update with notes...');
         await monday.createUpdate(mondayItem.id, analysisResult.notes);
+      }
+
+      // If team wasn't identified, ask for clarification
+      if (!analysisResult.team) {
+        await monday.createUpdate(mondayItem.id, '⚠️ Team not identified. Please update the Team field if this relates to a specific sports team.');
       }
 
       // Send Slack notification
@@ -539,8 +545,10 @@ interface SlackEvent {
  * Handles: message events (thread replies), reaction events (checkmarks)
  */
 app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<void> => {
+  console.log('=== Slack event received ===');
   try {
     const body = JSON.parse(req.body.toString()) as SlackEvent;
+    console.log('Slack event type:', body.type, body.event?.type);
 
     // Handle URL verification challenge
     if (body.type === 'url_verification' && body.challenge) {

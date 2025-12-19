@@ -71,6 +71,11 @@ When analyzing an email, extract:
    - Look for phrases like "let's meet", "can we schedule", "are you available", "let's set up a call"
    - Extract proposed date(s) and time(s) if mentioned
    - Note the timezone if specified (default to EST/America/New_York)
+7. **Team**: ONLY extract a sports team if explicitly mentioned in the email. Rules:
+   - Only recognize: MLB, NFL, NBA, NHL, MLS teams, and NCAA Division 1 teams
+   - Examples: Yankees, Mets, Knicks, Nets, Rangers, Islanders, Giants, Jets, Devils, etc.
+   - Return null if no team is clearly mentioned - NEVER guess
+   - Do NOT infer team from context (e.g., "basketball tickets" does not mean Knicks)
 
 IMPORTANT: For notes, ONLY use words the forwarder wrote. Do NOT pull in context from the forwarded email content. Do NOT add "Customer wants" or explain what the email is about.
 
@@ -128,6 +133,10 @@ function buildExtractTaskTool(userNames: string): Anthropic.Tool {
           type: 'string',
           description: 'If multiple times proposed, the alternative date/time in ISO 8601 format. Null if only one option.',
         },
+        team: {
+          type: 'string',
+          description: 'Sports team name ONLY if explicitly mentioned (MLB, NFL, NBA, NHL, MLS, NCAA D1). Return null if not clearly stated - never guess.',
+        },
       },
       required: ['owner', 'dueDate', 'taskType', 'priority', 'notes', 'confidence', 'hasMeetingRequest'],
     },
@@ -146,6 +155,7 @@ export interface AnalysisResult extends TaskDetails {
   priority: Priority;
   confidence: number;
   meeting: MeetingInfo;
+  team: string | null;
 }
 
 /**
@@ -221,6 +231,7 @@ export async function analyzeEmail(
     hasMeetingRequest: boolean;
     meetingDateTime?: string;
     meetingDateTimeAlt?: string;
+    team?: string;
   };
 
   console.log('Claude analysis result:', input);
@@ -237,6 +248,7 @@ export async function analyzeEmail(
       meetingDateTime: input.meetingDateTime ?? null,
       meetingDateTimeAlt: input.meetingDateTimeAlt ?? null,
     },
+    team: input.team ?? null,
   };
 }
 
@@ -280,6 +292,7 @@ export async function analyzeEmailSafe(
         meetingDateTime: null,
         meetingDateTimeAlt: null,
       },
+      team: null,
     };
   }
 }
