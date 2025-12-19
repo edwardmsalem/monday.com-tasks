@@ -262,7 +262,6 @@ export async function createQuickTask(input: QuickTaskInput): Promise<{
     source: 'Slack Tasks',
     fromEmail: null,
     toEmail: null,
-    notes: `Created via Slack /monday command`,
   });
 
   const mondayUrl = monday.getItemUrl(mondayItem.id);
@@ -590,7 +589,6 @@ export async function confirmSmartTask(
       team: parsed.team ?? undefined,
       fromEmail: null,
       toEmail: null,
-      notes: `Created via Slack /monday command${parsed.priority ? ` | Priority: ${parsed.priority}` : ''}`,
     });
 
     const mondayUrl = monday.getItemUrl(mondayItem.id);

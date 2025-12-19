@@ -50,7 +50,6 @@ interface CreateItemInput {
   team?: string;       // Sports team (optional)
   fromEmail: string | null;
   toEmail: string | null;
-  notes: string;
 }
 
 /**
@@ -65,7 +64,6 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
     [columns.owner]: { personsAndTeams: input.ownerIds.map(id => ({ id, kind: 'person' })) },
     [columns.type]: { label: input.taskType },
     [columns.source]: { label: input.source },
-    [columns.notes]: { text: input.notes },
   };
 
   // Set team if provided (dropdown column uses labels array)

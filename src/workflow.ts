@@ -106,7 +106,6 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     source: 'Forwarding Tasks',
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
-    notes: '',  // Notes go to update instead
   });
   console.log('Monday item created:', mondayItem.id);
 
