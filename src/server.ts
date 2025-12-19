@@ -447,8 +447,9 @@ app.post(
       }
       console.log('Resolved user:', user.name, 'Monday ID:', user.mondayId, 'Slack ID:', user.slackId);
 
-      // Normalize subject (strip FWD:/RE:)
+      // Use original subject as task name (just strip FWD:/RE: prefixes)
       const taskName = normalizeSubject(subject);
+      console.log('Task name:', taskName);
 
       // Create Monday item
       console.log('Creating Monday.com item...');
@@ -463,6 +464,12 @@ app.post(
         notes: analysisResult.notes,
       });
       console.log('Monday item created:', mondayItem.id);
+
+      // Create initial update (comment) on the Monday item with notes
+      if (analysisResult.notes) {
+        console.log('Creating Monday update with notes...');
+        await monday.createUpdate(mondayItem.id, analysisResult.notes);
+      }
 
       // Send Slack notification
       console.log('Sending Slack notification...');
