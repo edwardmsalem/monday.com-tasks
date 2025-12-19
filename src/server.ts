@@ -480,14 +480,26 @@ app.post(
       });
       console.log('Slack message sent:', slackMessage.ts);
 
-      // Upload PDF if available
+      // Upload PDF if available (non-blocking - failures won't stop workflow)
       if (pdfBuffer) {
         console.log('Uploading PDF to Monday and Slack...');
-        await Promise.all([
-          monday.uploadFileToItem(mondayItem.id, pdfFilename, pdfBuffer),
-          slack.uploadFileToThread(slackMessage.ts, pdfFilename, pdfBuffer, 'Email PDF'),
-        ]);
-        console.log('PDF uploaded to both services');
+
+        // Upload to Slack (more reliable)
+        try {
+          await slack.uploadFileToThread(slackMessage.ts, pdfFilename, pdfBuffer, 'Email PDF');
+          console.log('PDF uploaded to Slack');
+        } catch (slackErr) {
+          console.error('Slack PDF upload failed:', slackErr);
+        }
+
+        // Upload to Monday (has been problematic)
+        try {
+          await monday.uploadFileToItem(mondayItem.id, pdfFilename, pdfBuffer);
+          console.log('PDF uploaded to Monday');
+        } catch (mondayErr) {
+          console.error('Monday PDF upload failed (non-fatal):', mondayErr);
+          // Don't fail the whole workflow for Monday file upload
+        }
       }
 
       // Update Monday with Slack thread ID

@@ -136,12 +136,13 @@ export async function uploadFileToItem(
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  // Monday.com file upload uses multipart form data
-  // The mutation references "variables.file" which maps to the uploaded file
-  const query = `mutation ($file: File!) { add_file_to_column (item_id: ${itemId}, column_id: "${config.monday.fileColumnId}", file: $file) { id } }`;
+  // Monday.com file upload - using their specific multipart format
+  const query = `mutation add_file($file: File!) { add_file_to_column (file: $file, item_id: ${itemId}, column_id: "${config.monday.fileColumnId}") { id } }`;
 
   const form = new FormData();
   form.append('query', query);
+  // Map tells GraphQL which form field contains the file for which variable
+  form.append('map', JSON.stringify({ 'variables[file]': ['variables.file'] }));
   form.append('variables[file]', fileData, { filename, contentType: 'application/pdf' });
 
   const response = await fetch(MONDAY_FILE_URL, {
@@ -152,9 +153,21 @@ export async function uploadFileToItem(
     body: form as unknown as BodyInit,
   });
 
+  const responseText = await response.text();
+  console.log('Monday file upload response:', response.status, responseText);
+
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Monday file upload error: ${response.status} - ${text}`);
+    throw new Error(`Monday file upload error: ${response.status} - ${responseText}`);
+  }
+
+  // Check for GraphQL errors in successful response
+  try {
+    const result = JSON.parse(responseText);
+    if (result.errors && result.errors.length > 0) {
+      throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
+    }
+  } catch (e) {
+    // If not JSON, that's fine
   }
 }
 
