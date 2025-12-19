@@ -357,21 +357,16 @@ app.post(
 );
 
 /**
- * Make.com webhook endpoint for PRE-PARSED data
- * Use this when Make.com has already:
- * - Converted EML to PDF
- * - Parsed the email headers
- * - Extracted task details from forwarding email body
+ * Make.com webhook endpoint for PRE-CONVERTED PDF
+ * Make.com handles: email receiving + EML→PDF conversion
+ * Server handles: AI analysis, user resolution, Monday/Slack creation
  *
  * Expected fields:
- * - subject: email subject
- * - fromEmail: sender email address
- * - toEmail: recipient email address
- * - ownerName: assignee name (e.g., "dayna")
- * - dueDate: formatted date (YYYY-MM-DD)
- * - taskType: resolved task type (e.g., "General", "Payment Plan")
- * - notes: task notes
- * - pdfData: base64-encoded PDF file
+ * - subject: forwarding email subject
+ * - body: forwarding email body (contains @owner, due date, task type, notes)
+ * - fromEmail: original sender email (from the .eml)
+ * - toEmail: original recipient email (from the .eml)
+ * - pdfData: base64-encoded PDF file (converted by Make.com)
  * - pdfFilename: PDF filename
  */
 app.post(
@@ -382,14 +377,11 @@ app.post(
     console.log('Body fields:', Object.keys(req.body));
 
     try {
-      // Extract all the pre-parsed fields
+      // Extract fields from Make.com
       const subject = String(req.body.subject || 'No Subject');
+      const bodyText = String(req.body.body || req.body['body-plain'] || req.body.text || '');
       const fromEmail = req.body.fromEmail || req.body.from || null;
       const toEmail = req.body.toEmail || req.body.to || null;
-      const ownerName = String(req.body.ownerName || req.body.owner || '');
-      const dueDate = String(req.body.dueDate || '');
-      const taskType = String(req.body.taskType || 'General');
-      const notes = String(req.body.notes || '');
 
       // Get PDF data - either from base64 in body or file upload
       let pdfBuffer: Buffer | null = null;
@@ -412,21 +404,44 @@ app.post(
         console.log('Using base64 PDF:', pdfFilename, pdfBuffer.length, 'bytes');
       }
 
-      console.log('Parsed data:', { subject, fromEmail, toEmail, ownerName, dueDate, taskType, hasPdf: !!pdfBuffer });
+      console.log('Received data:', { subject, bodyText: bodyText.substring(0, 100), fromEmail, toEmail, hasPdf: !!pdfBuffer });
 
       // Import required modules
-      const { findUserByName } = await import('./services/userResolver.js');
+      const { analyzeEmailSafe } = await import('./services/claude.js');
+      const { findUserByName, getUserNamesString } = await import('./services/userResolver.js');
       const monday = await import('./services/monday.js');
       const slack = await import('./services/slack.js');
-      const { formatDateForDisplay } = await import('./utils/dateParser.js');
+      const { parseDate, formatDateForDisplay } = await import('./utils/dateParser.js');
+      const { getTaskTypeDisplayName } = await import('./config/taskTypes.js');
       const { normalizeSubject } = await import('./services/gmail.js');
 
+      // Use Claude AI to analyze the email and extract task details
+      console.log('Analyzing email with Claude AI...');
+      const analysisResult = await analyzeEmailSafe(
+        subject,      // forwarding email subject
+        bodyText,     // forwarding email body (contains @owner, due date, etc.)
+        subject,      // EML subject (use same as forwarding for now)
+        fromEmail,    // from the EML
+        toEmail,      // from the EML
+        null          // no EML body needed
+      );
+      console.log('Claude analysis:', analysisResult);
+
+      // Resolve task type
+      const taskType = getTaskTypeDisplayName(analysisResult.taskType);
+      console.log('Task type:', taskType);
+
+      // Parse due date
+      const formattedDueDate = parseDate(analysisResult.dueDate);
+      console.log('Due date:', formattedDueDate);
+
       // Resolve user
-      const user = await findUserByName(ownerName);
+      const user = await findUserByName(analysisResult.owner);
       if (!user) {
+        const availableUsers = await getUserNamesString();
         res.status(400).json({
           success: false,
-          error: `Unknown user: ${ownerName}`,
+          error: `Unknown user: ${analysisResult.owner}. Available users: ${availableUsers}`,
         });
         return;
       }
@@ -439,13 +454,13 @@ app.post(
       console.log('Creating Monday.com item...');
       const mondayItem = await monday.createItem({
         name: taskName,
-        dueDate: dueDate,
+        dueDate: formattedDueDate,
         ownerIds: [user.mondayId],
         taskType: taskType,
         source: 'Forwarding Tasks',
         fromEmail: fromEmail,
         toEmail: toEmail,
-        notes: notes,
+        notes: analysisResult.notes,
       });
       console.log('Monday item created:', mondayItem.id);
 
@@ -455,13 +470,13 @@ app.post(
         taskType: taskType,
         subject: taskName,
         assigneeSlackId: user.slackId || user.name,
-        dueDate: formatDateForDisplay(dueDate),
-        priority: 'medium',
-        notes: notes,
+        dueDate: formatDateForDisplay(formattedDueDate),
+        priority: analysisResult.priority,
+        notes: analysisResult.notes,
         fromEmail: fromEmail,
         toEmail: toEmail,
         mondayItemId: mondayItem.id,
-        meeting: { hasMeetingRequest: false, meetingDateTime: null, meetingDateTimeAlt: null },
+        meeting: analysisResult.meeting,
       });
       console.log('Slack message sent:', slackMessage.ts);
 
@@ -479,11 +494,11 @@ app.post(
       await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
 
       // Set Slack reminder
-      if (user.slackId && dueDate) {
+      if (user.slackId && formattedDueDate) {
         await slack.setReminder({
           userId: user.slackId,
           text: `Task due: ${taskName}\n${monday.getItemUrl(mondayItem.id)}`,
-          dueDate: dueDate,
+          dueDate: formattedDueDate,
         });
       }
 
