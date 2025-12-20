@@ -11,6 +11,7 @@
 
 import { config } from '../config/environment.js';
 import * as slack from './slack.js';
+import * as monday from './monday.js';
 import { getAllUsers, type UnifiedUser } from './userResolver.js';
 
 // US Federal Holidays (fixed dates and observed dates for 2024-2025)
@@ -445,15 +446,43 @@ function markFollowUpSent(key: string): void {
 }
 
 /**
+ * Retry failed attachment uploads
+ * Runs hourly as part of the scheduler - survives restarts
+ */
+async function runAttachmentRetry(): Promise<void> {
+  try {
+    // Create a Slack poster function for notifications
+    const postToSlack = async (threadTs: string, message: string) => {
+      await slack.postToThread(threadTs, message);
+    };
+
+    const result = await monday.retryFailedAttachments(postToSlack);
+
+    if (result.attempted > 0) {
+      console.log(`Attachment retry sweep: ${result.succeeded}/${result.attempted} succeeded`);
+    }
+  } catch (error) {
+    console.error('Attachment retry sweep failed:', error);
+  }
+}
+
+/**
  * Start the follow-up scheduler
  * Runs every hour by default
+ * Includes:
+ * - Follow-up reminders (acknowledge, overdue)
+ * - Failed attachment retry sweep (persistent across restarts)
  */
 export function startFollowUpScheduler(intervalMs: number = 60 * 60 * 1000): void {
   console.log(`Starting follow-up scheduler (interval: ${intervalMs / 1000 / 60} minutes)`);
 
   // Run immediately on start
   checkAndSendFollowUps();
+  runAttachmentRetry();
 
   // Then run on interval
-  setInterval(checkAndSendFollowUps, intervalMs);
+  setInterval(() => {
+    checkAndSendFollowUps();
+    runAttachmentRetry();
+  }, intervalMs);
 }

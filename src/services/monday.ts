@@ -637,3 +637,141 @@ function scheduleRetries(
 
   attemptRetry();
 }
+
+/**
+ * Find all items with "Attachment Failed" status that have a stored PDF URL
+ * Used by hourly sweep to retry uploads that failed after all in-memory retries
+ */
+export async function findItemsWithFailedAttachments(): Promise<Array<{
+  id: string;
+  name: string;
+  pdfUrl: string;
+  slackThreadId: string | null;
+}>> {
+  const query = `
+    query FindFailedAttachments($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(limit: 50) {
+          items {
+            id
+            name
+            column_values {
+              id
+              text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      boards: Array<{
+        items_page: {
+          items: Array<{
+            id: string;
+            name: string;
+            column_values: Array<{ id: string; text: string }>;
+          }>;
+        };
+      }>;
+    }>(query, { boardId: config.monday.boardId });
+
+    const items = result.boards[0]?.items_page?.items ?? [];
+    const failedItems: Array<{
+      id: string;
+      name: string;
+      pdfUrl: string;
+      slackThreadId: string | null;
+    }> = [];
+
+    for (const item of items) {
+      const getValue = (colId: string) =>
+        item.column_values.find(cv => cv.id === colId)?.text ?? '';
+
+      const workflowStatus = getValue(config.monday.columns.workflowStatus);
+      const pdfUrl = getValue(config.monday.columns.pdfUrl);
+      const slackThreadId = getValue(config.monday.columns.slackThreadId) || null;
+
+      // Only include items with "Attachment Failed" status AND a stored PDF URL
+      if (workflowStatus === 'Attachment Failed' && pdfUrl) {
+        failedItems.push({
+          id: item.id,
+          name: item.name,
+          pdfUrl,
+          slackThreadId,
+        });
+      }
+    }
+
+    return failedItems;
+  } catch (error) {
+    console.error('Error finding items with failed attachments:', error);
+    return [];
+  }
+}
+
+/**
+ * Retry failed attachment uploads using stored PDF URLs
+ * Called by hourly sweep - survives server restarts
+ */
+export async function retryFailedAttachments(
+  postToSlack?: (threadTs: string, message: string) => Promise<void>
+): Promise<{ attempted: number; succeeded: number }> {
+  console.log('Checking for failed attachment uploads to retry...');
+
+  const failedItems = await findItemsWithFailedAttachments();
+
+  if (failedItems.length === 0) {
+    console.log('No failed attachment uploads to retry');
+    return { attempted: 0, succeeded: 0 };
+  }
+
+  console.log(`Found ${failedItems.length} items with failed attachments, retrying...`);
+
+  let succeeded = 0;
+
+  for (const item of failedItems) {
+    try {
+      console.log(`Retrying attachment upload for item ${item.id}: ${item.name}`);
+
+      // Download PDF from stored URL
+      const response = await fetch(item.pdfUrl);
+      if (!response.ok) {
+        console.error(`Failed to download PDF for item ${item.id}: ${response.statusText}`);
+        continue;
+      }
+
+      const pdfBuffer = Buffer.from(await response.arrayBuffer());
+      const filename = `${item.name.substring(0, 50).replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+
+      // Upload to Monday
+      await uploadFileToItem(item.id, filename, pdfBuffer);
+
+      // Clear the "Attachment Failed" status
+      await updateWorkflowStatus(item.id, '');
+
+      // Clear the stored PDF URL (no longer needed)
+      await storePdfUrl(item.id, '');
+
+      // Notify via Slack if available
+      if (postToSlack && item.slackThreadId) {
+        try {
+          await postToSlack(item.slackThreadId, '✅ PDF successfully uploaded to Monday (hourly retry succeeded).');
+        } catch {
+          // Ignore Slack errors
+        }
+      }
+
+      console.log(`Successfully retried attachment for item ${item.id}`);
+      succeeded++;
+    } catch (error) {
+      console.error(`Failed to retry attachment for item ${item.id}:`, error);
+      // Leave status as "Attachment Failed" for next retry cycle
+    }
+  }
+
+  console.log(`Attachment retry complete: ${succeeded}/${failedItems.length} succeeded`);
+  return { attempted: failedItems.length, succeeded };
+}
