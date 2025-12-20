@@ -42,6 +42,49 @@ const PRIORITY_CONFIG: Record<Priority, { emoji: string; label: string }> = {
 };
 
 /**
+ * Check if current time is within working hours
+ * Working hours: Mon-Fri, 10am-6pm (no holiday logic)
+ */
+export function isWorkingHours(): boolean {
+  const { quietHours } = config.slack;
+
+  // Get current time in configured timezone
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: quietHours.timezone,
+    weekday: 'short',
+    hour: 'numeric',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(now);
+  const weekday = parts.find(p => p.type === 'weekday')?.value ?? '';
+  const hour = parseInt(parts.find(p => p.type === 'hour')?.value ?? '0', 10);
+
+  // Check if weekend
+  if (weekday === 'Sat' || weekday === 'Sun') {
+    return false;
+  }
+
+  // Check if within working hours (10am-6pm)
+  return hour >= quietHours.workingHoursStart && hour < quietHours.workingHoursEnd;
+}
+
+/**
+ * Check if quiet hours routing is active
+ */
+export function isQuietHoursActive(): boolean {
+  const { quietHours } = config.slack;
+
+  // Disabled if not enabled or no on-call user configured
+  if (!quietHours.enabled || !quietHours.onCallUserId) {
+    return false;
+  }
+
+  return !isWorkingHours();
+}
+
+/**
  * Format ISO datetime string for display
  */
 function formatMeetingTime(isoString: string): string {
@@ -62,10 +105,23 @@ function formatMeetingTime(isoString: string): string {
 
 /**
  * Send a notification message using Block Kit for rich formatting
+ *
+ * Quiet hours routing (nights + weekends):
+ * - Still creates the Slack thread (always)
+ * - Does NOT mention assignee during quiet hours
+ * - Notifies only on-call user during quiet hours
+ * - Posts thread note about being queued
  */
 export async function sendNotification(input: SlackNotificationInput): Promise<SlackMessage> {
   const client = getClient();
   const mondayUrl = monday.getItemUrl(input.mondayItemId);
+  const quietHoursActive = isQuietHoursActive();
+
+  // During quiet hours: show assignee name without @ mention
+  // During working hours: full @ mention
+  const assigneeDisplay = quietHoursActive
+    ? input.assigneeSlackId  // Just the ID/name, no notification
+    : `<@${input.assigneeSlackId}>`;  // Full mention, notifies user
 
   // Build Block Kit message - use any[] to avoid type issues with mixed block types
   const blocks: any[] = [
@@ -86,7 +142,7 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
         },
         {
           type: 'mrkdwn',
-          text: `*Assigned to:*\n<@${input.assigneeSlackId}>`,
+          text: `*Assigned to:*\n${assigneeDisplay}`,
         },
       ],
     },
@@ -180,7 +236,10 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   });
 
   // Fallback text for notifications
-  const fallbackText = `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
+  // During quiet hours, don't include @ mention in fallback either
+  const fallbackText = quietHoursActive
+    ? `New ${input.taskType} Email: ${input.subject} - Assigned to ${input.assigneeSlackId} - Due: ${input.dueDate}`
+    : `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
 
   const response: ChatPostMessageResponse = await client.chat.postMessage({
     channel: config.slack.channelId,
@@ -194,10 +253,27 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     throw new Error(`Failed to send Slack message: ${response.error}`);
   }
 
-  return {
+  const slackMessage: SlackMessage = {
     ts: response.ts,
     channel: response.channel ?? config.slack.channelId,
   };
+
+  // During quiet hours: notify on-call user and post queued note
+  if (quietHoursActive && config.slack.quietHours.onCallUserId) {
+    // Post thread note about being queued
+    await postToThread(
+      slackMessage.ts,
+      `_Queued outside working hours – <@${input.assigneeSlackId}> will be notified at next business hour._`
+    );
+
+    // Notify on-call user in thread
+    await postToThread(
+      slackMessage.ts,
+      `<@${config.slack.quietHours.onCallUserId}> 📞 _On-call notification_`
+    );
+  }
+
+  return slackMessage;
 }
 
 /**

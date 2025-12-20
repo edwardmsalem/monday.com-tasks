@@ -92,6 +92,14 @@ export const config = {
     botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
     channelId: getEnvVar('SLACK_CHANNEL_ID', 'C08QCFC4Y0H'),
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
+    // Quiet hours routing (nights + weekends)
+    quietHours: {
+      enabled: getEnvVarBool('SLACK_QUIET_HOURS_ENABLED', true),
+      onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID', ''),  // Sean's Slack ID
+      timezone: getEnvVar('SLACK_TIMEZONE', 'America/New_York'),
+      workingHoursStart: 10,  // 10:00 AM
+      workingHoursEnd: 18,    // 6:00 PM (18:00)
+    },
   },
 
   // ConvertAPI
