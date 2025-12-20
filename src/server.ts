@@ -986,9 +986,10 @@ app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), asy
  */
 app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
   try {
-    const { text, user_id } = req.body as {
+    const { text, user_id, response_url } = req.body as {
       text: string;
       user_id: string;
+      response_url: string;
     };
 
     console.log(`/task command received from ${user_id}: ${text}`);
@@ -1068,18 +1069,30 @@ app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (r
       creatorSlackId: user_id,
     });
 
-    // Post result to user (ephemeral follow-up)
+    // Send confirmation or error via response_url
     if (result.success) {
       const mondayUrl = monday.getItemUrl(result.mondayItemId);
+      const slackThreadUrl = `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${result.slackThreadTs}`;
+
+      // Post creator attribution to thread
       await slack.postToThread(
         result.slackThreadTs,
         `✅ Task created by <@${user_id}>`
       );
+
+      // Send ephemeral confirmation to creator via response_url
+      await slack.sendResponseUrl(response_url,
+        `✅ *Task Created*\n\n` +
+        `• *Monday:* <${mondayUrl}|View Item>\n` +
+        `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
+        `• *Run ID:* \`${result.runId?.substring(0, 8)}\``
+      );
     } else {
-      // Post error to channel as ephemeral (user only)
+      // Send error via response_url
       console.error('Task creation failed:', result.error);
-      // Note: Can't send follow-up ephemeral without response_url
-      // Error is logged and user sees the "Creating..." message
+      await slack.sendResponseUrl(response_url,
+        `:x: *Task Creation Failed*\n\n${result.error}`
+      );
     }
   } catch (error) {
     console.error('/task command error:', error);
@@ -1166,9 +1179,31 @@ interface MondayWebhook {
   };
 }
 
+// In-memory cooldown for direct creation guidance DMs (24 hours)
+// Key: Slack user ID, Value: timestamp of last DM
+const directCreationDmCooldown = new Map<string, number>();
+const DM_COOLDOWN_MS = 24 * 60 * 60 * 1000;  // 24 hours
+
+/**
+ * Check if a user is on DM cooldown
+ */
+function isOnDmCooldown(slackUserId: string): boolean {
+  const lastDm = directCreationDmCooldown.get(slackUserId);
+  if (!lastDm) return false;
+  return Date.now() - lastDm < DM_COOLDOWN_MS;
+}
+
+/**
+ * Record that we sent a DM to a user
+ */
+function recordDmSent(slackUserId: string): void {
+  directCreationDmCooldown.set(slackUserId, Date.now());
+}
+
 /**
  * Send guidance DM to a user who created an item directly in Monday
  * This is informational, not an error.
+ * Includes 24-hour cooldown per user to prevent spam.
  */
 async function sendDirectCreationGuidance(mondayUserId: number): Promise<void> {
   try {
@@ -1188,6 +1223,12 @@ async function sendDirectCreationGuidance(mondayUserId: number): Promise<void> {
       return;
     }
 
+    // Check cooldown - don't spam the same user
+    if (isOnDmCooldown(user.slackId)) {
+      console.log(`Skipping guidance DM to ${user.name} - on 24h cooldown`);
+      return;
+    }
+
     // Send Slack DM with guidance
     const client = slack.getClient();
     await client.chat.postMessage({
@@ -1200,6 +1241,9 @@ async function sendDirectCreationGuidance(mondayUserId: number): Promise<void> {
         `This ensures tasks have proper tracking, Slack threads, and Run IDs.\n\n` +
         `_This is just a friendly reminder – your task was still created._`,
     });
+
+    // Record cooldown
+    recordDmSent(user.slackId);
 
     console.log(`Sent direct creation guidance to ${user.name}`);
   } catch (error) {
@@ -1229,18 +1273,20 @@ app.post('/webhook/monday', express.json(), async (req: Request, res: Response):
 
       // Handle direct item creation - send guidance to user
       // Note: This fires for ALL item creations, so we wait 5 seconds
-      // then check if Run ID is populated (indicating automated creation)
+      // then check if item was created via automation (Run ID or Source)
       if (event.type === 'create_item' && event.pulseId && event.userId) {
         console.log(`Item ${event.pulseId} created by user ${event.userId}, checking if direct creation...`);
 
-        // Wait 5 seconds for automated workflow to populate Run ID
+        // Wait 5 seconds for automated workflow to populate Run ID and Source
         setTimeout(async () => {
           try {
-            const itemHasRunId = await monday.hasRunId(String(event.pulseId));
+            const automation = await monday.checkItemAutomation(String(event.pulseId));
 
-            if (!itemHasRunId && event.userId) {
-              console.log(`Item ${event.pulseId} has no Run ID - sending guidance to user ${event.userId}`);
+            if (!automation.isAutomated && event.userId) {
+              console.log(`Item ${event.pulseId} not automated (Run ID: ${automation.hasRunId}, Source: ${automation.source}) - sending guidance`);
               await sendDirectCreationGuidance(event.userId);
+            } else if (automation.isAutomated) {
+              console.log(`Item ${event.pulseId} is automated (Run ID: ${automation.hasRunId}, Source: ${automation.source}) - no guidance needed`);
             }
           } catch (error) {
             console.error('Error checking for direct creation:', error);

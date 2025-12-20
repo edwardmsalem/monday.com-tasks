@@ -495,10 +495,29 @@ export async function getItem(itemId: string): Promise<{
  * Check if an item has a Run ID (indicating automated creation)
  */
 export async function hasRunId(itemId: string): Promise<boolean> {
+  const result = await checkItemAutomation(itemId);
+  return result.hasRunId;
+}
+
+/**
+ * Known automated source values
+ */
+const AUTOMATED_SOURCES = ['Forwarding Tasks', 'Slack'];
+
+/**
+ * Check item automation indicators (Run ID and Source)
+ * Used to determine if an item was created via automation
+ */
+export async function checkItemAutomation(itemId: string): Promise<{
+  hasRunId: boolean;
+  source: string | null;
+  isAutomated: boolean;
+}> {
   const query = `
-    query CheckRunId($itemId: ID!) {
+    query CheckAutomation($itemId: ID!) {
       items(ids: [$itemId]) {
-        column_values(ids: ["${config.monday.columns.runId}"]) {
+        column_values(ids: ["${config.monday.columns.runId}", "${config.monday.columns.source}"]) {
+          id
           text
         }
       }
@@ -508,18 +527,26 @@ export async function hasRunId(itemId: string): Promise<boolean> {
   try {
     const result = await executeQuery<{
       items: Array<{
-        column_values: Array<{ text: string }>;
+        column_values: Array<{ id: string; text: string }>;
       }>;
     }>(query, { itemId });
 
     const item = result.items[0];
-    if (!item) return false;
+    if (!item) {
+      return { hasRunId: false, source: null, isAutomated: false };
+    }
 
-    const runIdCol = item.column_values[0];
-    return !!(runIdCol?.text && runIdCol.text.length > 0);
+    const runIdCol = item.column_values.find(c => c.id === config.monday.columns.runId);
+    const sourceCol = item.column_values.find(c => c.id === config.monday.columns.source);
+
+    const hasRunId = !!(runIdCol?.text && runIdCol.text.length > 0);
+    const source = sourceCol?.text || null;
+    const isAutomated = hasRunId || (source !== null && AUTOMATED_SOURCES.includes(source));
+
+    return { hasRunId, source, isAutomated };
   } catch (error) {
-    console.error('Error checking Run ID:', error);
-    return false;  // Assume no Run ID on error
+    console.error('Error checking item automation:', error);
+    return { hasRunId: false, source: null, isAutomated: false };
   }
 }
 
