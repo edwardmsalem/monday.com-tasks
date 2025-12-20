@@ -1,5 +1,5 @@
 import { config } from '../config/environment.js';
-import type { MondayItem, MondayUser } from '../types/index.js';
+import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
 import FormData from 'form-data';
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -713,6 +713,80 @@ export async function findItemsWithFailedAttachments(): Promise<Array<{
 }
 
 /**
+ * Store the correlation ID on a Monday item for debugging
+ */
+export async function storeCorrelationId(itemId: string, correlationId: string): Promise<void> {
+  const query = `
+    mutation StoreCorrelationId($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    await executeQuery(query, {
+      boardId: config.monday.boardId,
+      itemId,
+      columnValues: JSON.stringify({
+        [config.monday.columns.correlationId]: correlationId,
+      }),
+    });
+    console.log('Correlation ID stored on Monday item:', itemId, correlationId.substring(0, 8));
+  } catch (error) {
+    // Non-fatal - correlation ID storage is optional (column may not exist yet)
+    console.warn('Could not store correlation ID on Monday item (column may not exist):', error);
+  }
+}
+
+/**
+ * Update attachment state columns on a Monday item
+ * Tracks: Queued | Uploaded | Retrying | Failed | Skipped
+ */
+export async function updateAttachmentState(
+  itemId: string,
+  state: string,
+  errorMessage?: string
+): Promise<void> {
+  const query = `
+    mutation UpdateAttachmentState($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  const columnValues: Record<string, unknown> = {
+    [config.monday.columns.attachmentState]: { label: state },
+  };
+
+  // Only update error column if there's an error message
+  if (errorMessage) {
+    columnValues[config.monday.columns.attachmentError] = errorMessage.substring(0, 500); // Truncate long errors
+  }
+
+  try {
+    await executeQuery(query, {
+      boardId: config.monday.boardId,
+      itemId,
+      columnValues: JSON.stringify(columnValues),
+    });
+    console.log('Attachment state updated on Monday item:', itemId, state);
+  } catch (error) {
+    // Non-fatal - attachment state tracking is optional (columns may not exist yet)
+    console.warn('Could not update attachment state on Monday item (columns may not exist):', error);
+  }
+}
+
+/**
  * Retry failed attachment uploads using stored PDF URLs
  * Called by hourly sweep - survives server restarts
  */
@@ -774,4 +848,98 @@ export async function retryFailedAttachments(
 
   console.log(`Attachment retry complete: ${succeeded}/${failedItems.length} succeeded`);
   return { attempted: failedItems.length, succeeded };
+}
+
+/**
+ * Get task debug info for /taskdebug command
+ * Returns all tracking columns for debugging
+ */
+export async function getTaskDebugInfo(itemId: string): Promise<TaskDebugInfo | null> {
+  const { columns } = config.monday;
+
+  // Request all debug-relevant columns
+  const columnIds = [
+    columns.slackThreadId,
+    columns.type,
+    columns.workflowStatus,
+    columns.urgency,
+    columns.pdfUrl,
+    columns.attachmentState,
+    columns.attachmentError,
+    columns.correlationId,
+    columns.date,
+    columns.owner,
+  ].filter(Boolean);  // Filter out any undefined columns
+
+  const query = `
+    query GetTaskDebugInfo($itemId: ID!) {
+      items(ids: [$itemId]) {
+        id
+        name
+        column_values {
+          id
+          text
+          value
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{
+        id: string;
+        name: string;
+        column_values: Array<{ id: string; text: string; value: string }>;
+      }>;
+    }>(query, { itemId });
+
+    const item = result.items[0];
+    if (!item) return null;
+
+    // Helper to get column value by ID
+    const getValue = (colId: string): string | null => {
+      const col = item.column_values.find(c => c.id === colId);
+      return col?.text || null;
+    };
+
+    // Parse person column value to get owner name
+    const getOwnerName = (): string | null => {
+      const col = item.column_values.find(c => c.id === columns.owner);
+      if (!col?.value) return null;
+      try {
+        const parsed = JSON.parse(col.value);
+        // Monday person column format: { personsAndTeams: [{ id: number, kind: 'person' }] }
+        // The text field usually contains the name
+        return col.text || null;
+      } catch {
+        return col.text || null;
+      }
+    };
+
+    // Build Slack thread URL if we have the thread ID
+    const slackThreadId = getValue(columns.slackThreadId);
+    const slackThreadUrl = slackThreadId
+      ? `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${slackThreadId}`
+      : null;
+
+    return {
+      mondayItemId: item.id,
+      mondayUrl: getItemUrl(item.id),
+      slackThreadTs: slackThreadId,
+      slackThreadUrl,
+      taskType: getValue(columns.type),
+      workflowStatus: getValue(columns.workflowStatus),
+      urgency: getValue(columns.urgency),
+      pdfUrl: getValue(columns.pdfUrl),
+      attachmentState: getValue(columns.attachmentState),
+      attachmentError: getValue(columns.attachmentError),
+      correlationId: getValue(columns.correlationId),
+      dueDate: getValue(columns.date),
+      owner: getOwnerName(),
+    };
+  } catch (error) {
+    console.error('Error getting task debug info:', error);
+    return null;
+  }
 }

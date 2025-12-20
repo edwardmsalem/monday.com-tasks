@@ -28,9 +28,33 @@ function getEnvVarNumber(name: string, defaultValue?: number): number {
   return value;
 }
 
+function getEnvVarBool(name: string, defaultValue: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined) return defaultValue;
+  return value.toLowerCase() === 'true' || value === '1';
+}
+
+export type AttachmentsMode = 'off' | 'slack_only' | 'monday_only' | 'both';
+
+function getAttachmentsMode(): AttachmentsMode {
+  const value = process.env['ATTACHMENTS_MODE']?.toLowerCase();
+  if (value === 'off' || value === 'slack_only' || value === 'monday_only' || value === 'both') {
+    return value;
+  }
+  return 'both'; // default
+}
+
 export const config = {
   // Server
   port: getEnvVarNumber('PORT', 3000),
+
+  // Safety valves
+  safetyValves: {
+    /** If true, skip all email processing (log receipt only) */
+    disableEmailAutomation: getEnvVarBool('DISABLE_EMAIL_AUTOMATION', false),
+    /** Control attachment upload behavior: off | slack_only | monday_only | both */
+    attachmentsMode: getAttachmentsMode(),
+  },
 
   // Monday.com
   monday: {
@@ -54,8 +78,12 @@ export const config = {
       source: 'color_mky0b1yr',          // Source (Forwarding Tasks, Slack Tasks, etc.)
       team: 'dropdown_mkyqe4we',         // Sports team
       file: 'file_mkxv6aa0',
-      urgency: 'color_mkytzsrj',        // Urgency (High, Medium, Low)
+      urgency: 'color_mkytzsrj',         // Urgency (High, Medium, Low)
       pdfUrl: 'text_mkythpzx',           // Durable PDF URL for retries
+      // Attachment tracking columns (create in Monday if needed)
+      attachmentState: 'status_mkyZZZZZ',     // Queued/Uploaded/Retrying/Failed - UPDATE WITH REAL ID
+      attachmentError: 'text_mkyWWWWW',       // Last error message - UPDATE WITH REAL ID
+      correlationId: 'text_mkyVVVVV',         // Workflow run ID - UPDATE WITH REAL ID
     },
   },
 
@@ -90,6 +118,12 @@ export const config = {
     clientSecret: getEnvVarOptional('GOOGLE_CLIENT_SECRET'),
     refreshToken: getEnvVarOptional('GOOGLE_REFRESH_TOKEN'),
   },
+
+  // Todoist integration (feature-flagged, projection only in v1)
+  todoist: {
+    enabled: getEnvVarBool('ENABLE_TODOIST_SYNC', false),
+    apiToken: getEnvVarOptional('TODOIST_API_TOKEN'),
+  },
 } as const;
 
 /**
@@ -107,5 +141,16 @@ export function validateConfig(): void {
   if (missing.length > 0) {
     console.warn(`Warning: Missing environment variables: ${missing.join(', ')}`);
     console.warn('Some features may not work correctly.');
+  }
+
+  // Log safety valve status
+  if (config.safetyValves.disableEmailAutomation) {
+    console.warn('⚠️ DISABLE_EMAIL_AUTOMATION=true - Email processing is DISABLED');
+  }
+  if (config.safetyValves.attachmentsMode !== 'both') {
+    console.warn(`⚠️ ATTACHMENTS_MODE=${config.safetyValves.attachmentsMode}`);
+  }
+  if (config.todoist.enabled) {
+    console.log('📋 Todoist sync ENABLED (projection only)');
   }
 }

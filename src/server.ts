@@ -57,6 +57,17 @@ app.post(
     console.log('Received webhook request');
     console.log('Content-Type:', req.headers['content-type']);
 
+    // Safety valve: skip email processing if disabled
+    if (config.safetyValves.disableEmailAutomation) {
+      console.log('⚠️ Email automation disabled via DISABLE_EMAIL_AUTOMATION - logging receipt only');
+      res.json({
+        success: true,
+        message: 'Email received but automation disabled',
+        safetyValve: 'DISABLE_EMAIL_AUTOMATION',
+      });
+      return;
+    }
+
     try {
       let rawEmail: Buffer | string;
 
@@ -783,6 +794,167 @@ app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async
 });
 
 // ============================================================================
+// Slack Debug Commands
+// ============================================================================
+
+/**
+ * /taskdebug slash command handler
+ * Shows all tracking info for a Monday item (for debugging)
+ *
+ * Usage: /taskdebug <monday_item_id>
+ * Example: /taskdebug 1234567890
+ */
+app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { text, user_id } = req.body as {
+      text: string;
+      user_id: string;
+    };
+
+    const itemId = text.trim();
+
+    // Handle help or empty input
+    if (!itemId || itemId === 'help') {
+      res.json({
+        response_type: 'ephemeral',
+        text: `*Task Debug*\n\n` +
+          `Shows all tracking info for a Monday.com task.\n\n` +
+          `*Usage:* \`/taskdebug <monday_item_id>\`\n\n` +
+          `*Example:* \`/taskdebug 1234567890\`\n\n` +
+          `_Find the item ID in the Monday URL or from the Slack thread._`,
+      });
+      return;
+    }
+
+    // Validate item ID format (should be numeric)
+    if (!/^\d+$/.test(itemId)) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: Invalid item ID. Please provide a numeric Monday item ID.\n\nExample: \`/taskdebug 1234567890\``,
+      });
+      return;
+    }
+
+    // Fetch task debug info
+    const debugInfo = await monday.getTaskDebugInfo(itemId);
+
+    if (!debugInfo) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: Task not found: \`${itemId}\`\n\nMake sure the item ID is correct and the task exists.`,
+      });
+      return;
+    }
+
+    // Format debug info as Slack blocks
+    const blocks = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: '🔍 Task Debug Info',
+          emoji: true,
+        },
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Monday ID:*\n<${debugInfo.mondayUrl}|${debugInfo.mondayItemId}>`,
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Correlation ID:*\n\`${debugInfo.correlationId || 'N/A'}\``,
+          },
+        ],
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Task Type:*\n${debugInfo.taskType || 'N/A'}`,
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Workflow Status:*\n${debugInfo.workflowStatus || 'N/A'}`,
+          },
+        ],
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Owner:*\n${debugInfo.owner || 'N/A'}`,
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Due Date:*\n${debugInfo.dueDate || 'N/A'}`,
+          },
+        ],
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Urgency:*\n${debugInfo.urgency || 'N/A'}`,
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Attachment State:*\n${debugInfo.attachmentState || 'N/A'}`,
+          },
+        ],
+      },
+      { type: 'divider' },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Slack Thread:*\n${debugInfo.slackThreadUrl ? `<${debugInfo.slackThreadUrl}|View Thread>` : 'N/A'}`,
+        },
+      },
+    ];
+
+    // Add PDF URL if present
+    if (debugInfo.pdfUrl) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*PDF URL:*\n<${debugInfo.pdfUrl}|Download PDF>`,
+        },
+      });
+    }
+
+    // Add attachment error if present
+    if (debugInfo.attachmentError) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Last Attachment Error:*\n\`\`\`${debugInfo.attachmentError}\`\`\``,
+        },
+      });
+    }
+
+    res.json({
+      response_type: 'ephemeral',
+      blocks,
+      text: `Task Debug Info for ${itemId}`,
+    });
+  } catch (error) {
+    console.error('Task debug command error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: `:x: Error fetching task info: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    });
+  }
+});
+
+// ============================================================================
 // Slack Interactive Messages (button clicks, etc.)
 // ============================================================================
 
@@ -937,6 +1109,7 @@ function start() {
     console.log(`  Slack events:    http://localhost:${config.port}/webhook/slack/events`);
     console.log(`  Slack /monday:   http://localhost:${config.port}/webhook/slack/command`);
     console.log(`  Slack /seasontask: http://localhost:${config.port}/webhook/slack/seasontask`);
+    console.log(`  Slack /taskdebug: http://localhost:${config.port}/webhook/slack/taskdebug`);
     console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log('');

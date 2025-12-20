@@ -64,13 +64,38 @@ export interface WorkflowResult {
   slackThreadTs: string;
   success: boolean;
   error?: string;
+  /** Unique identifier for this workflow run - for debugging and tracing */
+  correlationId: string;
   /** Attachment upload status - workflow can succeed even if attachments fail */
   attachmentStatus?: {
     slackUploaded: boolean;
     mondayUploaded: boolean;
     mondayRetryScheduled?: boolean;
     pdfUrl?: string;
+    state: AttachmentState;
+    lastError?: string;
   };
 }
 
 export type Priority = 'high' | 'medium' | 'low';
+
+export type AttachmentState = 'Queued' | 'Uploaded' | 'Retrying' | 'Failed' | 'Skipped';
+
+/**
+ * Task debug info for /taskdebug command
+ */
+export interface TaskDebugInfo {
+  mondayItemId: string;
+  mondayUrl: string;
+  slackThreadTs: string | null;
+  slackThreadUrl: string | null;
+  taskType: string | null;
+  workflowStatus: string | null;
+  urgency: string | null;
+  pdfUrl: string | null;
+  attachmentState: string | null;
+  attachmentError: string | null;
+  correlationId: string | null;
+  dueDate: string | null;
+  owner: string | null;
+}
