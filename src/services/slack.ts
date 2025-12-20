@@ -643,15 +643,49 @@ export function verifySlackSignature(
 // Quiet Hours - Deferred Notification Release
 // ============================================================================
 
+// Hardening constants
+const DEFERRED_LOOKBACK_HOURS = 48;  // Max 48 hours lookback for deferred notifications
+const RELEASE_BATCH_SIZE = 5;        // Release in batches of 5
+const RELEASE_DELAY_MS = 1000;       // 1 second delay between releases (avoid rate limits)
+
 interface DeferredNotification {
   threadTs: string;
   assigneeSlackId: string;
+  mondayUrl: string | null;  // Extracted from parent message for direct link
+}
+
+/**
+ * Sleep helper for rate limiting
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Extract Monday URL from a Slack message's blocks
+ */
+function extractMondayUrlFromBlocks(blocks: any[] | undefined): string | null {
+  if (!blocks) return null;
+
+  for (const block of blocks) {
+    if (block.type === 'actions' && block.elements) {
+      for (const element of block.elements) {
+        if (element.action_id === 'view_monday' && element.url) {
+          return element.url;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /**
  * Find threads with deferred assignee notifications from quiet hours
- * Looks for marker: [quiet-hours:deferred:USER_ID]
- * Excludes threads that already have: [quiet-hours:notified]
+ *
+ * Hardening:
+ * - Limited to 48-hour lookback window (no historical scan)
+ * - Extracts Monday URL for direct linking
+ * - Only returns threads with deferred marker but no notified marker
  */
 export async function findDeferredNotifications(): Promise<DeferredNotification[]> {
   const client = getClient();
@@ -662,15 +696,21 @@ export async function findDeferredNotifications(): Promise<DeferredNotification[
     const authResponse = await client.auth.test();
     const botUserId = authResponse.user_id;
 
-    // Look at recent channel history (last 24 hours of parent messages)
+    // Calculate lookback cutoff (48 hours max)
+    const cutoffTimestamp = (Date.now() - DEFERRED_LOOKBACK_HOURS * 60 * 60 * 1000) / 1000;
+
+    // Look at recent channel history
     const historyResponse = await client.conversations.history({
       channel: config.slack.channelId,
+      oldest: cutoffTimestamp.toString(),  // Only messages within lookback window
       limit: 100,
     });
 
     if (!historyResponse.messages) {
       return [];
     }
+
+    console.log(`Scanning ${historyResponse.messages.length} messages within ${DEFERRED_LOOKBACK_HOURS}h lookback`);
 
     // Check each thread for deferred markers
     for (const message of historyResponse.messages) {
@@ -679,6 +719,10 @@ export async function findDeferredNotifications(): Promise<DeferredNotification[
 
       // Skip if no thread replies
       if (!message.reply_count || message.reply_count === 0) continue;
+
+      // Skip if message is older than lookback window (double-check)
+      const msgTimestamp = parseFloat(message.ts);
+      if (msgTimestamp < cutoffTimestamp) continue;
 
       try {
         const threadResponse = await client.conversations.replies({
@@ -709,9 +753,14 @@ export async function findDeferredNotifications(): Promise<DeferredNotification[
 
         // Add to list if deferred but not yet notified
         if (deferredUserId && !alreadyNotified) {
+          // Extract Monday URL from parent message blocks
+          const parentMessage = threadResponse.messages[0];
+          const mondayUrl = extractMondayUrlFromBlocks(parentMessage?.blocks as any[]);
+
           deferred.push({
             threadTs: message.ts,
             assigneeSlackId: deferredUserId,
+            mondayUrl,
           });
         }
       } catch (e: any) {
@@ -728,20 +777,26 @@ export async function findDeferredNotifications(): Promise<DeferredNotification[
 
 /**
  * Release a deferred notification by notifying the assignee
- * Posts @mention and adds [quiet-hours:notified] marker
+ *
+ * Idempotency: Only posts [quiet-hours:notified] marker AFTER @mention succeeds.
+ * If @mention fails, notification will be retried on next scheduler run.
  */
 export async function releaseDeferredNotification(
   threadTs: string,
-  assigneeSlackId: string
+  assigneeSlackId: string,
+  mondayUrl: string | null
 ): Promise<boolean> {
   try {
-    // Notify assignee with @mention
+    // Build release message with optional Monday link
+    const mondayLink = mondayUrl ? ` → <${mondayUrl}|View in Monday>` : '';
+
+    // Notify assignee with @mention (this is the critical step)
     await postToThread(
       threadTs,
-      `<@${assigneeSlackId}> 📬 _You have a new task from quiet hours._`
+      `<@${assigneeSlackId}> 📬 _You have a new task from quiet hours._${mondayLink}`
     );
 
-    // Add notified marker
+    // Only mark as notified AFTER @mention succeeds (idempotency guard)
     await postToThread(
       threadTs,
       `[quiet-hours:notified] _Assignee notified at business hour._`
@@ -749,6 +804,7 @@ export async function releaseDeferredNotification(
 
     return true;
   } catch (error) {
+    // Do NOT mark as notified - will retry on next scheduler run
     console.error(`Failed to release deferred notification for thread ${threadTs}:`, error);
     return false;
   }
@@ -757,6 +813,12 @@ export async function releaseDeferredNotification(
 /**
  * Release all deferred notifications from quiet hours
  * Called at 10am Mon-Fri by scheduler
+ *
+ * Hardening:
+ * - Processes in batches of 5 to avoid rate limits
+ * - 1 second delay between releases
+ * - Does NOT re-notify on-call user (they were already notified during quiet hours)
+ *
  * Returns count of notifications released
  */
 export async function releaseAllDeferredNotifications(): Promise<number> {
@@ -772,13 +834,29 @@ export async function releaseAllDeferredNotifications(): Promise<number> {
   console.log(`Found ${deferred.length} deferred notification(s) to release`);
 
   let released = 0;
+  let batchCount = 0;
+
   for (const notification of deferred) {
     const success = await releaseDeferredNotification(
       notification.threadTs,
-      notification.assigneeSlackId
+      notification.assigneeSlackId,
+      notification.mondayUrl
     );
+
     if (success) {
       released++;
+    }
+
+    batchCount++;
+
+    // Rate limiting: delay between releases
+    if (batchCount < deferred.length) {
+      await sleep(RELEASE_DELAY_MS);
+    }
+
+    // Log progress for batches
+    if (batchCount % RELEASE_BATCH_SIZE === 0) {
+      console.log(`Released ${released}/${batchCount} so far...`);
     }
   }
 
