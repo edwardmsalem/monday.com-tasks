@@ -18,7 +18,11 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import multer from 'multer';
 import { config, validateConfig } from './config/environment.js';
 import { parseIncomingEmail } from './services/emailParser.js';
-import { executeWorkflowSafe } from './workflow.js';
+import {
+  executeWorkflowSafe,
+  parseSlackTaskInput,
+  executeSlackTaskWorkflowSafe,
+} from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
@@ -958,6 +962,135 @@ app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), asy
 });
 
 // ============================================================================
+// Slack /task Command - Unified Task Intake
+// ============================================================================
+
+/**
+ * /task slash command handler
+ * Primary intake path for internal task creation via Slack
+ *
+ * Usage:
+ * - Single-line: /task @assignee refund due fri urgency high notes: customer called twice
+ * - Multiline:
+ *     @assignee
+ *     due fri
+ *     refund
+ *     notes...
+ *
+ * Behavior:
+ * - Creates Monday item immediately
+ * - Generates Run ID and stores it
+ * - Posts initial Monday Update (narrative only)
+ * - Creates Slack thread
+ * - Respects quiet-hours routing
+ */
+app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { text, user_id } = req.body as {
+      text: string;
+      user_id: string;
+    };
+
+    console.log(`/task command received from ${user_id}: ${text}`);
+
+    // Check whitelist permissions
+    const whitelist = config.slack.taskCommandWhitelist;
+    if (whitelist.length > 0 && !whitelist.includes(user_id)) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `🔒 *Access Restricted*\n\n` +
+          `The \`/task\` command is currently limited to authorized users.\n\n` +
+          `*How to create tasks:*\n` +
+          `• Forward emails to the forwarding inbox\n` +
+          `• Ask an authorized user to run \`/task\` for you\n\n` +
+          `_Contact your admin if you need access._`,
+      });
+      return;
+    }
+
+    // Handle help or empty input
+    const trimmedText = text.trim();
+    if (!trimmedText || trimmedText.toLowerCase() === 'help') {
+      res.json({
+        response_type: 'ephemeral',
+        text: `*Task Creation*\n\n` +
+          `Create tasks directly from Slack.\n\n` +
+          `*Single-line format:*\n` +
+          `\`/task @assignee description due friday urgency high notes: details\`\n\n` +
+          `*Multiline format:*\n` +
+          `\`\`\`\n` +
+          `@assignee\n` +
+          `due friday\n` +
+          `Task description here\n` +
+          `notes: Additional details\n` +
+          `\`\`\`\n\n` +
+          `*Options:*\n` +
+          `• \`@assignee\` - Required (use @ mention)\n` +
+          `• \`due X\` - Date (fri, 12/25, tomorrow, ASAP)\n` +
+          `• \`urgency high|medium|low\` - Priority\n` +
+          `• \`type X\` - Task type (refund, shipping, etc.)\n` +
+          `• \`notes: X\` - Additional notes\n\n` +
+          `_ASAP sets due date to null and urgency to High._`,
+      });
+      return;
+    }
+
+    // Parse the input
+    const parsed = parseSlackTaskInput(text);
+
+    // Handle missing assignee - default to on-call user
+    if (!parsed.assigneeSlackId) {
+      const onCallUserId = config.slack.quietHours.onCallUserId;
+      if (onCallUserId) {
+        parsed.assigneeSlackId = onCallUserId;
+        parsed.urgency = 'Medium';  // Default urgency when defaulting assignee
+        console.log(`No assignee specified, defaulting to on-call user: ${onCallUserId}`);
+      } else {
+        res.json({
+          response_type: 'ephemeral',
+          text: `:warning: *Assignee required*\n\n` +
+            `Please use \`@mention\` to assign the task.\n\n` +
+            `Example: \`/task @john Fix the login bug due friday\``,
+        });
+        return;
+      }
+    }
+
+    // Acknowledge immediately (Slack requires response within 3 seconds)
+    res.json({
+      response_type: 'ephemeral',
+      text: `⏳ Creating task...`,
+    });
+
+    // Execute the workflow asynchronously
+    const result = await executeSlackTaskWorkflowSafe({
+      parsed,
+      creatorSlackId: user_id,
+    });
+
+    // Post result to user (ephemeral follow-up)
+    if (result.success) {
+      const mondayUrl = monday.getItemUrl(result.mondayItemId);
+      await slack.postToThread(
+        result.slackThreadTs,
+        `✅ Task created by <@${user_id}>`
+      );
+    } else {
+      // Post error to channel as ephemeral (user only)
+      console.error('Task creation failed:', result.error);
+      // Note: Can't send follow-up ephemeral without response_url
+      // Error is logged and user sees the "Creating..." message
+    }
+  } catch (error) {
+    console.error('/task command error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: `:x: Error creating task: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    });
+  }
+});
+
+// ============================================================================
 // Slack Interactive Messages (button clicks, etc.)
 // ============================================================================
 
@@ -1029,12 +1162,54 @@ interface MondayWebhook {
     };
     userId?: number;
     textBody?: string;
+    boardId?: number;
   };
 }
 
 /**
+ * Send guidance DM to a user who created an item directly in Monday
+ * This is informational, not an error.
+ */
+async function sendDirectCreationGuidance(mondayUserId: number): Promise<void> {
+  try {
+    // Get the Monday user's details
+    const mondayUser = await monday.getUser(mondayUserId);
+    if (!mondayUser?.email) {
+      console.log(`Cannot send guidance: no email for Monday user ${mondayUserId}`);
+      return;
+    }
+
+    // Find the corresponding Slack user
+    const { findUserByEmail } = await import('./services/userResolver.js');
+    const user = await findUserByEmail(mondayUser.email);
+
+    if (!user?.slackId) {
+      console.log(`Cannot send guidance: no Slack ID for ${mondayUser.email}`);
+      return;
+    }
+
+    // Send Slack DM with guidance
+    const client = slack.getClient();
+    await client.chat.postMessage({
+      channel: user.slackId,  // DM to user
+      text: `📋 *Task Creation Guidance*\n\n` +
+        `I noticed you created a task directly in Monday.com.\n\n` +
+        `To keep everything in sync, please use one of these methods:\n` +
+        `• *Email:* Forward emails to the forwarding inbox\n` +
+        `• *Slack:* Use the \`/task\` command\n\n` +
+        `This ensures tasks have proper tracking, Slack threads, and Run IDs.\n\n` +
+        `_This is just a friendly reminder – your task was still created._`,
+    });
+
+    console.log(`Sent direct creation guidance to ${user.name}`);
+  } catch (error) {
+    console.error('Failed to send direct creation guidance:', error);
+  }
+}
+
+/**
  * Monday.com webhook handler
- * Handles: status changes, item updates
+ * Handles: status changes, item updates, direct item creation detection
  */
 app.post('/webhook/monday', express.json(), async (req: Request, res: Response): Promise<void> => {
   try {
@@ -1051,6 +1226,27 @@ app.post('/webhook/monday', express.json(), async (req: Request, res: Response):
 
     if (body.event) {
       const event = body.event;
+
+      // Handle direct item creation - send guidance to user
+      // Note: This fires for ALL item creations, so we wait 5 seconds
+      // then check if Run ID is populated (indicating automated creation)
+      if (event.type === 'create_item' && event.pulseId && event.userId) {
+        console.log(`Item ${event.pulseId} created by user ${event.userId}, checking if direct creation...`);
+
+        // Wait 5 seconds for automated workflow to populate Run ID
+        setTimeout(async () => {
+          try {
+            const itemHasRunId = await monday.hasRunId(String(event.pulseId));
+
+            if (!itemHasRunId && event.userId) {
+              console.log(`Item ${event.pulseId} has no Run ID - sending guidance to user ${event.userId}`);
+              await sendDirectCreationGuidance(event.userId);
+            }
+          } catch (error) {
+            console.error('Error checking for direct creation:', error);
+          }
+        }, 5000);  // 5 second delay
+      }
 
       // Handle workflow status change to "Complete"
       if (event.type === 'change_column_value' && event.columnId === config.monday.columns.workflowStatus) {

@@ -492,6 +492,38 @@ export async function getItem(itemId: string): Promise<{
 }
 
 /**
+ * Check if an item has a Run ID (indicating automated creation)
+ */
+export async function hasRunId(itemId: string): Promise<boolean> {
+  const query = `
+    query CheckRunId($itemId: ID!) {
+      items(ids: [$itemId]) {
+        column_values(ids: ["${config.monday.columns.runId}"]) {
+          text
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{
+        column_values: Array<{ text: string }>;
+      }>;
+    }>(query, { itemId });
+
+    const item = result.items[0];
+    if (!item) return false;
+
+    const runIdCol = item.column_values[0];
+    return !!(runIdCol?.text && runIdCol.text.length > 0);
+  } catch (error) {
+    console.error('Error checking Run ID:', error);
+    return false;  // Assume no Run ID on error
+  }
+}
+
+/**
  * Store the durable PDF URL on a Monday item for retry scenarios
  */
 export async function storePdfUrl(itemId: string, pdfUrl: string): Promise<void> {

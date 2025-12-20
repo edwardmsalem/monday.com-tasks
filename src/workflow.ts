@@ -415,3 +415,310 @@ export async function executeWorkflowSafe(input: WorkflowInput): Promise<Workflo
     };
   }
 }
+
+// ============================================================================
+// Slack Task Creation (/task command)
+// ============================================================================
+
+export interface SlackTaskInput {
+  /** Raw text from /task command */
+  text: string;
+  /** Slack user ID of the creator */
+  creatorSlackId: string;
+}
+
+export interface ParsedSlackTask {
+  assigneeSlackId: string | null;
+  description: string;
+  dueDate: string | null;  // Parsed date or null for ASAP
+  urgency: 'High' | 'Medium' | 'Low';
+  taskType: string;
+  notes: string | null;
+}
+
+/**
+ * Parse /task command input (single-line or multiline)
+ *
+ * Supported formats:
+ * - Single-line: /task @assignee refund due fri urgency high notes: customer called twice
+ * - Multiline:
+ *   @assignee
+ *   due fri
+ *   refund
+ *   notes...
+ */
+export function parseSlackTaskInput(text: string): ParsedSlackTask {
+  const lines = text.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+  let assigneeSlackId: string | null = null;
+  let description = '';
+  let dueDate: string | null = null;
+  let urgency: 'High' | 'Medium' | 'Low' = 'Medium';
+  let taskType = 'General';
+  let notes: string | null = null;
+
+  // Extract @mentions (Slack format: <@U123ABC> or <@U123ABC|name>)
+  const mentionRegex = /<@([A-Z0-9]+)(?:\|[^>]+)?>/g;
+
+  // Check if multiline format (lines with patterns like "due", "urgency", "@")
+  const isMultiline = lines.length > 1 && lines.some(l =>
+    /^<@[A-Z0-9]+/.test(l) ||
+    /^due\s/i.test(l) ||
+    /^urgency\s/i.test(l) ||
+    /^type\s/i.test(l) ||
+    /^notes:/i.test(l)
+  );
+
+  if (isMultiline) {
+    // Multiline parsing
+    const remainingLines: string[] = [];
+
+    for (const line of lines) {
+      // Assignee line
+      const mentionMatch = line.match(mentionRegex);
+      if (mentionMatch && !assigneeSlackId) {
+        const idMatch = mentionMatch[0].match(/<@([A-Z0-9]+)/);
+        if (idMatch) {
+          assigneeSlackId = idMatch[1];
+        }
+        // If line is just the mention, skip it
+        if (line.replace(mentionRegex, '').trim().length === 0) continue;
+      }
+
+      // Due date line
+      if (/^due\s/i.test(line)) {
+        dueDate = line.replace(/^due\s+/i, '').trim();
+        continue;
+      }
+
+      // Urgency line
+      if (/^urgency\s/i.test(line)) {
+        const urg = line.replace(/^urgency\s+/i, '').trim().toLowerCase();
+        if (urg === 'high') urgency = 'High';
+        else if (urg === 'low') urgency = 'Low';
+        else urgency = 'Medium';
+        continue;
+      }
+
+      // Type line
+      if (/^type\s/i.test(line)) {
+        taskType = getTaskTypeDisplayName(line.replace(/^type\s+/i, '').trim());
+        continue;
+      }
+
+      // Notes line (everything after "notes:")
+      if (/^notes:/i.test(line)) {
+        notes = line.replace(/^notes:\s*/i, '').trim();
+        continue;
+      }
+
+      // Everything else is description
+      remainingLines.push(line);
+    }
+
+    description = remainingLines.join(' ').trim();
+  } else {
+    // Single-line parsing
+    let remaining = text.trim();
+
+    // Extract assignee
+    const mentionMatch = remaining.match(mentionRegex);
+    if (mentionMatch) {
+      const idMatch = mentionMatch[0].match(/<@([A-Z0-9]+)/);
+      if (idMatch) {
+        assigneeSlackId = idMatch[1];
+      }
+      remaining = remaining.replace(mentionRegex, '').trim();
+    }
+
+    // Extract "due X" pattern
+    const dueMatch = remaining.match(/\bdue\s+(\S+)/i);
+    if (dueMatch) {
+      dueDate = dueMatch[1];
+      remaining = remaining.replace(dueMatch[0], '').trim();
+    }
+
+    // Extract "urgency X" pattern
+    const urgencyMatch = remaining.match(/\burgency\s+(high|medium|low)/i);
+    if (urgencyMatch) {
+      const urg = urgencyMatch[1].toLowerCase();
+      if (urg === 'high') urgency = 'High';
+      else if (urg === 'low') urgency = 'Low';
+      else urgency = 'Medium';
+      remaining = remaining.replace(urgencyMatch[0], '').trim();
+    }
+
+    // Extract "type X" pattern
+    const typeMatch = remaining.match(/\btype\s+(\S+)/i);
+    if (typeMatch) {
+      taskType = getTaskTypeDisplayName(typeMatch[1]);
+      remaining = remaining.replace(typeMatch[0], '').trim();
+    }
+
+    // Extract "notes: X" pattern (everything after notes:)
+    const notesMatch = remaining.match(/\bnotes:\s*(.+)$/i);
+    if (notesMatch) {
+      notes = notesMatch[1].trim();
+      remaining = remaining.replace(notesMatch[0], '').trim();
+    }
+
+    description = remaining.trim();
+  }
+
+  // Handle ASAP due date
+  if (dueDate && isAsapDate(dueDate)) {
+    dueDate = null;
+    urgency = 'High';  // ASAP always sets High urgency
+  }
+
+  return {
+    assigneeSlackId,
+    description,
+    dueDate,
+    urgency,
+    taskType,
+    notes,
+  };
+}
+
+export interface SlackTaskWorkflowInput {
+  parsed: ParsedSlackTask;
+  creatorSlackId: string;
+}
+
+/**
+ * Execute Slack task creation workflow
+ * Identical to email workflow but with Slack-specific Update format
+ */
+export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): Promise<WorkflowResult> {
+  const { parsed, creatorSlackId } = input;
+
+  // Generate unique Run ID for this workflow run
+  const runId = randomUUID();
+  const log = createLogger(runId);
+
+  log.log('Starting Slack task workflow:', parsed.description);
+
+  // Step 1: Resolve assignee
+  // Import here to avoid circular dependency
+  const { findUserBySlackId, getUserNamesString } = await import('./services/userResolver.js');
+
+  if (!parsed.assigneeSlackId) {
+    throw new Error('Assignee is required. Use @mention to assign.');
+  }
+
+  const user = await findUserBySlackId(parsed.assigneeSlackId);
+  if (!user) {
+    const availableUsers = await getUserNamesString();
+    throw new Error(`Unknown user: <@${parsed.assigneeSlackId}>. Available users: ${availableUsers}`);
+  }
+  log.log('Resolved user:', user.name, 'Monday ID:', user.mondayId);
+
+  // Step 2: Parse due date
+  const formattedDueDate = parsed.dueDate ? parseDate(parsed.dueDate) : null;
+  const finalUrgency = formattedDueDate === null ? 'High' : parsed.urgency;
+  log.log('Due date:', formattedDueDate ?? 'ASAP (no date)');
+  log.log('Urgency:', finalUrgency);
+
+  // Step 3: Create Monday.com item
+  const taskName = parsed.description || 'Slack Task';
+  log.log('Creating Monday.com item...');
+  const mondayItem = await monday.createItem({
+    name: taskName,
+    dueDate: formattedDueDate,
+    ownerIds: [user.mondayId],
+    taskType: parsed.taskType,
+    source: 'Slack',  // Source = Slack for /task command
+    urgency: finalUrgency,
+  });
+  log.log('Monday item created:', mondayItem.id);
+
+  // Store Run ID on Monday item
+  await monday.storeRunId(mondayItem.id, runId);
+
+  // Set initial attachment state to Skipped (no attachments for Slack tasks)
+  await monday.updateAttachmentState(mondayItem.id, 'Skipped');
+
+  // Step 4: Create initial Monday Update
+  // LOCKED ARCHITECTURE: Slack-created tasks have different format (no From/To/BCC)
+  const initialUpdateParts: string[] = [];
+
+  // Notes (if present)
+  if (parsed.notes) {
+    initialUpdateParts.push(`📝 ${parsed.notes}`);
+  }
+
+  // Creator provenance (Slack-specific)
+  initialUpdateParts.push(`✍️ Created via Slack by <@${creatorSlackId}>`);
+
+  // Run ID (always)
+  initialUpdateParts.push(`🔗 Run ID: ${runId.substring(0, 8)}`);
+
+  log.log('Creating initial Monday update...');
+  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
+
+  // Step 5: Send Slack notification (respects quiet-hours)
+  log.log('Sending Slack notification...');
+  const slackMessage = await slack.sendNotification({
+    taskType: parsed.taskType,
+    subject: taskName,
+    assigneeSlackId: user.slackId || user.name,
+    dueDate: formatDateForDisplay(formattedDueDate),
+    priority: finalUrgency === 'High' ? 'high' : finalUrgency === 'Low' ? 'low' : 'medium',
+    notes: parsed.notes ?? '',
+    fromEmail: null,  // No From for Slack tasks
+    toEmail: null,    // No To for Slack tasks
+    mondayItemId: mondayItem.id,
+    // No meeting detection for Slack-created tasks
+  });
+  log.log('Slack message sent:', slackMessage.ts);
+
+  // Post Run ID to Slack thread
+  await slack.postToThread(
+    slackMessage.ts,
+    `🔗 _Run ID: ${runId.substring(0, 8)}_`
+  );
+
+  // Step 6: Update Monday with Slack thread ID
+  log.log('Updating Monday with Slack thread ID...');
+  await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
+
+  log.log('Slack task workflow completed successfully!');
+
+  return {
+    mondayItemId: mondayItem.id,
+    slackThreadTs: slackMessage.ts,
+    success: true,
+    runId,
+    attachmentStatus: {
+      slackUploaded: false,
+      mondayUploaded: false,
+      mondayRetryScheduled: false,
+      pdfUrl: undefined,
+      state: 'Skipped',
+    },
+  };
+}
+
+/**
+ * Execute Slack task workflow with error handling
+ */
+export async function executeSlackTaskWorkflowSafe(input: SlackTaskWorkflowInput): Promise<WorkflowResult> {
+  const runId = randomUUID();
+  const log = createLogger(runId);
+
+  try {
+    return await executeSlackTaskWorkflow(input);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log.error('Slack task workflow failed:', errorMessage);
+
+    return {
+      mondayItemId: '',
+      slackThreadTs: '',
+      success: false,
+      error: errorMessage,
+      runId,
+    };
+  }
+}

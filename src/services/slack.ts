@@ -6,7 +6,7 @@ import * as monday from './monday.js';
 
 let slackClient: WebClient | null = null;
 
-function getClient(): WebClient {
+export function getClient(): WebClient {
   if (!slackClient) {
     slackClient = new WebClient(config.slack.botToken);
   }

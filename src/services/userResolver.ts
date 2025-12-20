@@ -184,6 +184,14 @@ export async function findUserByMondayId(mondayId: number): Promise<UnifiedUser 
 }
 
 /**
+ * Find a user by Slack ID
+ */
+export async function findUserBySlackId(slackId: string): Promise<UnifiedUser | null> {
+  const users = await getAllUsers();
+  return users.find(u => u.slackId === slackId) ?? null;
+}
+
+/**
  * Get list of all user names (for Claude AI context)
  */
 export async function getUserNames(): Promise<string[]> {

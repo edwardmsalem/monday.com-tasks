@@ -100,6 +100,11 @@ export const config = {
       workingHoursStart: 10,  // 10:00 AM
       workingHoursEnd: 18,    // 6:00 PM (18:00)
     },
+    // /task command permissions
+    taskCommandWhitelist: getEnvVar('SLACK_TASK_COMMAND_WHITELIST', '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(id => id.length > 0),  // Comma-separated Slack user IDs
   },
 
   // ConvertAPI
