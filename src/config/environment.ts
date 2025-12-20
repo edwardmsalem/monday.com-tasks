@@ -80,10 +80,9 @@ export const config = {
       file: 'file_mkxv6aa0',
       urgency: 'color_mkytzsrj',         // Urgency (High, Medium, Low)
       pdfUrl: 'text_mkythpzx',           // Durable PDF URL for retries
-      // Attachment tracking columns (create in Monday if needed)
-      attachmentState: 'status_mkyZZZZZ',     // Queued/Uploaded/Retrying/Failed - UPDATE WITH REAL ID
-      attachmentError: 'text_mkyWWWWW',       // Last error message - UPDATE WITH REAL ID
-      correlationId: 'text_mkyVVVVV',         // Workflow run ID - UPDATE WITH REAL ID
+      // New columns (only 2 - keeping board lean)
+      attachmentState: 'status_mkyZZZZZ',     // Status: Queued/Uploaded/Retrying/Failed/Skipped - UPDATE WITH REAL ID
+      runId: 'text_mkyVVVVV',                 // Text: Workflow run ID (correlationId) - UPDATE WITH REAL ID
     },
   },
 

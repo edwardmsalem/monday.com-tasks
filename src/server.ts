@@ -865,7 +865,7 @@ app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), asy
           },
           {
             type: 'mrkdwn',
-            text: `*Correlation ID:*\n\`${debugInfo.correlationId || 'N/A'}\``,
+            text: `*Run ID:*\n\`${debugInfo.runId || 'N/A'}\``,
           },
         ],
       },
@@ -929,16 +929,7 @@ app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), asy
       });
     }
 
-    // Add attachment error if present
-    if (debugInfo.attachmentError) {
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Last Attachment Error:*\n\`\`\`${debugInfo.attachmentError}\`\`\``,
-        },
-      });
-    }
+    // Note: Errors are in Updates/Slack thread, not columns (keeping board lean)
 
     res.json({
       response_type: 'ephemeral',

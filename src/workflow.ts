@@ -15,7 +15,12 @@
  * - Monday file upload has retry with backoff (2min, 10min, 30min)
  * - PDF URL stored for retry scenarios
  * - Priority mapped to Monday Urgency column
- * - CorrelationId for distributed tracing across logs, Monday, and Slack
+ * - Run ID for distributed tracing across logs, Monday, and Slack
+ *
+ * Board philosophy:
+ * - Columns are for STATE and ROUTING only
+ * - All narrative context goes to Monday Updates
+ * - Errors go to Updates/Slack, not columns
  */
 
 import { randomUUID } from 'crypto';
@@ -58,10 +63,10 @@ export interface WorkflowInput {
 }
 
 /**
- * Create a logger prefixed with correlationId for tracing
+ * Create a logger prefixed with Run ID for tracing
  */
-function createLogger(correlationId: string) {
-  const prefix = `[${correlationId.substring(0, 8)}]`;
+function createLogger(runId: string) {
+  const prefix = `[${runId.substring(0, 8)}]`;
   return {
     log: (...args: unknown[]) => console.log(prefix, ...args),
     warn: (...args: unknown[]) => console.warn(prefix, ...args),
@@ -75,9 +80,9 @@ function createLogger(correlationId: string) {
 export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowResult> {
   const { email } = input;
 
-  // Generate unique correlation ID for this workflow run
-  const correlationId = randomUUID();
-  const log = createLogger(correlationId);
+  // Generate unique Run ID for this workflow run
+  const runId = randomUUID();
+  const log = createLogger(runId);
 
   log.log('Starting workflow for email:', email.subject);
 
@@ -154,13 +159,23 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   });
   log.log('Monday item created:', mondayItem.id);
 
-  // Store correlationId on Monday item for debugging
-  await monday.storeCorrelationId(mondayItem.id, correlationId);
+  // Store Run ID on Monday item (Text column for debugging/tracing)
+  await monday.storeRunId(mondayItem.id, runId);
 
-  // Create initial update (comment) on the Monday item with notes
-  if (analysisResult.notes) {
-    log.log('Creating Monday update with notes...');
-    await monday.createUpdate(mondayItem.id, analysisResult.notes);
+  // Set initial attachment state to Queued
+  await monday.updateAttachmentState(mondayItem.id, 'Queued');
+
+  // Create FIRST Monday update with all narrative context
+  // (Columns are for state/routing only - narrative goes to Updates)
+  const initialUpdateParts = [
+    analysisResult.notes ? `📝 ${analysisResult.notes}` : null,
+    emlHeaders.from ? `📧 From: ${emlHeaders.from}` : null,
+    `🔗 Run ID: ${runId.substring(0, 8)}`,
+  ].filter(Boolean);
+
+  if (initialUpdateParts.length > 0) {
+    log.log('Creating initial Monday update...');
+    await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
   }
 
   // Step 8.5: Project to Todoist (if enabled)
@@ -239,10 +254,10 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   });
   log.log('Slack message sent:', slackMessage.ts);
 
-  // Post correlationId to Slack thread for debugging/tracing
+  // Post Run ID to Slack thread for debugging/tracing
   await slack.postToThread(
     slackMessage.ts,
-    `🔗 _Run ID: ${correlationId.substring(0, 8)}_`
+    `🔗 _Run ID: ${runId.substring(0, 8)}_`
   );
 
   // Step 11: Upload PDF - Slack first (human value), then Monday (best effort with retry)
@@ -254,7 +269,6 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   let mondayUploaded = false;
   let mondayRetryScheduled = false;
   let attachmentState: AttachmentState = 'Queued';
-  let lastAttachmentError: string | undefined;
 
   // Step 11a: Upload to Slack first (priority for human visibility)
   try {
@@ -263,7 +277,8 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     log.log('PDF uploaded to Slack thread');
   } catch (slackError) {
     log.error('Slack file upload failed (non-fatal):', slackError);
-    lastAttachmentError = slackError instanceof Error ? slackError.message : String(slackError);
+    // Post error to Slack thread (errors go to Updates/Slack, not columns)
+    await slack.postToThread(slackMessage.ts, `⚠️ Slack PDF upload failed: ${slackError instanceof Error ? slackError.message : 'Unknown error'}`);
     // Continue - Slack upload failure is not critical
   }
 
@@ -298,13 +313,14 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     }
   } catch (mondayError) {
     log.error('Monday file upload failed (non-fatal):', mondayError);
-    lastAttachmentError = mondayError instanceof Error ? mondayError.message : String(mondayError);
     attachmentState = 'Failed';
+    // Post error to Monday update (errors go to Updates/Slack, not columns)
+    await monday.createUpdate(mondayItem.id, `⚠️ Monday PDF upload failed: ${mondayError instanceof Error ? mondayError.message : 'Unknown error'}`);
     // Continue - Monday upload failure is not critical, task still exists
   }
 
-  // Update attachment state on Monday for tracking
-  await monday.updateAttachmentState(mondayItem.id, attachmentState, lastAttachmentError);
+  // Update attachment state column (status only, no error text)
+  await monday.updateAttachmentState(mondayItem.id, attachmentState);
 
   log.log(`Attachment status: Slack=${slackUploaded}, Monday=${mondayUploaded}, RetryScheduled=${mondayRetryScheduled}, State=${attachmentState}`);
 
@@ -349,14 +365,13 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     mondayItemId: mondayItem.id,
     slackThreadTs: slackMessage.ts,
     success: true,
-    correlationId,
+    runId,
     attachmentStatus: {
       slackUploaded,
       mondayUploaded,
       mondayRetryScheduled,
       pdfUrl: pdfFile.url,
       state: attachmentState,
-      lastError: lastAttachmentError,
     },
   };
 }
@@ -365,9 +380,9 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
  * Execute workflow with error handling
  */
 export async function executeWorkflowSafe(input: WorkflowInput): Promise<WorkflowResult> {
-  // Generate correlationId for error tracking even if workflow fails early
-  const correlationId = randomUUID();
-  const log = createLogger(correlationId);
+  // Generate runId for error tracking even if workflow fails early
+  const runId = randomUUID();
+  const log = createLogger(runId);
 
   try {
     return await executeWorkflow(input);
@@ -380,7 +395,7 @@ export async function executeWorkflowSafe(input: WorkflowInput): Promise<Workflo
       slackThreadTs: '',
       success: false,
       error: errorMessage,
-      correlationId,
+      runId,
     };
   }
 }

@@ -65,7 +65,7 @@ export interface WorkflowResult {
   success: boolean;
   error?: string;
   /** Unique identifier for this workflow run - for debugging and tracing */
-  correlationId: string;
+  runId: string;
   /** Attachment upload status - workflow can succeed even if attachments fail */
   attachmentStatus?: {
     slackUploaded: boolean;
@@ -73,7 +73,6 @@ export interface WorkflowResult {
     mondayRetryScheduled?: boolean;
     pdfUrl?: string;
     state: AttachmentState;
-    lastError?: string;
   };
 }
 
@@ -83,6 +82,7 @@ export type AttachmentState = 'Queued' | 'Uploaded' | 'Retrying' | 'Failed' | 'S
 
 /**
  * Task debug info for /taskdebug command
+ * Note: Errors are in Updates/Slack, not columns (keeping board lean)
  */
 export interface TaskDebugInfo {
   mondayItemId: string;
@@ -94,8 +94,7 @@ export interface TaskDebugInfo {
   urgency: string | null;
   pdfUrl: string | null;
   attachmentState: string | null;
-  attachmentError: string | null;
-  correlationId: string | null;
+  runId: string | null;
   dueDate: string | null;
   owner: string | null;
 }
