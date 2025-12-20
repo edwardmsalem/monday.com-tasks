@@ -258,12 +258,13 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     channel: response.channel ?? config.slack.channelId,
   };
 
-  // During quiet hours: notify on-call user and post queued note
+  // During quiet hours: notify on-call user and post deferred marker
   if (quietHoursActive && config.slack.quietHours.onCallUserId) {
-    // Post thread note about being queued
+    // Post deferred marker (searchable, no @mention to avoid pings)
+    // Format: [quiet-hours:deferred:SLACK_USER_ID] - used by release scheduler
     await postToThread(
       slackMessage.ts,
-      `_Queued outside working hours – <@${input.assigneeSlackId}> will be notified at next business hour._`
+      `[quiet-hours:deferred:${input.assigneeSlackId}] _Queued outside working hours – assignee will be notified at next business hour._`
     );
 
     // Notify on-call user in thread
@@ -636,4 +637,151 @@ export function verifySlackSignature(
     Buffer.from(signature),
     Buffer.from(expectedSignature)
   );
+}
+
+// ============================================================================
+// Quiet Hours - Deferred Notification Release
+// ============================================================================
+
+interface DeferredNotification {
+  threadTs: string;
+  assigneeSlackId: string;
+}
+
+/**
+ * Find threads with deferred assignee notifications from quiet hours
+ * Looks for marker: [quiet-hours:deferred:USER_ID]
+ * Excludes threads that already have: [quiet-hours:notified]
+ */
+export async function findDeferredNotifications(): Promise<DeferredNotification[]> {
+  const client = getClient();
+  const deferred: DeferredNotification[] = [];
+
+  try {
+    // Get bot's user ID to identify our messages
+    const authResponse = await client.auth.test();
+    const botUserId = authResponse.user_id;
+
+    // Look at recent channel history (last 24 hours of parent messages)
+    const historyResponse = await client.conversations.history({
+      channel: config.slack.channelId,
+      limit: 100,
+    });
+
+    if (!historyResponse.messages) {
+      return [];
+    }
+
+    // Check each thread for deferred markers
+    for (const message of historyResponse.messages) {
+      // Only check threads started by the bot
+      if (message.user !== botUserId || !message.ts) continue;
+
+      // Skip if no thread replies
+      if (!message.reply_count || message.reply_count === 0) continue;
+
+      try {
+        const threadResponse = await client.conversations.replies({
+          channel: config.slack.channelId,
+          ts: message.ts,
+        });
+
+        if (!threadResponse.messages) continue;
+
+        let deferredUserId: string | null = null;
+        let alreadyNotified = false;
+
+        for (const reply of threadResponse.messages) {
+          // Skip non-bot messages
+          if (reply.user !== botUserId || !reply.text) continue;
+
+          // Check for deferred marker: [quiet-hours:deferred:USER_ID]
+          const deferredMatch = reply.text.match(/\[quiet-hours:deferred:([^\]]+)\]/);
+          if (deferredMatch) {
+            deferredUserId = deferredMatch[1];
+          }
+
+          // Check for already notified marker
+          if (reply.text.includes('[quiet-hours:notified]')) {
+            alreadyNotified = true;
+          }
+        }
+
+        // Add to list if deferred but not yet notified
+        if (deferredUserId && !alreadyNotified) {
+          deferred.push({
+            threadTs: message.ts,
+            assigneeSlackId: deferredUserId,
+          });
+        }
+      } catch (e: any) {
+        console.warn(`Failed to check thread ${message.ts}:`, e.message);
+      }
+    }
+
+    return deferred;
+  } catch (error) {
+    console.error('Error finding deferred notifications:', error);
+    return [];
+  }
+}
+
+/**
+ * Release a deferred notification by notifying the assignee
+ * Posts @mention and adds [quiet-hours:notified] marker
+ */
+export async function releaseDeferredNotification(
+  threadTs: string,
+  assigneeSlackId: string
+): Promise<boolean> {
+  try {
+    // Notify assignee with @mention
+    await postToThread(
+      threadTs,
+      `<@${assigneeSlackId}> 📬 _You have a new task from quiet hours._`
+    );
+
+    // Add notified marker
+    await postToThread(
+      threadTs,
+      `[quiet-hours:notified] _Assignee notified at business hour._`
+    );
+
+    return true;
+  } catch (error) {
+    console.error(`Failed to release deferred notification for thread ${threadTs}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Release all deferred notifications from quiet hours
+ * Called at 10am Mon-Fri by scheduler
+ * Returns count of notifications released
+ */
+export async function releaseAllDeferredNotifications(): Promise<number> {
+  console.log('Releasing deferred quiet-hours notifications...');
+
+  const deferred = await findDeferredNotifications();
+
+  if (deferred.length === 0) {
+    console.log('No deferred notifications to release');
+    return 0;
+  }
+
+  console.log(`Found ${deferred.length} deferred notification(s) to release`);
+
+  let released = 0;
+  for (const notification of deferred) {
+    const success = await releaseDeferredNotification(
+      notification.threadTs,
+      notification.assigneeSlackId
+    );
+    if (success) {
+      released++;
+    }
+  }
+
+  console.log(`Released ${released}/${deferred.length} deferred notifications`);
+  return released;
 }
