@@ -81,8 +81,8 @@ export const config = {
       urgency: 'color_mkytzsrj',         // Urgency (High, Medium, Low)
       pdfUrl: 'text_mkythpzx',           // Durable PDF URL for retries
       // New columns (only 2 - keeping board lean)
-      attachmentState: 'status_mkyZZZZZ',     // Status: Queued/Uploaded/Retrying/Failed/Skipped - UPDATE WITH REAL ID
-      runId: 'text_mkyVVVVV',                 // Text: Workflow run ID (correlationId) - UPDATE WITH REAL ID
+      attachmentState: 'color_mkytqrh8',      // Status: Queued/Uploaded/Retrying/Failed/Skipped
+      runId: 'text_mkyt4seq',                 // Text: Workflow run ID
     },
   },
 
