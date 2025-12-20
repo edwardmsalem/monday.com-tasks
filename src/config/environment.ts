@@ -65,24 +65,25 @@ export const config = {
     boardUrl: getEnvVar('MONDAY_BOARD_URL', 'https://salemseats.monday.com/boards/18383923820'),
 
     // Column IDs from the board
+    // LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
+    // Narrative/context goes to Updates, not columns
     columns: {
-      date: 'date4',
-      from: 'email_mkxvy5nq',
+      // Core state/routing columns
       owner: 'person',
       support: 'multiple_person_mky0vdq1',
-      slackThreadId: 'text_mkxxn3hz',
-      slackLink: 'link_mky1j0j6',
-      to: 'email_mkxv1hyd',
-      type: 'status',                    // Task type (General, Opportunity, etc.)
-      workflowStatus: 'color_mkxvxxxn',  // Workflow status (Acknowledged, Working on it, etc.)
-      source: 'color_mky0b1yr',          // Source (Forwarding Tasks, Slack Tasks, etc.)
-      team: 'dropdown_mkyqe4we',         // Sports team
-      file: 'file_mkxv6aa0',
-      urgency: 'color_mkytzsrj',         // Urgency (High, Medium, Low)
-      pdfUrl: 'text_mkythpzx',           // Durable PDF URL for retries
-      // New columns (only 2 - keeping board lean)
+      type: 'status',                         // Task type (General, Opportunity, etc.)
+      workflowStatus: 'color_mkxvxxxn',       // Workflow status (Acknowledged, Working on it, etc.)
+      urgency: 'color_mkytzsrj',              // Urgency (High, Medium, Low)
+      date: 'date4',                          // Due Date
+      source: 'color_mky0b1yr',               // Source (Forwarding Tasks, Slack Tasks, etc.)
       attachmentState: 'color_mkytqrh8',      // Status: Queued/Uploaded/Retrying/Failed/Skipped
       runId: 'text_mkyt4seq',                 // Text: Workflow run ID
+      // Internal linking (not user-facing state)
+      slackThreadId: 'text_mkxxn3hz',
+      team: 'dropdown_mkyqe4we',              // Sports team
+      file: 'file_mkxv6aa0',
+      pdfUrl: 'text_mkythpzx',                // Durable PDF URL for retries
+      // REMOVED: from, to, notes, slackLink - narrative belongs in Updates
     },
   },
 

@@ -450,16 +450,28 @@ app.post(
         ownerIds: [user.mondayId],
         taskType: taskType,
         source: 'Forwarding Tasks',
-        fromEmail: fromEmail,
-        toEmail: toEmail,
         team: analysisResult.team ?? undefined,
+        // NOTE: From/To go to initial Update, not columns (locked architecture)
       });
       console.log('Monday item created:', mondayItem.id);
 
-      // Create initial update (comment) on the Monday item with notes
+      // Create FIRST Monday update with all narrative context
+      // LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
+      const initialUpdateParts: string[] = [];
       if (analysisResult.notes) {
-        console.log('Creating Monday update with notes...');
-        await monday.createUpdate(mondayItem.id, analysisResult.notes);
+        initialUpdateParts.push(`📝 ${analysisResult.notes}`);
+      }
+      if (fromEmail) {
+        initialUpdateParts.push(`📧 From: ${fromEmail}`);
+      }
+      if (toEmail) {
+        initialUpdateParts.push(`📬 To: ${toEmail}`);
+      }
+      // Note: BCC not available in this endpoint
+
+      if (initialUpdateParts.length > 0) {
+        console.log('Creating initial Monday update...');
+        await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
       }
 
       // If team wasn't identified, ask for clarification

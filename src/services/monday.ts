@@ -44,22 +44,23 @@ async function executeQuery<T>(query: string, variables?: Record<string, unknown
 interface CreateItemInput {
   name: string;
   dueDate: string | null;  // Can be null if only urgency is set (ASAP case)
-  ownerIds: number[];  // Support multiple owners
+  ownerIds: number[];      // Support multiple owners
   taskType: string;
-  source: string;      // Source (Forwarding Tasks, Slack Tasks, etc.)
-  team?: string;       // Sports team (optional)
+  source: string;          // Source (Forwarding Tasks, Slack Tasks, etc.)
+  team?: string;           // Sports team (optional)
   urgency?: 'High' | 'Medium' | 'Low';  // Priority/urgency level
-  fromEmail: string | null;
-  toEmail: string | null;
+  // NOTE: fromEmail/toEmail removed - narrative belongs in Updates, not columns
 }
 
 /**
  * Create a new item in Monday.com
+ * LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
+ * All narrative/context goes to Updates via createUpdate()
  */
 export async function createItem(input: CreateItemInput): Promise<MondayItem> {
   const { columns } = config.monday;
 
-  // Build column values JSON - support multiple owners
+  // Build column values - STATE and ROUTING columns only
   const columnValues: Record<string, unknown> = {
     [columns.owner]: { personsAndTeams: input.ownerIds.map(id => ({ id, kind: 'person' })) },
     [columns.type]: { label: input.taskType },
@@ -79,14 +80,6 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
   // Set team if provided (dropdown column uses labels array)
   if (input.team) {
     columnValues[columns.team] = { labels: [input.team] };
-  }
-
-  if (input.fromEmail) {
-    columnValues[columns.from] = { email: input.fromEmail, text: input.fromEmail };
-  }
-
-  if (input.toEmail) {
-    columnValues[columns.to] = { email: input.toEmail, text: input.toEmail };
   }
 
   const query = `

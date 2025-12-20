@@ -74,12 +74,52 @@ export async function parseEmlAttachment(
 ): Promise<EmlHeaders> {
   const parsed = await simpleParser(emlContent);
 
+  // Extract BCC from headers if available
+  // Check multiple header sources: Bcc, X-Original-To, Delivered-To, Envelope-To
+  const bccEmails: string[] = [];
+
+  // Standard Bcc header
+  if (parsed.bcc) {
+    const bccText = getAddressText(parsed.bcc);
+    const emails = extractAllEmails(bccText);
+    bccEmails.push(...emails);
+  }
+
+  // Check raw headers for additional BCC-like fields
+  if (parsed.headers) {
+    const bccHeaders = ['x-original-to', 'delivered-to', 'envelope-to'];
+    for (const headerName of bccHeaders) {
+      const headerValue = parsed.headers.get(headerName);
+      if (headerValue && typeof headerValue === 'string') {
+        const email = extractEmail(headerValue);
+        if (email && !bccEmails.includes(email)) {
+          bccEmails.push(email);
+        }
+      }
+    }
+  }
+
   return {
     subject: parsed.subject ?? null,
     from: extractEmail(getAddressText(parsed.from)),
     to: extractEmail(getAddressText(parsed.to)),
+    bcc: bccEmails.length > 0 ? bccEmails : null,
     body: parsed.text ?? null,  // Extract the email body text
   };
+}
+
+/**
+ * Extract all email addresses from a string
+ */
+function extractAllEmails(text: string): string[] {
+  if (!text) return [];
+  const emails: string[] = [];
+  const regex = /([^\s<>,'"]+@[^\s<>,'"]+)/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    emails.push(match[1].trim());
+  }
+  return emails;
 }
 
 /**

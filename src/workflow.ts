@@ -154,8 +154,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     taskType,
     source: 'Forwarding Tasks',
     urgency: finalUrgency,  // Map Claude priority to Monday urgency
-    fromEmail: emlHeaders.from,
-    toEmail: emlHeaders.to,
+    // NOTE: From/To go to initial Update, not columns (locked architecture)
   });
   log.log('Monday item created:', mondayItem.id);
 
@@ -166,17 +165,34 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   await monday.updateAttachmentState(mondayItem.id, 'Queued');
 
   // Create FIRST Monday update with all narrative context
-  // (Columns are for state/routing only - narrative goes to Updates)
-  const initialUpdateParts = [
-    analysisResult.notes ? `📝 ${analysisResult.notes}` : null,
-    emlHeaders.from ? `📧 From: ${emlHeaders.from}` : null,
-    `🔗 Run ID: ${runId.substring(0, 8)}`,
-  ].filter(Boolean);
+  // LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
+  // All narrative/context/provenance goes to Updates
+  const initialUpdateParts: string[] = [];
 
-  if (initialUpdateParts.length > 0) {
-    log.log('Creating initial Monday update...');
-    await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
+  // Notes (if present)
+  if (analysisResult.notes) {
+    initialUpdateParts.push(`📝 ${analysisResult.notes}`);
   }
+
+  // Email provenance (From/To)
+  if (emlHeaders.from) {
+    initialUpdateParts.push(`📧 From: ${emlHeaders.from}`);
+  }
+  if (emlHeaders.to) {
+    initialUpdateParts.push(`📬 To: ${emlHeaders.to}`);
+  }
+
+  // BCC recipients (only if present - do not add placeholders)
+  if (emlHeaders.bcc && emlHeaders.bcc.length > 0) {
+    const bccList = emlHeaders.bcc.map(email => `- ${email}`).join('\n');
+    initialUpdateParts.push(`👁️ BCC Recipients:\n${bccList}`);
+  }
+
+  // Run ID (always)
+  initialUpdateParts.push(`🔗 Run ID: ${runId.substring(0, 8)}`);
+
+  log.log('Creating initial Monday update...');
+  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
 
   // Step 8.5: Project to Todoist (if enabled)
   if (todoist.isEnabled()) {

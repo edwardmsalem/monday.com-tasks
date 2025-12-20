@@ -264,8 +264,7 @@ export async function createQuickTask(input: QuickTaskInput): Promise<{
     ownerIds: [assignee.mondayId],  // Support multiple owners
     taskType: input.taskType ?? 'General',
     source: 'Slack Tasks',
-    fromEmail: null,
-    toEmail: null,
+    // NOTE: From/To not applicable for Slack-created tasks
   });
 
   const mondayUrl = monday.getItemUrl(mondayItem.id);
@@ -591,8 +590,7 @@ export async function confirmSmartTask(
       taskType: parsed.taskType ?? 'General',
       source: 'Slack Tasks',
       team: parsed.team ?? undefined,
-      fromEmail: null,
-      toEmail: null,
+      // NOTE: From/To not applicable for Slack-created tasks
     });
 
     const mondayUrl = monday.getItemUrl(mondayItem.id);
