@@ -84,8 +84,12 @@ export async function convertEmlToPdf(
     throw new Error('ConvertAPI did not return a converted file');
   }
 
+  // Store the durable URL for potential retries
+  const pdfUrl = file.url as string;
+  console.log('ConvertAPI PDF URL (durable for retries):', pdfUrl);
+
   // Fetch the file data
-  const response = await fetch(file.url);
+  const response = await fetch(pdfUrl);
   if (!response.ok) {
     throw new Error(`Failed to download converted PDF: ${response.statusText}`);
   }
@@ -98,5 +102,19 @@ export async function convertEmlToPdf(
   return {
     filename: pdfFilename,
     data,
+    url: pdfUrl,  // Include durable URL for retry scenarios
   };
+}
+
+/**
+ * Download PDF from a previously generated ConvertAPI URL
+ * Used for retry scenarios where we don't want to reconvert
+ */
+export async function downloadPdfFromUrl(url: string): Promise<Buffer> {
+  console.log('Downloading PDF from stored URL:', url);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download PDF from URL: ${response.statusText}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
 }

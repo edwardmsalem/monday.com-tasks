@@ -7,13 +7,20 @@
  * 3. Convert EML to PDF
  * 4. Create Monday.com item
  * 5. Send Slack notification
- * 6. Upload PDF to both Monday and Slack
+ * 6. Upload PDF to both Monday and Slack (graceful failure handling)
  * 7. Update Monday with Slack thread ID
+ *
+ * Key reliability features:
+ * - Attachment failures don't fail the workflow
+ * - Monday file upload has retry with backoff (2min, 10min, 30min)
+ * - PDF URL stored for retry scenarios
+ * - Priority mapped to Monday Urgency column
  */
 
 import type {
   ParsedEmail,
   WorkflowResult,
+  Priority,
 } from './types/index.js';
 import {
   parseEmlAttachment,
@@ -26,9 +33,21 @@ import * as slack from './services/slack.js';
 import * as calendar from './services/calendar.js';
 import { findUserByName, getUserNamesString } from './services/userResolver.js';
 import { getTaskTypeDisplayName } from './config/taskTypes.js';
-import { parseDate, formatDateForDisplay } from './utils/dateParser.js';
+import { parseDate, formatDateForDisplay, isAsapDate } from './utils/dateParser.js';
 import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from './services/gmail.js';
 import { createRecipientSheet, shouldCreateSheet } from './services/sheets.js';
+
+/**
+ * Map Claude priority to Monday urgency label
+ */
+function mapPriorityToUrgency(priority: Priority): 'High' | 'Medium' | 'Low' {
+  switch (priority) {
+    case 'high': return 'High';
+    case 'medium': return 'Medium';
+    case 'low': return 'Low';
+    default: return 'Medium';
+  }
+}
 
 export interface WorkflowInput {
   email: ParsedEmail;
@@ -77,9 +96,14 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   const taskType = getTaskTypeDisplayName(analysisResult.taskType);
   console.log('Task type:', taskType);
 
-  // Step 5: Parse the due date
+  // Step 5: Parse the due date (may be null for ASAP)
   const formattedDueDate = parseDate(analysisResult.dueDate);
-  console.log('Due date:', formattedDueDate);
+  const urgency = mapPriorityToUrgency(analysisResult.priority);
+  console.log('Due date:', formattedDueDate ?? 'ASAP (no date)');
+  console.log('Urgency:', urgency);
+
+  // If ASAP detected and priority wasn't already high, set to high
+  const finalUrgency = formattedDueDate === null ? 'High' : urgency;
 
   // Step 6: Resolve user dynamically from Monday.com/Slack
   const user = await findUserByName(analysisResult.owner);
@@ -100,10 +124,11 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   console.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
     name: taskName,
-    dueDate: formattedDueDate,
+    dueDate: formattedDueDate,  // May be null for ASAP
     ownerIds: [user.mondayId],  // Support multiple owners
     taskType,
     source: 'Forwarding Tasks',
+    urgency: finalUrgency,  // Map Claude priority to Monday urgency
     fromEmail: emlHeaders.from,
     toEmail: emlHeaders.to,
   });
@@ -174,13 +199,58 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   });
   console.log('Slack message sent:', slackMessage.ts);
 
-  // Step 11: Upload PDF to both services in parallel
-  console.log('Uploading PDF to Monday and Slack...');
-  await Promise.all([
-    monday.uploadFileToItem(mondayItem.id, pdfFile.filename, pdfFile.data),
-    slack.uploadFileToThread(slackMessage.ts, pdfFile.filename, pdfFile.data, 'Email PDF'),
-  ]);
-  console.log('PDF uploaded to both services');
+  // Step 11: Upload PDF - Slack first (human value), then Monday (best effort with retry)
+  // Attachment failures do NOT fail the workflow
+  console.log('Uploading PDF attachments...');
+
+  // Track attachment status
+  let slackUploaded = false;
+  let mondayUploaded = false;
+  let mondayRetryScheduled = false;
+
+  // Step 11a: Upload to Slack first (priority for human visibility)
+  try {
+    await slack.uploadFileToThread(slackMessage.ts, pdfFile.filename, pdfFile.data, 'Email PDF');
+    slackUploaded = true;
+    console.log('PDF uploaded to Slack thread');
+  } catch (slackError) {
+    console.error('Slack file upload failed (non-fatal):', slackError);
+    // Continue - Slack upload failure is not critical
+  }
+
+  // Step 11b: Store durable PDF URL for retry scenarios
+  if (pdfFile.url) {
+    await monday.storePdfUrl(mondayItem.id, pdfFile.url);
+  }
+
+  // Step 11c: Upload to Monday with retry logic
+  // Create a function to post to Slack thread for retry notifications
+  const postToSlackThread = async (message: string) => {
+    await slack.postToThread(slackMessage.ts, message);
+  };
+
+  try {
+    const uploadResult = await monday.uploadFileToItemWithRetry(
+      mondayItem.id,
+      pdfFile.filename,
+      pdfFile.data,
+      slackMessage.ts,
+      postToSlackThread
+    );
+    mondayUploaded = uploadResult.success;
+    mondayRetryScheduled = uploadResult.retryScheduled;
+
+    if (mondayUploaded) {
+      console.log('PDF uploaded to Monday');
+    } else if (mondayRetryScheduled) {
+      console.log('Monday upload failed, retries scheduled in background');
+    }
+  } catch (mondayError) {
+    console.error('Monday file upload failed (non-fatal):', mondayError);
+    // Continue - Monday upload failure is not critical, task still exists
+  }
+
+  console.log(`Attachment status: Slack=${slackUploaded}, Monday=${mondayUploaded}, RetryScheduled=${mondayRetryScheduled}`);
 
   // Step 11.5: Post Google Sheet link to Slack thread (if created)
   if (sheetUrl) {
@@ -196,8 +266,9 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
   console.log('Monday item updated with Slack thread ID');
 
-  // Step 13: Create Google Calendar event (if enabled)
-  if (calendar.isCalendarEnabled()) {
+  // Step 13: Create Google Calendar event (if enabled and has a due date)
+  // Skip calendar event for ASAP tasks with no date
+  if (calendar.isCalendarEnabled() && formattedDueDate) {
     console.log('Creating Google Calendar event...');
     const calendarEvent = await calendar.createTaskEvent({
       title: `[${taskType}] ${taskName}`,
@@ -209,6 +280,8 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     if (calendarEvent) {
       console.log('Calendar event created:', calendarEvent.eventId);
     }
+  } else if (calendar.isCalendarEnabled() && !formattedDueDate) {
+    console.log('Skipping calendar event for ASAP task (no due date)');
   }
 
   // Note: Slack reminders require a user token, not a bot token
@@ -220,6 +293,12 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     mondayItemId: mondayItem.id,
     slackThreadTs: slackMessage.ts,
     success: true,
+    attachmentStatus: {
+      slackUploaded,
+      mondayUploaded,
+      mondayRetryScheduled,
+      pdfUrl: pdfFile.url,
+    },
   };
 }
 

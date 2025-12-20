@@ -43,11 +43,12 @@ async function executeQuery<T>(query: string, variables?: Record<string, unknown
 
 interface CreateItemInput {
   name: string;
-  dueDate: string;
+  dueDate: string | null;  // Can be null if only urgency is set (ASAP case)
   ownerIds: number[];  // Support multiple owners
   taskType: string;
   source: string;      // Source (Forwarding Tasks, Slack Tasks, etc.)
   team?: string;       // Sports team (optional)
+  urgency?: 'High' | 'Medium' | 'Low';  // Priority/urgency level
   fromEmail: string | null;
   toEmail: string | null;
 }
@@ -60,11 +61,20 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
 
   // Build column values JSON - support multiple owners
   const columnValues: Record<string, unknown> = {
-    [columns.date]: { date: input.dueDate },
     [columns.owner]: { personsAndTeams: input.ownerIds.map(id => ({ id, kind: 'person' })) },
     [columns.type]: { label: input.taskType },
     [columns.source]: { label: input.source },
   };
+
+  // Only set due date if provided (ASAP tasks may have no date, just urgency)
+  if (input.dueDate) {
+    columnValues[columns.date] = { date: input.dueDate };
+  }
+
+  // Set urgency if provided (maps Claude priority to Monday status column)
+  if (input.urgency) {
+    columnValues[columns.urgency] = { label: input.urgency };
+  }
 
   // Set team if provided (dropdown column uses labels array)
   if (input.team) {
@@ -129,23 +139,42 @@ export async function updateSlackThreadId(itemId: string, threadTs: string): Pro
 /**
  * Upload a file to an item's file column
  * Uses Monday's /v2/file endpoint with proper multipart format
+ *
+ * Key fixes:
+ * - Uses form.getHeaders() to ensure correct Content-Type with boundary
+ * - Consistent field naming: "file" instead of "image"
+ * - Uses variables for itemId and columnId to avoid interpolation issues
  */
 export async function uploadFileToItem(
   itemId: string,
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  const query = `mutation ($file: File!) { add_file_to_column (item_id: ${itemId}, column_id: "${config.monday.fileColumnId}", file: $file) { id } }`;
+  // Use variables for itemId and columnId to avoid GraphQL parsing issues
+  const query = `mutation AddFileToColumn($itemId: ID!, $columnId: String!, $file: File!) {
+    add_file_to_column(item_id: $itemId, column_id: $columnId, file: $file) {
+      id
+    }
+  }`;
+
+  const variables = {
+    itemId,
+    columnId: config.monday.fileColumnId,
+  };
 
   const form = new FormData();
   form.append('query', query);
-  form.append('map', JSON.stringify({ 'image': 'variables.file' }));
-  form.append('image', fileData, { filename, contentType: 'application/pdf' });
+  form.append('variables', JSON.stringify(variables));
+  // Map "file" field to variables.file (consistent naming)
+  form.append('map', JSON.stringify({ file: 'variables.file' }));
+  form.append('file', fileData, { filename, contentType: 'application/pdf' });
 
+  // Merge FormData headers (includes correct Content-Type with boundary)
   const response = await fetch(MONDAY_FILE_URL, {
     method: 'POST',
     headers: {
       Authorization: config.monday.apiToken,
+      ...form.getHeaders(),
     },
     body: form as unknown as BodyInit,
   });
@@ -163,8 +192,16 @@ export async function uploadFileToItem(
     if (result.errors && result.errors.length > 0) {
       throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
     }
+    if (!result.data?.add_file_to_column?.id) {
+      throw new Error('Monday file upload returned no file ID');
+    }
+    console.log('Monday file uploaded successfully, file ID:', result.data.add_file_to_column.id);
   } catch (e) {
-    // If parse fails, that's fine - response was successful
+    if (e instanceof Error && e.message.includes('Monday file upload')) {
+      throw e;
+    }
+    // If JSON parse fails but response was 200, that's unusual but not fatal
+    console.warn('Could not parse Monday file upload response:', e);
   }
 }
 
@@ -459,4 +496,144 @@ export async function getItem(itemId: string): Promise<{
     console.error('Error getting item:', error);
     return null;
   }
+}
+
+/**
+ * Store the durable PDF URL on a Monday item for retry scenarios
+ */
+export async function storePdfUrl(itemId: string, pdfUrl: string): Promise<void> {
+  const query = `
+    mutation StorePdfUrl($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    await executeQuery(query, {
+      boardId: config.monday.boardId,
+      itemId,
+      columnValues: JSON.stringify({
+        [config.monday.columns.pdfUrl]: pdfUrl,
+      }),
+    });
+    console.log('PDF URL stored on Monday item:', itemId);
+  } catch (error) {
+    // Non-fatal - PDF URL storage is optional (column may not exist yet)
+    console.warn('Could not store PDF URL on Monday item (column may not exist):', error);
+  }
+}
+
+/**
+ * Retry configuration for Monday file uploads
+ */
+const RETRY_DELAYS_MS = [
+  2 * 60 * 1000,   // 2 minutes
+  10 * 60 * 1000,  // 10 minutes
+  30 * 60 * 1000,  // 30 minutes
+];
+
+/**
+ * Upload file to Monday with retry logic
+ * Returns success status and schedules background retries if initial upload fails
+ */
+export async function uploadFileToItemWithRetry(
+  itemId: string,
+  filename: string,
+  fileData: Buffer,
+  slackThreadTs?: string,
+  postToSlack?: (message: string) => Promise<void>
+): Promise<{ success: boolean; retryScheduled: boolean }> {
+  // First attempt
+  try {
+    await uploadFileToItem(itemId, filename, fileData);
+    return { success: true, retryScheduled: false };
+  } catch (error) {
+    console.error('Initial Monday file upload failed:', error);
+  }
+
+  // Schedule background retries
+  console.log('Scheduling Monday file upload retries...');
+
+  // Post notification to Slack thread if available
+  if (postToSlack) {
+    try {
+      await postToSlack('⚠️ PDF upload to Monday failed. Retrying automatically (2min, 10min, 30min)...');
+    } catch {
+      // Ignore Slack notification failure
+    }
+  }
+
+  // Schedule retries in background (non-blocking)
+  scheduleRetries(itemId, filename, fileData, slackThreadTs, postToSlack);
+
+  return { success: false, retryScheduled: true };
+}
+
+/**
+ * Schedule background retries for Monday file upload
+ */
+function scheduleRetries(
+  itemId: string,
+  filename: string,
+  fileData: Buffer,
+  slackThreadTs?: string,
+  postToSlack?: (message: string) => Promise<void>
+): void {
+  let attemptIndex = 0;
+
+  const attemptRetry = async () => {
+    attemptIndex++;
+    const delayMs = RETRY_DELAYS_MS[attemptIndex - 1];
+
+    if (!delayMs) {
+      // All retries exhausted
+      console.error(`Monday file upload failed after ${RETRY_DELAYS_MS.length} retries for item ${itemId}`);
+
+      // Set workflow status to indicate failure
+      try {
+        await updateWorkflowStatus(itemId, 'Attachment Failed');
+      } catch {
+        console.error('Could not update workflow status to Attachment Failed');
+      }
+
+      // Notify via Slack
+      if (postToSlack) {
+        try {
+          await postToSlack('❌ PDF upload to Monday failed after all retries. Please upload manually.');
+        } catch {
+          // Ignore
+        }
+      }
+      return;
+    }
+
+    console.log(`Monday file upload retry ${attemptIndex} scheduled in ${delayMs / 1000}s for item ${itemId}`);
+
+    setTimeout(async () => {
+      try {
+        await uploadFileToItem(itemId, filename, fileData);
+        console.log(`Monday file upload retry ${attemptIndex} succeeded for item ${itemId}`);
+
+        // Notify success via Slack
+        if (postToSlack) {
+          try {
+            await postToSlack('✅ PDF successfully uploaded to Monday (retry succeeded).');
+          } catch {
+            // Ignore
+          }
+        }
+      } catch (error) {
+        console.error(`Monday file upload retry ${attemptIndex} failed for item ${itemId}:`, error);
+        attemptRetry(); // Schedule next retry
+      }
+    }, delayMs);
+  };
+
+  attemptRetry();
 }

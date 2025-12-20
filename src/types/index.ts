@@ -34,6 +34,8 @@ export interface EmlHeaders {
 export interface ConvertedFile {
   filename: string;
   data: Buffer;
+  /** Durable URL from ConvertAPI - can be used for retry without reconversion */
+  url?: string;
 }
 
 export interface MondayItem {
@@ -62,4 +64,13 @@ export interface WorkflowResult {
   slackThreadTs: string;
   success: boolean;
   error?: string;
+  /** Attachment upload status - workflow can succeed even if attachments fail */
+  attachmentStatus?: {
+    slackUploaded: boolean;
+    mondayUploaded: boolean;
+    mondayRetryScheduled?: boolean;
+    pdfUrl?: string;
+  };
 }
+
+export type Priority = 'high' | 'medium' | 'low';

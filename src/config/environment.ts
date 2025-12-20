@@ -54,6 +54,8 @@ export const config = {
       source: 'color_mky0b1yr',          // Source (Forwarding Tasks, Slack Tasks, etc.)
       team: 'dropdown_mkyqe4we',         // Sports team
       file: 'file_mkxv6aa0',
+      urgency: 'status_mkyXXXXX',        // Urgency (High, Medium, Low) - UPDATE WITH REAL COLUMN ID
+      pdfUrl: 'text_mkyYYYYY',           // Durable PDF URL for retries - UPDATE WITH REAL COLUMN ID
     },
   },
 
