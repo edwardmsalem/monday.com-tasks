@@ -863,3 +863,61 @@ export async function releaseAllDeferredNotifications(): Promise<number> {
   console.log(`Released ${released}/${deferred.length} deferred notifications`);
   return released;
 }
+
+/**
+ * Check quiet-hours status for a specific thread
+ * Used by /taskdebug to show deferred/notified status
+ */
+export interface QuietHoursStatus {
+  wasDeferred: boolean;
+  deferredUserId: string | null;
+  wasReleased: boolean;
+}
+
+export async function getQuietHoursStatus(threadTs: string): Promise<QuietHoursStatus> {
+  const client = getClient();
+
+  try {
+    // Get bot's user ID
+    const authResponse = await client.auth.test();
+    const botUserId = authResponse.user_id;
+
+    // Fetch thread replies
+    const threadResponse = await client.conversations.replies({
+      channel: config.slack.channelId,
+      ts: threadTs,
+    });
+
+    if (!threadResponse.messages) {
+      return { wasDeferred: false, deferredUserId: null, wasReleased: false };
+    }
+
+    let deferredUserId: string | null = null;
+    let wasReleased = false;
+
+    for (const reply of threadResponse.messages) {
+      // Only check bot messages
+      if (reply.user !== botUserId || !reply.text) continue;
+
+      // Check for deferred marker: [quiet-hours:deferred:USER_ID]
+      const deferredMatch = reply.text.match(/\[quiet-hours:deferred:([^\]]+)\]/);
+      if (deferredMatch) {
+        deferredUserId = deferredMatch[1];
+      }
+
+      // Check for notified marker
+      if (reply.text.includes('[quiet-hours:notified]')) {
+        wasReleased = true;
+      }
+    }
+
+    return {
+      wasDeferred: deferredUserId !== null,
+      deferredUserId,
+      wasReleased,
+    };
+  } catch (error) {
+    console.error('Error checking quiet-hours status:', error);
+    return { wasDeferred: false, deferredUserId: null, wasReleased: false };
+  }
+}

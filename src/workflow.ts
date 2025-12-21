@@ -41,6 +41,7 @@ import * as slack from './services/slack.js';
 import * as calendar from './services/calendar.js';
 import { findUserByName, getUserNamesString } from './services/userResolver.js';
 import { getTaskTypeDisplayName } from './config/taskTypes.js';
+import { config } from './config/environment.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from './utils/dateParser.js';
 import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from './services/gmail.js';
 import { createRecipientSheet, shouldCreateSheet } from './services/sheets.js';
@@ -278,61 +279,71 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
 
   // Step 11: Upload PDF - Slack first (human value), then Monday (best effort with retry)
   // Attachment failures do NOT fail the workflow
-  log.log('Uploading PDF attachments...');
+  // Respect ATTACHMENTS_MODE safety valve
+  const attachmentsMode = config.safetyValves.attachmentsMode;
+  log.log(`Uploading PDF attachments (mode: ${attachmentsMode})...`);
 
   // Track attachment status
   let slackUploaded = false;
   let mondayUploaded = false;
   let mondayRetryScheduled = false;
-  let attachmentState: AttachmentState = 'Queued';
+  let attachmentState: AttachmentState = attachmentsMode === 'off' ? 'Skipped' : 'Queued';
 
   // Step 11a: Upload to Slack first (priority for human visibility)
-  try {
-    await slack.uploadFileToThread(slackMessage.ts, pdfFile.filename, pdfFile.data, 'Email PDF');
-    slackUploaded = true;
-    log.log('PDF uploaded to Slack thread');
-  } catch (slackError) {
-    log.error('Slack file upload failed (non-fatal):', slackError);
-    // Post error to Slack thread (errors go to Updates/Slack, not columns)
-    await slack.postToThread(slackMessage.ts, `⚠️ Slack PDF upload failed: ${slackError instanceof Error ? slackError.message : 'Unknown error'}`);
-    // Continue - Slack upload failure is not critical
+  if (attachmentsMode === 'slack_only' || attachmentsMode === 'both') {
+    try {
+      await slack.uploadFileToThread(slackMessage.ts, pdfFile.filename, pdfFile.data, 'Email PDF');
+      slackUploaded = true;
+      log.log('PDF uploaded to Slack thread');
+    } catch (slackError) {
+      log.error('Slack file upload failed (non-fatal):', slackError);
+      // Post error to Slack thread (errors go to Updates/Slack, not columns)
+      await slack.postToThread(slackMessage.ts, `⚠️ Slack PDF upload failed: ${slackError instanceof Error ? slackError.message : 'Unknown error'}`);
+      // Continue - Slack upload failure is not critical
+    }
+  } else {
+    log.log('Slack upload skipped (ATTACHMENTS_MODE)');
   }
 
-  // Step 11b: Store durable PDF URL for retry scenarios
+  // Step 11b: Store durable PDF URL for retry scenarios (always, for manual recovery)
   if (pdfFile.url) {
     await monday.storePdfUrl(mondayItem.id, pdfFile.url);
   }
 
   // Step 11c: Upload to Monday with retry logic
-  // Create a function to post to Slack thread for retry notifications
-  const postToSlackThread = async (message: string) => {
-    await slack.postToThread(slackMessage.ts, message);
-  };
+  if (attachmentsMode === 'monday_only' || attachmentsMode === 'both') {
+    // Create a function to post to Slack thread for retry notifications
+    const postToSlackThread = async (message: string) => {
+      await slack.postToThread(slackMessage.ts, message);
+    };
 
-  try {
-    const uploadResult = await monday.uploadFileToItemWithRetry(
-      mondayItem.id,
-      pdfFile.filename,
-      pdfFile.data,
-      slackMessage.ts,
-      postToSlackThread
-    );
-    mondayUploaded = uploadResult.success;
-    mondayRetryScheduled = uploadResult.retryScheduled;
+    try {
+      const uploadResult = await monday.uploadFileToItemWithRetry(
+        mondayItem.id,
+        pdfFile.filename,
+        pdfFile.data,
+        slackMessage.ts,
+        postToSlackThread
+      );
+      mondayUploaded = uploadResult.success;
+      mondayRetryScheduled = uploadResult.retryScheduled;
 
-    if (mondayUploaded) {
-      log.log('PDF uploaded to Monday');
-      attachmentState = 'Uploaded';
-    } else if (mondayRetryScheduled) {
-      log.log('Monday upload failed, retries scheduled in background');
-      attachmentState = 'Retrying';
+      if (mondayUploaded) {
+        log.log('PDF uploaded to Monday');
+        attachmentState = 'Uploaded';
+      } else if (mondayRetryScheduled) {
+        log.log('Monday upload failed, retries scheduled in background');
+        attachmentState = 'Retrying';
+      }
+    } catch (mondayError) {
+      log.error('Monday file upload failed (non-fatal):', mondayError);
+      attachmentState = 'Failed';
+      // Post error to Monday update (errors go to Updates/Slack, not columns)
+      await monday.createUpdate(mondayItem.id, `⚠️ Monday PDF upload failed: ${mondayError instanceof Error ? mondayError.message : 'Unknown error'}`);
+      // Continue - Monday upload failure is not critical, task still exists
     }
-  } catch (mondayError) {
-    log.error('Monday file upload failed (non-fatal):', mondayError);
-    attachmentState = 'Failed';
-    // Post error to Monday update (errors go to Updates/Slack, not columns)
-    await monday.createUpdate(mondayItem.id, `⚠️ Monday PDF upload failed: ${mondayError instanceof Error ? mondayError.message : 'Unknown error'}`);
-    // Continue - Monday upload failure is not critical, task still exists
+  } else {
+    log.log('Monday upload skipped (ATTACHMENTS_MODE)');
   }
 
   // Update attachment state column (status only, no error text)

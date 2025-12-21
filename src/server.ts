@@ -945,6 +945,28 @@ app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), asy
       });
     }
 
+    // Check quiet-hours status if we have a Slack thread
+    if (debugInfo.slackThreadTs) {
+      const quietHoursStatus = await slack.getQuietHoursStatus(debugInfo.slackThreadTs);
+
+      let quietHoursText = '*Quiet Hours:*\n';
+      if (!quietHoursStatus.wasDeferred) {
+        quietHoursText += 'Not deferred (created during working hours)';
+      } else if (quietHoursStatus.wasReleased) {
+        quietHoursText += `✅ Deferred → Released\n_Assignee: <@${quietHoursStatus.deferredUserId}>_`;
+      } else {
+        quietHoursText += `⏳ Deferred (pending release)\n_Assignee: <@${quietHoursStatus.deferredUserId}>_`;
+      }
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: quietHoursText,
+        },
+      });
+    }
+
     // Note: Errors are in Updates/Slack thread, not columns (keeping board lean)
 
     res.json({

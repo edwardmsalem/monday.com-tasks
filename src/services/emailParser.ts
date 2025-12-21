@@ -99,6 +99,15 @@ export async function parseEmlAttachment(
     }
   }
 
+  // BCC Fallback: If no BCC found in headers, try parsing from forwarding body
+  if (bccEmails.length === 0 && parsed.text) {
+    const fallbackBcc = extractBccFromForwardingBody(parsed.text);
+    if (fallbackBcc.length > 0) {
+      console.log(`BCC fallback: found ${fallbackBcc.length} recipient(s) from forwarding body`);
+      bccEmails.push(...fallbackBcc);
+    }
+  }
+
   return {
     subject: parsed.subject ?? null,
     from: extractEmail(getAddressText(parsed.from)),
@@ -120,6 +129,53 @@ function extractAllEmails(text: string): string[] {
     emails.push(match[1].trim());
   }
   return emails;
+}
+
+/**
+ * BCC Fallback: Parse recipients from forwarding body when headers are incomplete
+ *
+ * Patterns matched:
+ * - "Bcc: email@example.com" in forwarded message header block
+ * - Recipients listed after "Recipients:" or "To:" in body
+ * - Comma or newline separated email lists
+ *
+ * Only used when BCC headers are empty.
+ */
+function extractBccFromForwardingBody(body: string | null): string[] {
+  if (!body) return [];
+
+  const bccEmails: string[] = [];
+
+  // Pattern 1: Forwarded message header style "Bcc: email@example.com"
+  const bccHeaderMatch = body.match(/\bBcc:\s*([^\n]+)/i);
+  if (bccHeaderMatch) {
+    const emails = extractAllEmails(bccHeaderMatch[1]);
+    bccEmails.push(...emails);
+  }
+
+  // Pattern 2: "Recipients:" followed by email list
+  const recipientsMatch = body.match(/\bRecipients?:\s*([^\n]+(?:\n[^\n]*@[^\n]*)*)/i);
+  if (recipientsMatch) {
+    const emails = extractAllEmails(recipientsMatch[1]);
+    for (const email of emails) {
+      if (!bccEmails.includes(email)) {
+        bccEmails.push(email);
+      }
+    }
+  }
+
+  // Pattern 3: Look for "Sent to:" or "Distributed to:" patterns
+  const sentToMatch = body.match(/\b(?:Sent to|Distributed to|Sending to):\s*([^\n]+(?:\n[^\n]*@[^\n]*)*)/i);
+  if (sentToMatch) {
+    const emails = extractAllEmails(sentToMatch[1]);
+    for (const email of emails) {
+      if (!bccEmails.includes(email)) {
+        bccEmails.push(email);
+      }
+    }
+  }
+
+  return bccEmails;
 }
 
 /**
