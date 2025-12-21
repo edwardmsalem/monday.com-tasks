@@ -28,6 +28,7 @@ import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
 import { startFollowUpScheduler } from './services/autoFollowUp.js';
+import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
 
 const app = express();
 
@@ -608,7 +609,19 @@ app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<v
       if (event.type === 'reaction_added' && event.reaction && event.item) {
         if (event.reaction === 'eyes') {
           console.log('Eyes reaction added, marking Monday item acknowledged...');
+          // Mark Monday item as acknowledged
           await sync.markAcknowledgedFromSlack(event.item.ts);
+
+          // Also handle after-hours acknowledgement tracking
+          // If this is a thread reply (has thread_ts), mark the thread as acknowledged
+          const threadTs = (event.item as { thread_ts?: string }).thread_ts || event.item.ts;
+          try {
+            await slack.markThreadAcknowledged(threadTs);
+            console.log(`After-hours ack tracked for thread ${threadTs}`);
+          } catch (ackError) {
+            // Non-fatal - thread might not be an after-hours task
+            console.log('After-hours ack tracking skipped (not a deferred task or already acked)');
+          }
         } else if (['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)) {
           console.log('Checkmark reaction added, marking Monday item complete...');
           await sync.markCompleteFromSlack(event.item.ts);
@@ -1725,6 +1738,10 @@ function start() {
     // Start auto follow-up scheduler (checks every hour)
     startFollowUpScheduler();
     console.log('Auto follow-up scheduler started (hourly)');
+
+    // Start after-hours scheduler (8 AM release, 11 AM reminder)
+    startAfterHoursScheduler();
+    console.log('After-hours scheduler started (8 AM release, 11 AM reminder)');
   });
 }
 

@@ -92,13 +92,16 @@ export const config = {
     botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
     channelId: getEnvVar('SLACK_CHANNEL_ID'),  // REQUIRED: notification channel for task threads
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
-    // Quiet hours routing (nights + weekends)
+    // After-hours behavior (nights + weekends)
+    // Tasks created after-hours are created quietly (no pings), then released at business start
     quietHours: {
       enabled: getEnvVarBool('SLACK_QUIET_HOURS_ENABLED', true),
       onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID', ''),  // On-call user for after-hours/weekend routing
       timezone: getEnvVar('SLACK_TIMEZONE', 'America/New_York'),
-      workingHoursStart: 10,  // 10:00 AM
-      workingHoursEnd: 18,    // 6:00 PM (18:00)
+      workingHoursStart: getEnvVarNumber('SLACK_WORKING_HOURS_START', 8),   // 8:00 AM ET
+      workingHoursEnd: getEnvVarNumber('SLACK_WORKING_HOURS_END', 20),      // 8:00 PM ET (20:00)
+      releaseHour: getEnvVarNumber('SLACK_RELEASE_HOUR', 8),                // 8:00 AM - ping deferred tasks
+      ackDeadlineHour: getEnvVarNumber('SLACK_ACK_DEADLINE_HOUR', 11),      // 11:00 AM - follow up if no 👀
     },
     // /task command permissions
     taskCommandWhitelist: getEnvVar('SLACK_TASK_COMMAND_WHITELIST', '')

@@ -43,13 +43,12 @@ const PRIORITY_CONFIG: Record<Priority, { emoji: string; label: string }> = {
 
 /**
  * Check if current time is within working hours
- * Working hours: Mon-Fri, 10am-6pm (no holiday logic)
+ * Working hours: Mon-Fri, 8am-8pm ET (configurable)
  */
-export function isWorkingHours(): boolean {
+export function isWorkingHours(date: Date = new Date()): boolean {
   const { quietHours } = config.slack;
 
   // Get current time in configured timezone
-  const now = new Date();
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: quietHours.timezone,
     weekday: 'short',
@@ -57,7 +56,7 @@ export function isWorkingHours(): boolean {
     hour12: false,
   });
 
-  const parts = formatter.formatToParts(now);
+  const parts = formatter.formatToParts(date);
   const weekday = parts.find(p => p.type === 'weekday')?.value ?? '';
   const hour = parseInt(parts.find(p => p.type === 'hour')?.value ?? '0', 10);
 
@@ -66,22 +65,98 @@ export function isWorkingHours(): boolean {
     return false;
   }
 
-  // Check if within working hours (10am-6pm)
+  // Check if within working hours
   return hour >= quietHours.workingHoursStart && hour < quietHours.workingHoursEnd;
 }
 
 /**
- * Check if quiet hours routing is active
+ * Check if after-hours mode is active (quiet creation, deferred pings)
  */
-export function isQuietHoursActive(): boolean {
+export function isAfterHours(date: Date = new Date()): boolean {
   const { quietHours } = config.slack;
 
-  // Disabled if not enabled or no on-call user configured
-  if (!quietHours.enabled || !quietHours.onCallUserId) {
+  // Disabled if quiet hours feature is not enabled
+  if (!quietHours.enabled) {
     return false;
   }
 
-  return !isWorkingHours();
+  return !isWorkingHours(date);
+}
+
+/**
+ * Check if quiet hours routing is active (legacy - prefer isAfterHours)
+ */
+export function isQuietHoursActive(): boolean {
+  return isAfterHours();
+}
+
+/**
+ * Format a date for display in configured timezone
+ */
+export function formatDateInTimezone(date: Date): string {
+  const { quietHours } = config.slack;
+  return date.toLocaleString('en-US', {
+    timeZone: quietHours.timezone,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+/**
+ * Get the next business day at release hour (8 AM ET by default)
+ */
+export function getNextReleaseTime(from: Date = new Date()): Date {
+  const { quietHours } = config.slack;
+  const releaseHour = quietHours.releaseHour;
+
+  // Create a copy to avoid mutating input
+  const next = new Date(from);
+
+  // Get current day/hour in timezone
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: quietHours.timezone,
+    weekday: 'short',
+    hour: 'numeric',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(next);
+  const weekday = parts.find(p => p.type === 'weekday')?.value ?? '';
+  const currentHour = parseInt(parts.find(p => p.type === 'hour')?.value ?? '0', 10);
+
+  // Calculate days to add
+  let daysToAdd = 0;
+
+  if (weekday === 'Fri' && currentHour >= releaseHour) {
+    daysToAdd = 3; // Next Monday
+  } else if (weekday === 'Sat') {
+    daysToAdd = 2; // Monday
+  } else if (weekday === 'Sun') {
+    daysToAdd = 1; // Monday
+  } else if (currentHour >= releaseHour) {
+    daysToAdd = 1; // Tomorrow
+  }
+
+  next.setDate(next.getDate() + daysToAdd);
+
+  // Set to release hour (approximate - relies on timezone handling)
+  // Get timezone offset for more accurate calculation
+  const tzFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: quietHours.timezone,
+    hour: 'numeric',
+    hour12: false,
+  });
+  const tzParts = tzFormatter.formatToParts(next);
+  const tzHour = parseInt(tzParts.find(p => p.type === 'hour')?.value ?? '0', 10);
+  const hourDiff = next.getHours() - tzHour;
+
+  next.setHours(releaseHour + hourDiff, 0, 0, 0);
+
+  return next;
 }
 
 /**
@@ -104,23 +179,37 @@ function formatMeetingTime(isoString: string): string {
 }
 
 /**
+ * Extended Slack message with after-hours metadata
+ */
+export interface SlackMessageWithDeferred extends SlackMessage {
+  /** True if created during after-hours (deferred ping) */
+  isDeferred: boolean;
+  /** When the assignee ping is scheduled (if deferred) */
+  scheduledReleaseTime?: Date;
+}
+
+/**
  * Send a notification message using Block Kit for rich formatting
  *
- * Quiet hours routing (nights + weekends):
- * - Still creates the Slack thread (always)
- * - Does NOT mention assignee during quiet hours
- * - Notifies only on-call user during quiet hours
- * - Posts thread note about being queued
+ * After-hours behavior (nights + weekends):
+ * - Creates Monday item + Slack thread immediately (always)
+ * - Does NOT ping assignee during after-hours
+ * - Does NOT ping on-call during after-hours
+ * - Posts a thread note with:
+ *   - Creation time
+ *   - Scheduled release time (next business day 8 AM)
+ *   - Ack deadline (11 AM)
+ * - Assignee will be pinged at next business start (8 AM ET)
  */
-export async function sendNotification(input: SlackNotificationInput): Promise<SlackMessage> {
+export async function sendNotification(input: SlackNotificationInput): Promise<SlackMessageWithDeferred> {
   const client = getClient();
   const mondayUrl = monday.getItemUrl(input.mondayItemId);
-  const quietHoursActive = isQuietHoursActive();
+  const afterHours = isAfterHours();
 
-  // During quiet hours: show assignee name without @ mention
-  // During working hours: full @ mention
-  const assigneeDisplay = quietHoursActive
-    ? input.assigneeSlackId  // Just the ID/name, no notification
+  // During after-hours: show assignee name without @ mention (quiet)
+  // During working hours: full @ mention (pings user)
+  const assigneeDisplay = afterHours
+    ? `<@${input.assigneeSlackId}>`.replace('<@', '').replace('>', '')  // Just the ID, no ping
     : `<@${input.assigneeSlackId}>`;  // Full mention, notifies user
 
   // Build Block Kit message - use any[] to avoid type issues with mixed block types
@@ -236,8 +325,8 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   });
 
   // Fallback text for notifications
-  // During quiet hours, don't include @ mention in fallback either
-  const fallbackText = quietHoursActive
+  // During after-hours, don't include @ mention in fallback either
+  const fallbackText = afterHours
     ? `New ${input.taskType} Email: ${input.subject} - Assigned to ${input.assigneeSlackId} - Due: ${input.dueDate}`
     : `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
 
@@ -253,25 +342,51 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     throw new Error(`Failed to send Slack message: ${response.error}`);
   }
 
-  const slackMessage: SlackMessage = {
+  const slackMessage: SlackMessageWithDeferred = {
     ts: response.ts,
     channel: response.channel ?? config.slack.channelId,
+    isDeferred: afterHours,
   };
 
-  // During quiet hours: notify on-call user and post deferred marker
-  if (quietHoursActive && config.slack.quietHours.onCallUserId) {
-    // Post deferred marker (searchable, no @mention to avoid pings)
-    // Format: [quiet-hours:deferred:SLACK_USER_ID] - used by release scheduler
+  // During after-hours: post deferred note (NO pings to anyone)
+  if (afterHours) {
+    const now = new Date();
+    const releaseTime = getNextReleaseTime(now);
+    const ackDeadlineHour = config.slack.quietHours.ackDeadlineHour;
+
+    // Store scheduled release time
+    slackMessage.scheduledReleaseTime = releaseTime;
+
+    // Format times for display
+    const createdTimeStr = formatDateInTimezone(now);
+    const releaseTimeStr = formatDateInTimezone(releaseTime);
+
+    // Create ack deadline time (same day as release, at ackDeadlineHour)
+    const ackDeadline = new Date(releaseTime);
+    // Get timezone offset for ack deadline calculation
+    const tzFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: config.slack.quietHours.timezone,
+      hour: 'numeric',
+      hour12: false,
+    });
+    const tzParts = tzFormatter.formatToParts(ackDeadline);
+    const tzHour = parseInt(tzParts.find(p => p.type === 'hour')?.value ?? '0', 10);
+    const hourDiff = ackDeadline.getHours() - tzHour;
+    ackDeadline.setHours(ackDeadlineHour + hourDiff, 0, 0, 0);
+    const ackDeadlineStr = formatDateInTimezone(ackDeadline);
+
+    // Post deferred note with all timing info (no pings)
+    // Format: [after-hours:deferred:SLACK_USER_ID] - used by release scheduler
     await postToThread(
       slackMessage.ts,
-      `[quiet-hours:deferred:${input.assigneeSlackId}] _Queued outside working hours – assignee will be notified at next business hour._`
+      `⏰ *Created ${createdTimeStr} (after hours)*\n` +
+      `👀 Assignee ping scheduled for ${releaseTimeStr}\n` +
+      `👀 Ack needed by ${ackDeadlineStr}\n\n` +
+      `[after-hours:deferred:${input.assigneeSlackId}]`
     );
 
-    // Notify on-call user in thread
-    await postToThread(
-      slackMessage.ts,
-      `<@${config.slack.quietHours.onCallUserId}> 📞 _On-call notification_`
-    );
+    // NO on-call ping during after-hours (per new spec)
+    // Task will be released at next business start
   }
 
   return slackMessage;
@@ -640,13 +755,22 @@ export function verifySlackSignature(
 }
 
 // ============================================================================
-// Quiet Hours - Deferred Notification Release
+// After-Hours - Deferred Task Release & Acknowledgement
 // ============================================================================
 
 // Hardening constants
 const DEFERRED_LOOKBACK_HOURS = 48;  // Max 48 hours lookback for deferred notifications
 const RELEASE_BATCH_SIZE = 5;        // Release in batches of 5
 const RELEASE_DELAY_MS = 1000;       // 1 second delay between releases (avoid rate limits)
+
+// Marker patterns for thread tracking
+const DEFERRED_MARKER_PATTERN = /\[after-hours:deferred:([^\]]+)\]/;
+const RELEASED_MARKER = '[after-hours:released]';
+const ACKNOWLEDGED_MARKER = '[after-hours:acknowledged]';
+const REMINDER_MARKER = '[after-hours:reminder-sent]';
+// Legacy pattern for backwards compatibility
+const LEGACY_DEFERRED_PATTERN = /\[quiet-hours:deferred:([^\]]+)\]/;
+const LEGACY_NOTIFIED_MARKER = '[quiet-hours:notified]';
 
 interface DeferredNotification {
   threadTs: string;
@@ -680,16 +804,36 @@ function extractMondayUrlFromBlocks(blocks: any[] | undefined): string | null {
 }
 
 /**
- * Find threads with deferred assignee notifications from quiet hours
+ * Extended deferred notification with tracking state
+ */
+interface DeferredNotificationState extends DeferredNotification {
+  isReleased: boolean;
+  isAcknowledged: boolean;
+  hasReminder: boolean;
+  releaseMessageTs?: string;  // Timestamp of release message (for tracking 👀)
+}
+
+/**
+ * Find threads with deferred assignee notifications from after-hours
  *
  * Hardening:
  * - Limited to 48-hour lookback window (no historical scan)
  * - Extracts Monday URL for direct linking
- * - Only returns threads with deferred marker but no notified marker
+ * - Supports both new [after-hours:*] and legacy [quiet-hours:*] markers
+ * - Returns full state for each deferred thread
  */
 export async function findDeferredNotifications(): Promise<DeferredNotification[]> {
+  const allDeferred = await findDeferredNotificationsWithState();
+  // Return only unreleased ones for release
+  return allDeferred.filter(d => !d.isReleased);
+}
+
+/**
+ * Find all deferred notification threads with full state
+ */
+export async function findDeferredNotificationsWithState(): Promise<DeferredNotificationState[]> {
   const client = getClient();
-  const deferred: DeferredNotification[] = [];
+  const deferred: DeferredNotificationState[] = [];
 
   try {
     // Get bot's user ID to identify our messages
@@ -733,26 +877,49 @@ export async function findDeferredNotifications(): Promise<DeferredNotification[
         if (!threadResponse.messages) continue;
 
         let deferredUserId: string | null = null;
-        let alreadyNotified = false;
+        let isReleased = false;
+        let isAcknowledged = false;
+        let hasReminder = false;
+        let releaseMessageTs: string | undefined;
 
         for (const reply of threadResponse.messages) {
           // Skip non-bot messages
           if (reply.user !== botUserId || !reply.text) continue;
 
-          // Check for deferred marker: [quiet-hours:deferred:USER_ID]
-          const deferredMatch = reply.text.match(/\[quiet-hours:deferred:([^\]]+)\]/);
-          if (deferredMatch) {
-            deferredUserId = deferredMatch[1];
+          // Check for new deferred marker: [after-hours:deferred:USER_ID]
+          const newMatch = reply.text.match(DEFERRED_MARKER_PATTERN);
+          if (newMatch) {
+            deferredUserId = newMatch[1];
           }
 
-          // Check for already notified marker
-          if (reply.text.includes('[quiet-hours:notified]')) {
-            alreadyNotified = true;
+          // Check for legacy deferred marker: [quiet-hours:deferred:USER_ID]
+          const legacyMatch = reply.text.match(LEGACY_DEFERRED_PATTERN);
+          if (legacyMatch) {
+            deferredUserId = legacyMatch[1];
+          }
+
+          // Check for released marker (new or legacy)
+          if (reply.text.includes(RELEASED_MARKER) || reply.text.includes(LEGACY_NOTIFIED_MARKER)) {
+            isReleased = true;
+            // The release message is the one with the ping
+            if (reply.text.includes('👀') && reply.text.includes('<@')) {
+              releaseMessageTs = reply.ts;
+            }
+          }
+
+          // Check for acknowledgement marker
+          if (reply.text.includes(ACKNOWLEDGED_MARKER)) {
+            isAcknowledged = true;
+          }
+
+          // Check for reminder marker
+          if (reply.text.includes(REMINDER_MARKER)) {
+            hasReminder = true;
           }
         }
 
-        // Add to list if deferred but not yet notified
-        if (deferredUserId && !alreadyNotified) {
+        // Add to list if this is a deferred thread
+        if (deferredUserId) {
           // Extract Monday URL from parent message blocks
           const parentMessage = threadResponse.messages[0];
           const mondayUrl = extractMondayUrlFromBlocks(parentMessage?.blocks as any[]);
@@ -761,6 +928,10 @@ export async function findDeferredNotifications(): Promise<DeferredNotification[
             threadTs: message.ts,
             assigneeSlackId: deferredUserId,
             mondayUrl,
+            isReleased,
+            isAcknowledged,
+            hasReminder,
+            releaseMessageTs,
           });
         }
       } catch (e: any) {
@@ -778,51 +949,118 @@ export async function findDeferredNotifications(): Promise<DeferredNotification[
 /**
  * Release a deferred notification by notifying the assignee
  *
- * Idempotency: Only posts [quiet-hours:notified] marker AFTER @mention succeeds.
+ * Posts: "<@assignee> 👀 new task created after hours (please ack)"
+ *
+ * Idempotency: Only posts released marker AFTER @mention succeeds.
  * If @mention fails, notification will be retried on next scheduler run.
+ *
+ * Returns the timestamp of the release message (for tracking 👀 reactions)
  */
 export async function releaseDeferredNotification(
   threadTs: string,
   assigneeSlackId: string,
   mondayUrl: string | null
-): Promise<boolean> {
+): Promise<{ success: boolean; releaseMessageTs?: string }> {
   try {
     // Build release message with optional Monday link
-    const mondayLink = mondayUrl ? ` → <${mondayUrl}|View in Monday>` : '';
+    const mondayLink = mondayUrl ? `\n<${mondayUrl}|View in Monday>` : '';
 
-    // Notify assignee with @mention (this is the critical step)
-    await postToThread(
+    // Post the release ping with ack request
+    const releaseMessage = await postToThread(
       threadTs,
-      `<@${assigneeSlackId}> 📬 _You have a new task from quiet hours._${mondayLink}`
+      `<@${assigneeSlackId}> 👀 new task created after hours (please ack)${mondayLink}`
     );
 
-    // Only mark as notified AFTER @mention succeeds (idempotency guard)
+    // Only mark as released AFTER @mention succeeds (idempotency guard)
     await postToThread(
       threadTs,
-      `[quiet-hours:notified] _Assignee notified at business hour._`
+      `${RELEASED_MARKER} _Assignee notified at business hour._`
+    );
+
+    return { success: true, releaseMessageTs: releaseMessage.ts };
+  } catch (error) {
+    // Do NOT mark as released - will retry on next scheduler run
+    console.error(`Failed to release deferred notification for thread ${threadTs}:`, error);
+    return { success: false };
+  }
+}
+
+/**
+ * Find released but unacknowledged tasks (for 11 AM follow-up)
+ */
+export async function findReleasedUnacknowledgedTasks(): Promise<DeferredNotificationState[]> {
+  const allDeferred = await findDeferredNotificationsWithState();
+  // Return released but not acknowledged (and no reminder sent yet)
+  return allDeferred.filter(d => d.isReleased && !d.isAcknowledged && !d.hasReminder);
+}
+
+/**
+ * Send a follow-up reminder for unacknowledged tasks
+ *
+ * Posts: "<@assignee> ⚠️ still need 👀 acknowledgement on this task"
+ *
+ * Only sends ONE reminder per task (tracked by reminder marker)
+ */
+export async function sendAckReminder(
+  threadTs: string,
+  assigneeSlackId: string
+): Promise<boolean> {
+  try {
+    // Post the reminder
+    await postToThread(
+      threadTs,
+      `<@${assigneeSlackId}> ⚠️ still need 👀 acknowledgement on this task`
+    );
+
+    // Mark as reminder sent
+    await postToThread(
+      threadTs,
+      `${REMINDER_MARKER}`
     );
 
     return true;
   } catch (error) {
-    // Do NOT mark as notified - will retry on next scheduler run
-    console.error(`Failed to release deferred notification for thread ${threadTs}:`, error);
+    console.error(`Failed to send ack reminder for thread ${threadTs}:`, error);
     return false;
   }
 }
 
 /**
- * Release all deferred notifications from quiet hours
- * Called at 10am Mon-Fri by scheduler
+ * Mark a thread as acknowledged (when 👀 reaction is received)
+ */
+export async function markThreadAcknowledged(threadTs: string): Promise<boolean> {
+  try {
+    await postToThread(
+      threadTs,
+      `${ACKNOWLEDGED_MARKER} ✓ _Task acknowledged_`
+    );
+    return true;
+  } catch (error) {
+    console.error(`Failed to mark thread ${threadTs} as acknowledged:`, error);
+    return false;
+  }
+}
+
+/**
+ * Check if a message is a release ping message (for 👀 tracking)
+ */
+export function isReleasePingMessage(messageText: string): boolean {
+  return messageText.includes('👀 new task created after hours');
+}
+
+/**
+ * Release all deferred notifications from after-hours
+ * Called at 8am Mon-Fri by scheduler
  *
  * Hardening:
  * - Processes in batches of 5 to avoid rate limits
  * - 1 second delay between releases
- * - Does NOT re-notify on-call user (they were already notified during quiet hours)
+ * - Does NOT ping anyone else (only the assignee)
  *
  * Returns count of notifications released
  */
 export async function releaseAllDeferredNotifications(): Promise<number> {
-  console.log('Releasing deferred quiet-hours notifications...');
+  console.log('Releasing deferred after-hours notifications...');
 
   const deferred = await findDeferredNotifications();
 
@@ -837,13 +1075,13 @@ export async function releaseAllDeferredNotifications(): Promise<number> {
   let batchCount = 0;
 
   for (const notification of deferred) {
-    const success = await releaseDeferredNotification(
+    const result = await releaseDeferredNotification(
       notification.threadTs,
       notification.assigneeSlackId,
       notification.mondayUrl
     );
 
-    if (success) {
+    if (result.success) {
       released++;
     }
 
@@ -862,6 +1100,49 @@ export async function releaseAllDeferredNotifications(): Promise<number> {
 
   console.log(`Released ${released}/${deferred.length} deferred notifications`);
   return released;
+}
+
+/**
+ * Send reminders for all unacknowledged tasks
+ * Called at 11am Mon-Fri by scheduler
+ *
+ * Returns count of reminders sent
+ */
+export async function sendAllAckReminders(): Promise<number> {
+  console.log('Sending acknowledgement reminders...');
+
+  const unacked = await findReleasedUnacknowledgedTasks();
+
+  if (unacked.length === 0) {
+    console.log('No unacknowledged tasks to remind');
+    return 0;
+  }
+
+  console.log(`Found ${unacked.length} unacknowledged task(s) to remind`);
+
+  let reminded = 0;
+  let batchCount = 0;
+
+  for (const task of unacked) {
+    const success = await sendAckReminder(
+      task.threadTs,
+      task.assigneeSlackId
+    );
+
+    if (success) {
+      reminded++;
+    }
+
+    batchCount++;
+
+    // Rate limiting: delay between reminders
+    if (batchCount < unacked.length) {
+      await sleep(RELEASE_DELAY_MS);
+    }
+  }
+
+  console.log(`Sent ${reminded}/${unacked.length} acknowledgement reminders`);
+  return reminded;
 }
 
 /**
