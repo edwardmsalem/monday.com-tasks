@@ -443,6 +443,34 @@ export async function createSubitems(parentItemId: string, names: string[]): Pro
 }
 
 /**
+ * Get existing subitems for a parent item
+ * Used for idempotency checks before creating new subitems
+ */
+export async function getSubitems(parentItemId: string): Promise<Array<{ id: string; name: string }>> {
+  const query = `
+    query GetSubitems($itemId: ID!) {
+      items(ids: [$itemId]) {
+        subitems {
+          id
+          name
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{ subitems: Array<{ id: string; name: string }> }>;
+    }>(query, { itemId: parentItemId });
+
+    return result.items[0]?.subitems ?? [];
+  } catch (error) {
+    console.error('Error fetching subitems:', error);
+    return [];
+  }
+}
+
+/**
  * Get item details including name and workflow status
  */
 export async function getItem(itemId: string): Promise<{

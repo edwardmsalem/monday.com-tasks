@@ -1271,6 +1271,26 @@ app.post('/webhook/slack/emailtask', express.urlencoded({ extended: true }), asy
       return;
     }
 
+    // Check for "confirm" to create task from pending single-match preview
+    if (trimmedText.toLowerCase() === 'confirm') {
+      const pending = pendingEmailSelections.get(user_id);
+      if (pending && pending.expiresAt > Date.now() && pending.emails.length === 1) {
+        pendingEmailSelections.delete(user_id);
+        res.json({
+          response_type: 'ephemeral',
+          text: `⏳ Creating task from confirmed email...`,
+        });
+        await createTaskFromEmail(pending.emails[0], user_id, response_url);
+        return;
+      }
+      // No valid pending confirmation
+      res.json({
+        response_type: 'ephemeral',
+        text: `:warning: No pending email to confirm. Run \`/emailtask\` with a search first.`,
+      });
+      return;
+    }
+
     // Check for pending selection (user replying with 1-5)
     const selectionMatch = trimmedText.match(/^(\d)$/);
     if (selectionMatch) {
@@ -1350,25 +1370,55 @@ app.post('/webhook/slack/emailtask', express.urlencoded({ extended: true }), asy
 
       await slack.sendResponseUrl(response_url,
         `:mag: *No emails found*\n\n` +
-        `No emails matching "${searchParams.subject}" found${searchParams.daysBack === 0 ? ' today' : ` in the last ${searchParams.daysBack} days`} (${searchParams.matchMode} match).\n\n` +
+        `No emails matching "${searchParams.subject}" found${searchParams.daysBack === 0 ? ' today (Eastern Time)' : ` in the last ${searchParams.daysBack} days`} (${searchParams.matchMode} match).\n\n` +
         `${suggestion}`
       );
       return;
     }
 
-    // Single match - create task immediately
-    if (emails.length === 1) {
-      await slack.sendResponseUrl(response_url, `⏳ Found 1 email, creating task...`);
+    // Check if user explicitly requested auto-select (useLatest)
+    // This is the ONLY case where we bypass confirmation
+    if (searchParams.useLatest) {
+      await slack.sendResponseUrl(response_url,
+        `⏳ Found ${emails.length} email${emails.length > 1 ? 's' : ''}, using most recent...`
+      );
       await createTaskFromEmail(emails[0], user_id, response_url);
       return;
     }
 
-    // Multiple matches - check if user wants latest
-    if (searchParams.useLatest) {
+    // Single match - require confirmation (do NOT auto-create)
+    if (emails.length === 1) {
+      const email = emails[0];
+      const dateStr = email.date.toLocaleDateString('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      });
+      const timeStr = email.date.toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      const from = email.from?.replace(/<[^>]+>/, '').trim() || 'Unknown sender';
+
+      // Store pending confirmation
+      pendingEmailSelections.set(user_id, {
+        emails: [email],
+        subject: searchParams.subject,
+        responseUrl: response_url,
+        expiresAt: Date.now() + SELECTION_TIMEOUT_MS,
+      });
+
       await slack.sendResponseUrl(response_url,
-        `⏳ Found ${emails.length} emails, using most recent...`
+        `:mag: *Found 1 email matching "${searchParams.subject}"*\n\n` +
+        `*Subject:* ${email.subject}\n` +
+        `*From:* ${from}\n` +
+        `*Date:* ${dateStr} ${timeStr} (Eastern Time)\n\n` +
+        `Reply \`/emailtask confirm\` to create task from this email.\n` +
+        `Or \`/emailtask cancel\` to cancel.\n\n` +
+        `_Select within 5 minutes. Tip: Add "use most recent" to skip confirmation._`
       );
-      await createTaskFromEmail(emails[0], user_id, response_url);
       return;
     }
 
@@ -1403,7 +1453,7 @@ app.post('/webhook/slack/emailtask', express.urlencoded({ extended: true }), asy
       `${listItems.join('\n')}\n\n` +
       `Reply with \`/emailtask 1\` to \`/emailtask 5\` to select one.\n` +
       `Or \`/emailtask cancel\` to cancel.\n\n` +
-      `_Tip: Add "use most recent" to auto-select the newest._`
+      `_Select within 5 minutes. Tip: Add "use most recent" to auto-select the newest._`
     );
   } catch (error) {
     console.error('/emailtask command error:', error);
