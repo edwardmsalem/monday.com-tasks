@@ -105,6 +105,8 @@ export const config = {
       .split(',')
       .map(id => id.trim())
       .filter(id => id.length > 0),  // Comma-separated Slack user IDs
+    // Control channel for pinned config (Owners map, Sheets registry)
+    controlChannelId: getEnvVar('SLACK_CONTROL_CHANNEL_ID', ''),
   },
 
   // ConvertAPI
