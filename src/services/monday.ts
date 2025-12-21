@@ -44,7 +44,8 @@ async function executeQuery<T>(query: string, variables?: Record<string, unknown
 interface CreateItemInput {
   name: string;
   dueDate: string | null;  // Can be null if only urgency is set (ASAP case)
-  ownerIds: number[];      // Support multiple owners
+  ownerIds: number[];      // Primary owners (Monday Person column)
+  supportIds?: string[];   // Support users (Monday Multiple Person column) - optional
   taskType: string;
   source: string;          // Source (Forwarding Tasks, Slack Tasks, etc.)
   team?: string;           // Sports team (optional)
@@ -66,6 +67,13 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
     [columns.type]: { label: input.taskType },
     [columns.source]: { label: input.source },
   };
+
+  // Set support users if provided (Multiple Person column)
+  if (input.supportIds && input.supportIds.length > 0) {
+    columnValues[columns.support] = {
+      personsAndTeams: input.supportIds.map(id => ({ id: parseInt(id, 10), kind: 'person' })),
+    };
+  }
 
   // Only set due date if provided (ASAP tasks may have no date, just urgency)
   if (input.dueDate) {

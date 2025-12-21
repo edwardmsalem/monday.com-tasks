@@ -1075,17 +1075,17 @@ app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (r
     // Parse the input
     const parsed = parseSlackTaskInput(text);
 
-    // Handle missing assignee - default to on-call user
-    if (!parsed.assigneeSlackId) {
+    // Handle missing owner - default to on-call user
+    if (!parsed.ownerSlackId) {
       const onCallUserId = config.slack.quietHours.onCallUserId;
       if (onCallUserId) {
-        parsed.assigneeSlackId = onCallUserId;
-        parsed.urgency = 'Medium';  // Default urgency when defaulting assignee
-        console.log(`No assignee specified, defaulting to on-call user: ${onCallUserId}`);
+        parsed.ownerSlackId = onCallUserId;
+        parsed.urgency = 'Medium';  // Default urgency when defaulting owner
+        console.log(`No owner specified, defaulting to on-call user: ${onCallUserId}`);
       } else {
         res.json({
           response_type: 'ephemeral',
-          text: `:warning: *Assignee required*\n\n` +
+          text: `:warning: *Owner required*\n\n` +
             `Please use \`@mention\` to assign the task.\n\n` +
             `Example: \`/task @john Fix the login bug due friday\``,
         });
@@ -1093,10 +1093,28 @@ app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (r
       }
     }
 
+    // Owner authorization check
+    // Only users in SLACK_OWNER_OVERRIDE_USER_IDS can assign owner to someone else
+    // Everyone else: owner = creator (unless they didn't specify an owner)
+    const ownerOverrideUserIds = config.slack.ownerOverrideUserIds;
+    const isOwnerAuthorized = ownerOverrideUserIds.length === 0 || ownerOverrideUserIds.includes(user_id);
+    let ownerOverridden = false;
+
+    if (!isOwnerAuthorized && parsed.ownerSlackId !== user_id) {
+      // Non-authorized user tried to assign owner to someone else
+      // Force owner = creator
+      console.log(`Owner override blocked: ${user_id} tried to assign to ${parsed.ownerSlackId}`);
+      parsed.ownerSlackId = user_id;
+      ownerOverridden = true;
+    }
+
     // Acknowledge immediately (Slack requires response within 3 seconds)
+    const ackMessage = ownerOverridden
+      ? `⏳ Creating task...\n\n_Note: Owner set to you (only authorized users can assign tasks to others). Support users will still be notified._`
+      : `⏳ Creating task...`;
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Creating task...`,
+      text: ackMessage,
     });
 
     // Execute the workflow asynchronously
@@ -1189,7 +1207,7 @@ async function createTaskFromEmail(
     console.error('PDF generation failed (non-fatal):', pdfError);
   }
 
-  // Execute the email task workflow
+  // Execute the email task workflow (with initiator for authorization check)
   const result = await executeEmailTaskWorkflowSafe({
     subject: selectedEmail.subject,
     bodyText: selectedEmail.bodyText,
@@ -1200,6 +1218,7 @@ async function createTaskFromEmail(
     pdfBuffer,
     pdfFilename,
     source: 'Email Task',
+    initiatorSlackId: userId,  // Pass initiator for owner authorization check
   });
 
   if (result.success) {

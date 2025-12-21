@@ -24,7 +24,8 @@ interface MeetingInfo {
 interface SlackNotificationInput {
   taskType: string;
   subject: string;
-  assigneeSlackId: string;
+  assigneeSlackId: string;      // Owner (will be pinged)
+  supportSlackIds?: string[];   // Support users (optional, will also be pinged)
   dueDate: string;
   priority: Priority;
   notes: string;
@@ -208,9 +209,15 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
 
   // During after-hours: show assignee name without @ mention (quiet)
   // During working hours: full @ mention (pings user)
-  const assigneeDisplay = afterHours
+  const ownerDisplay = afterHours
     ? `<@${input.assigneeSlackId}>`.replace('<@', '').replace('>', '')  // Just the ID, no ping
     : `<@${input.assigneeSlackId}>`;  // Full mention, notifies user
+
+  // Support users display (if any)
+  const supportSlackIds = input.supportSlackIds ?? [];
+  const supportDisplay = supportSlackIds.length > 0
+    ? supportSlackIds.map(id => afterHours ? id : `<@${id}>`).join(', ')
+    : null;
 
   // Build Block Kit message - use any[] to avoid type issues with mixed block types
   const blocks: any[] = [
@@ -231,10 +238,27 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
         },
         {
           type: 'mrkdwn',
-          text: `*Assigned to:*\n${assigneeDisplay}`,
+          text: `*Owner:*\n${ownerDisplay}`,
         },
       ],
     },
+  ];
+
+  // Add support field if there are support users
+  if (supportDisplay) {
+    blocks.push({
+      type: 'section',
+      fields: [
+        {
+          type: 'mrkdwn',
+          text: `*Support:*\n${supportDisplay}`,
+        },
+      ],
+    });
+  }
+
+  // Continue with due date and priority
+  blocks.push(
     {
       type: 'section',
       fields: [
@@ -279,8 +303,8 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
         type: 'mrkdwn',
         text: `*Notes:*\n${input.notes || '_No notes provided_'}`,
       },
-    },
-  ];
+    }
+  );
 
   // Add meeting section if there's a meeting request
   if (input.meeting?.hasMeetingRequest) {

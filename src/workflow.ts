@@ -455,7 +455,9 @@ export interface SlackTaskInput {
 }
 
 export interface ParsedSlackTask {
-  assigneeSlackId: string | null;
+  ownerSlackId: string | null;       // Owner (restricted - only authorized users can assign to others)
+  supportSlackIds: string[];          // Support users (anyone can set)
+  ownerExplicitlySet: boolean;        // True if user explicitly used "owner:" prefix
   description: string;
   dueDate: string | null;  // Parsed date or null for ASAP
   urgency: 'High' | 'Medium' | 'Low';
@@ -468,16 +470,26 @@ export interface ParsedSlackTask {
  *
  * Supported formats:
  * - Single-line: /task @assignee refund due fri urgency high notes: customer called twice
+ * - With explicit owner/support:
+ *   /task owner: @john support: @jane @bob Fix the bug due friday
  * - Multiline:
- *   @assignee
+ *   owner: @john
+ *   support: @jane
  *   due fri
  *   refund
  *   notes...
+ *
+ * Owner vs Support:
+ * - owner: Sets the task owner (restricted - only authorized users can assign to others)
+ * - support: Sets support users who will be pinged (anyone can set this)
+ * - Plain @mention without prefix defaults to owner (backward compatible)
  */
 export function parseSlackTaskInput(text: string): ParsedSlackTask {
   const lines = text.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-  let assigneeSlackId: string | null = null;
+  let ownerSlackId: string | null = null;
+  let supportSlackIds: string[] = [];
+  let ownerExplicitlySet = false;
   let description = '';
   let dueDate: string | null = null;
   let urgency: 'High' | 'Medium' | 'Low' = 'Medium';
@@ -486,10 +498,27 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
 
   // Extract @mentions (Slack format: <@U123ABC> or <@U123ABC|name>)
   const mentionRegex = /<@([A-Z0-9]+)(?:\|[^>]+)?>/g;
+  // Extract single mention ID
+  const extractMentionId = (str: string): string | null => {
+    const match = str.match(/<@([A-Z0-9]+)(?:\|[^>]+)?>/);
+    return match ? match[1] : null;
+  };
+  // Extract all mention IDs from a string
+  const extractAllMentionIds = (str: string): string[] => {
+    const ids: string[] = [];
+    let match;
+    const regex = /<@([A-Z0-9]+)(?:\|[^>]+)?>/g;
+    while ((match = regex.exec(str)) !== null) {
+      ids.push(match[1]);
+    }
+    return ids;
+  };
 
-  // Check if multiline format (lines with patterns like "due", "urgency", "@")
+  // Check if multiline format (lines with patterns like "due", "urgency", "@", "owner:", "support:")
   const isMultiline = lines.length > 1 && lines.some(l =>
     /^<@[A-Z0-9]+/.test(l) ||
+    /^owner:/i.test(l) ||
+    /^support:/i.test(l) ||
     /^due\s/i.test(l) ||
     /^urgency\s/i.test(l) ||
     /^type\s/i.test(l) ||
@@ -501,12 +530,32 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
     const remainingLines: string[] = [];
 
     for (const line of lines) {
-      // Assignee line
+      // Explicit owner: line
+      if (/^owner:/i.test(line)) {
+        const ownerPart = line.replace(/^owner:\s*/i, '').trim();
+        const ownerId = extractMentionId(ownerPart);
+        if (ownerId) {
+          ownerSlackId = ownerId;
+          ownerExplicitlySet = true;
+        }
+        continue;
+      }
+
+      // Explicit support: line (can have multiple @mentions)
+      if (/^support:/i.test(line)) {
+        const supportPart = line.replace(/^support:\s*/i, '').trim();
+        const supportIds = extractAllMentionIds(supportPart);
+        supportSlackIds.push(...supportIds);
+        continue;
+      }
+
+      // Plain @mention line (defaults to owner if not set)
       const mentionMatch = line.match(mentionRegex);
-      if (mentionMatch && !assigneeSlackId) {
-        const idMatch = mentionMatch[0].match(/<@([A-Z0-9]+)/);
-        if (idMatch) {
-          assigneeSlackId = idMatch[1];
+      if (mentionMatch && !ownerSlackId) {
+        const id = extractMentionId(line);
+        if (id) {
+          ownerSlackId = id;
+          // Not explicitly set via "owner:", just a plain mention
         }
         // If line is just the mention, skip it
         if (line.replace(mentionRegex, '').trim().length === 0) continue;
@@ -548,13 +597,37 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
     // Single-line parsing
     let remaining = text.trim();
 
-    // Extract assignee
-    const mentionMatch = remaining.match(mentionRegex);
-    if (mentionMatch) {
-      const idMatch = mentionMatch[0].match(/<@([A-Z0-9]+)/);
-      if (idMatch) {
-        assigneeSlackId = idMatch[1];
+    // Extract explicit "owner: @user" pattern first
+    const ownerMatch = remaining.match(/\bowner:\s*(<@[A-Z0-9]+(?:\|[^>]+)?>)/i);
+    if (ownerMatch) {
+      const id = extractMentionId(ownerMatch[1]);
+      if (id) {
+        ownerSlackId = id;
+        ownerExplicitlySet = true;
       }
+      remaining = remaining.replace(ownerMatch[0], '').trim();
+    }
+
+    // Extract "support: @user @user2" pattern (greedy - all consecutive mentions after support:)
+    const supportMatch = remaining.match(/\bsupport:\s*((?:<@[A-Z0-9]+(?:\|[^>]+)?>\s*)+)/i);
+    if (supportMatch) {
+      const ids = extractAllMentionIds(supportMatch[1]);
+      supportSlackIds.push(...ids);
+      remaining = remaining.replace(supportMatch[0], '').trim();
+    }
+
+    // Extract any remaining @mentions as owner (backward compatible) if owner not set
+    if (!ownerSlackId) {
+      const plainMentionMatch = remaining.match(mentionRegex);
+      if (plainMentionMatch) {
+        const id = extractMentionId(plainMentionMatch[0]);
+        if (id) {
+          ownerSlackId = id;
+        }
+        remaining = remaining.replace(mentionRegex, '').trim();
+      }
+    } else {
+      // Owner already set, remove any remaining mentions from description
       remaining = remaining.replace(mentionRegex, '').trim();
     }
 
@@ -599,7 +672,9 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
   }
 
   return {
-    assigneeSlackId,
+    ownerSlackId,
+    supportSlackIds,
+    ownerExplicitlySet,
     description,
     dueDate,
     urgency,
@@ -626,20 +701,36 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
 
   log.log('Starting Slack task workflow:', parsed.description);
 
-  // Step 1: Resolve assignee
+  // Step 1: Resolve owner
   // Import here to avoid circular dependency
   const { findUserBySlackId, getUserNamesString } = await import('./services/userResolver.js');
 
-  if (!parsed.assigneeSlackId) {
-    throw new Error('Assignee is required. Use @mention to assign.');
+  if (!parsed.ownerSlackId) {
+    throw new Error('Owner is required. Use @mention to assign.');
   }
 
-  const user = await findUserBySlackId(parsed.assigneeSlackId);
-  if (!user) {
+  const owner = await findUserBySlackId(parsed.ownerSlackId);
+  if (!owner) {
     const availableUsers = await getUserNamesString();
-    throw new Error(`Unknown user: <@${parsed.assigneeSlackId}>. Available users: ${availableUsers}`);
+    throw new Error(`Unknown user: <@${parsed.ownerSlackId}>. Available users: ${availableUsers}`);
   }
-  log.log('Resolved user:', user.name, 'Monday ID:', user.mondayId);
+  log.log('Resolved owner:', owner.name, 'Monday ID:', owner.mondayId);
+
+  // Step 1b: Resolve support users (if any)
+  const supportUsers: Array<{ mondayId: string; slackId: string; name: string }> = [];
+  for (const supportSlackId of parsed.supportSlackIds) {
+    const supportUser = await findUserBySlackId(supportSlackId);
+    if (supportUser) {
+      supportUsers.push({
+        mondayId: String(supportUser.mondayId),  // Convert to string for Monday API
+        slackId: supportUser.slackId || supportSlackId,
+        name: supportUser.name,
+      });
+      log.log('Resolved support user:', supportUser.name);
+    } else {
+      log.warn(`Could not resolve support user <@${supportSlackId}>`);
+    }
+  }
 
   // Step 2: Parse due date
   const formattedDueDate = parsed.dueDate ? parseDate(parsed.dueDate) : null;
@@ -653,7 +744,8 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   const mondayItem = await monday.createItem({
     name: taskName,
     dueDate: formattedDueDate,
-    ownerIds: [user.mondayId],
+    ownerIds: [owner.mondayId],
+    supportIds: supportUsers.map(u => u.mondayId),
     taskType: parsed.taskType,
     source: 'Slack',  // Source = Slack for /task command
     urgency: finalUrgency,
@@ -696,11 +788,16 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   }
 
   // Step 5: Send Slack notification (respects quiet-hours)
+  // Build assignee mentions (owner + support)
+  const ownerMention = owner.slackId || owner.name;
+  const supportMentions = supportUsers.map(u => u.slackId || u.name);
+
   log.log('Sending Slack notification...');
   const slackMessage = await slack.sendNotification({
     taskType: parsed.taskType,
     subject: taskName,
-    assigneeSlackId: user.slackId || user.name,
+    assigneeSlackId: ownerMention,
+    supportSlackIds: supportMentions,
     dueDate: formatDateForDisplay(formattedDueDate),
     priority: finalUrgency === 'High' ? 'high' : finalUrgency === 'Low' ? 'low' : 'medium',
     notes: parsed.notes ?? '',
@@ -775,6 +872,8 @@ export interface EmailTaskInput {
   pdfBuffer: Buffer | null;
   pdfFilename: string;
   source?: string;
+  // Optional: Slack ID of the person who initiated this task creation (for authorization checks)
+  initiatorSlackId?: string;
 }
 
 /**
@@ -816,13 +915,33 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
     log.log('Due date:', formattedDueDate ?? 'Not specified');
   }
 
-  // Step 4: Resolve user from owner name
-  const user = await findUserByName(analysisResult.owner);
+  // Step 4: Resolve user from owner name (with authorization check)
+  let resolvedOwner = analysisResult.owner;
+  let ownerOverridden = false;
+
+  // Authorization check: if initiator is not authorized, owner = initiator
+  if (input.initiatorSlackId) {
+    const ownerOverrideUserIds = config.slack.ownerOverrideUserIds;
+    const isAuthorized = ownerOverrideUserIds.length === 0 || ownerOverrideUserIds.includes(input.initiatorSlackId);
+
+    if (!isAuthorized) {
+      // Non-authorized user: owner is the initiator, not what Claude detected
+      const { findUserBySlackId } = await import('./services/userResolver.js');
+      const initiator = await findUserBySlackId(input.initiatorSlackId);
+      if (initiator) {
+        resolvedOwner = initiator.name;
+        ownerOverridden = true;
+        log.log(`Owner overridden: ${analysisResult.owner} → ${initiator.name} (initiator not authorized)`);
+      }
+    }
+  }
+
+  const user = await findUserByName(resolvedOwner);
   if (!user) {
     const availableUsers = await getUserNamesString();
-    throw new Error(`Unknown user: ${analysisResult.owner}. Available users: ${availableUsers}`);
+    throw new Error(`Unknown user: ${resolvedOwner}. Available users: ${availableUsers}`);
   }
-  log.log('Resolved user:', user.name, 'Monday ID:', user.mondayId);
+  log.log('Resolved owner:', user.name, 'Monday ID:', user.mondayId, ownerOverridden ? '(overridden)' : '');
 
   // Step 5: Determine priority/urgency
   const finalUrgency = asapDetected ? 'High' : mapPriorityToUrgency(analysisResult.priority);
