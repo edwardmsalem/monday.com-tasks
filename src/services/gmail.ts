@@ -380,7 +380,7 @@ function getTodayEastern(): string {
  */
 export async function searchEmailsBySubject(
   subject: string,
-  matchMode: EmailMatchMode = 'contains',
+  matchMode: EmailMatchMode = 'equals',
   daysBack: number = 0
 ): Promise<GmailEmailResult[]> {
   const gmail = await getGmailClient();

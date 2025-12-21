@@ -502,7 +502,7 @@ export async function hasRunId(itemId: string): Promise<boolean> {
 /**
  * Known automated source values
  */
-const AUTOMATED_SOURCES = ['Forwarding Tasks', 'Slack'];
+const AUTOMATED_SOURCES = ['Forwarding Tasks', 'Slack', 'Email Task'];
 
 /**
  * Check item automation indicators (Run ID and Source)

@@ -1132,20 +1132,98 @@ app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (r
 
 import * as gmail from './services/gmail.js';
 import { convertHtmlToPdf, convertTextToPdf } from './services/convertApi.js';
+import { parseEmailTaskInput } from './services/claude.js';
+
+// In-memory store for pending email selections (userId → search results)
+interface PendingEmailSelection {
+  emails: gmail.GmailEmailResult[];
+  subject: string;
+  responseUrl: string;
+  expiresAt: number;
+}
+const pendingEmailSelections = new Map<string, PendingEmailSelection>();
+const SELECTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Create task from selected email
+ */
+async function createTaskFromEmail(
+  selectedEmail: gmail.GmailEmailResult,
+  userId: string,
+  responseUrl: string
+): Promise<void> {
+  // Generate PDF from email
+  let pdfBuffer: Buffer | null = null;
+  let pdfFilename = 'email.pdf';
+
+  try {
+    if (selectedEmail.bodyHtml) {
+      const pdfResult = await convertHtmlToPdf(selectedEmail.bodyHtml, selectedEmail.subject);
+      pdfBuffer = pdfResult.data;
+      pdfFilename = pdfResult.filename;
+    } else if (selectedEmail.bodyText) {
+      const pdfResult = await convertTextToPdf(
+        selectedEmail.bodyText,
+        selectedEmail.subject,
+        selectedEmail.from,
+        selectedEmail.date
+      );
+      pdfBuffer = pdfResult.data;
+      pdfFilename = pdfResult.filename;
+    }
+    console.log('PDF generated:', pdfFilename, pdfBuffer?.length, 'bytes');
+  } catch (pdfError) {
+    console.error('PDF generation failed (non-fatal):', pdfError);
+  }
+
+  // Execute the email task workflow
+  const result = await executeEmailTaskWorkflowSafe({
+    subject: selectedEmail.subject,
+    bodyText: selectedEmail.bodyText,
+    bodyHtml: selectedEmail.bodyHtml,
+    fromEmail: selectedEmail.from,
+    toEmail: selectedEmail.to,
+    emailDate: selectedEmail.date,
+    pdfBuffer,
+    pdfFilename,
+    source: 'Email Task',
+  });
+
+  if (result.success) {
+    const mondayUrl = monday.getItemUrl(result.mondayItemId);
+    const slackThreadUrl = `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${result.slackThreadTs}`;
+
+    await slack.postToThread(
+      result.slackThreadTs,
+      `📧 Created via \`/emailtask\` by <@${userId}>`
+    );
+
+    await slack.sendResponseUrl(responseUrl,
+      `✅ *Task Created from Email*\n\n` +
+      `• *Subject:* ${selectedEmail.subject}\n` +
+      `• *Monday:* <${mondayUrl}|View Item>\n` +
+      `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
+      `• *Run ID:* \`${result.runId?.substring(0, 8)}\``
+    );
+  } else {
+    console.error('Email task creation failed:', result.error);
+    await slack.sendResponseUrl(responseUrl, `:x: *Task Creation Failed*\n\n${result.error}`);
+  }
+}
 
 /**
  * /emailtask slash command handler
  * Search Gmail for emails by subject and create a task from the result
  *
- * Usage:
- * - /emailtask subject: Your Subject Here
- * - /emailtask subject: Your Subject Here days: 7
- * - /emailtask subject: Your Subject Here match: equals
+ * Supports natural language input:
+ * - /emailtask Knicks Presale 2025
+ * - /emailtask Yankees relocation from last week
+ * - /emailtask Rangers email use most recent
  *
- * Options:
- * - subject: (required) The subject line to search for
- * - days: Number of days to search (0 = today only, default)
- * - match: 'equals' (exact) or 'contains' (partial, default)
+ * Also supports structured format:
+ * - /emailtask subject: Your Subject Here days: 7 match: contains
+ *
+ * Defaults: today only (Eastern Time), exact match
  */
 app.post('/webhook/slack/emailtask', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
   try {
@@ -1176,134 +1254,157 @@ app.post('/webhook/slack/emailtask', express.urlencoded({ extended: true }), asy
         response_type: 'ephemeral',
         text: `*Email Task Creation*\n\n` +
           `Search Gmail and create a task from the email.\n\n` +
-          `*Usage:*\n` +
-          `\`/emailtask subject: Your Subject Here\`\n\n` +
-          `*Options:*\n` +
-          `• \`subject:\` - Required. The subject line to search\n` +
-          `• \`days:\` - Search window (0 = today only, default)\n` +
-          `• \`match:\` - 'equals' (exact) or 'contains' (partial)\n\n` +
-          `*Examples:*\n` +
-          `• \`/emailtask subject: Knicks 2025 Presale\`\n` +
-          `• \`/emailtask subject: Yankees Relocation days: 7\`\n` +
-          `• \`/emailtask subject: Season Tickets match: contains\`\n\n` +
-          `_Default: today only, contains match_`,
+          `*Natural language examples:*\n` +
+          `• \`/emailtask Knicks Presale 2025\`\n` +
+          `• \`/emailtask Yankees relocation from last week\`\n` +
+          `• \`/emailtask Rangers email use most recent\`\n` +
+          `• \`/emailtask email containing season tickets\`\n\n` +
+          `*Structured format (optional):*\n` +
+          `\`/emailtask subject: Your Subject days: 7 match: contains\`\n\n` +
+          `*Defaults:*\n` +
+          `• Search window: today only (Eastern Time)\n` +
+          `• Match mode: exact match\n\n` +
+          `*Multiple matches:*\n` +
+          `If multiple emails match, you'll see a list to choose from.\n` +
+          `Add "use most recent" to auto-select the newest one.`,
       });
       return;
     }
 
-    // Parse the input
-    const subjectMatch = trimmedText.match(/subject:\s*(.+?)(?=\s+(?:days:|match:)|$)/i);
-    const daysMatch = trimmedText.match(/days:\s*(\d+)/i);
-    const matchModeMatch = trimmedText.match(/match:\s*(equals|contains)/i);
-
-    if (!subjectMatch) {
+    // Check for pending selection (user replying with 1-5)
+    const selectionMatch = trimmedText.match(/^(\d)$/);
+    if (selectionMatch) {
+      const pending = pendingEmailSelections.get(user_id);
+      if (pending && pending.expiresAt > Date.now()) {
+        const selection = parseInt(selectionMatch[1], 10) - 1;
+        if (selection >= 0 && selection < pending.emails.length) {
+          pendingEmailSelections.delete(user_id);
+          res.json({
+            response_type: 'ephemeral',
+            text: `⏳ Creating task from email #${selection + 1}...`,
+          });
+          await createTaskFromEmail(pending.emails[selection], user_id, response_url);
+          return;
+        }
+      }
+      // No valid pending selection
       res.json({
         response_type: 'ephemeral',
-        text: `:warning: *Subject required*\n\n` +
-          `Please specify a subject to search for.\n\n` +
-          `Example: \`/emailtask subject: Knicks Presale 2025\``,
+        text: `:warning: No pending email selection. Run \`/emailtask\` with a search first.`,
       });
       return;
     }
 
-    const subject = subjectMatch[1].trim();
-    const daysBack = daysMatch ? parseInt(daysMatch[1], 10) : 0;
-    const matchMode: gmail.EmailMatchMode = matchModeMatch?.[1]?.toLowerCase() === 'equals' ? 'equals' : 'contains';
+    // Check for "cancel" to clear pending selection
+    if (trimmedText.toLowerCase() === 'cancel') {
+      if (pendingEmailSelections.has(user_id)) {
+        pendingEmailSelections.delete(user_id);
+        res.json({
+          response_type: 'ephemeral',
+          text: `🚫 Email selection cancelled.`,
+        });
+      } else {
+        res.json({
+          response_type: 'ephemeral',
+          text: `No pending selection to cancel.`,
+        });
+      }
+      return;
+    }
 
-    // Acknowledge immediately
+    // Parse the input using Claude AI
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Searching Gmail for "${subject}"...`,
+      text: `⏳ Parsing search...`,
     });
 
+    let searchParams;
+    try {
+      searchParams = await parseEmailTaskInput(trimmedText);
+    } catch (parseError) {
+      console.error('Failed to parse /emailtask input:', parseError);
+      await slack.sendResponseUrl(response_url,
+        `:warning: *Could not parse search*\n\n` +
+        `Try a simpler format like:\n` +
+        `\`/emailtask Knicks Presale 2025\`\n` +
+        `\`/emailtask subject: Your Subject Here\``
+      );
+      return;
+    }
+
     // Search Gmail
-    const emails = await gmail.searchEmailsBySubject(subject, matchMode, daysBack);
+    console.log(`Searching Gmail: "${searchParams.subject}" (${searchParams.matchMode}, ${searchParams.daysBack} days)`);
+    const emails = await gmail.searchEmailsBySubject(
+      searchParams.subject,
+      searchParams.matchMode,
+      searchParams.daysBack
+    );
 
     // Handle no matches
     if (emails.length === 0) {
-      const suggestion = daysBack === 0
-        ? `Try widening the search: \`/emailtask subject: ${subject} days: 7\``
-        : daysBack < 30
-          ? `Try widening the search: \`/emailtask subject: ${subject} days: 30\``
-          : `No emails found matching "${subject}" in the last ${daysBack} days.`;
+      const suggestion = searchParams.daysBack === 0
+        ? `Try: \`/emailtask ${searchParams.subject} from last week\``
+        : searchParams.daysBack < 30
+          ? `Try: \`/emailtask ${searchParams.subject} from last month\``
+          : `No emails found in the last ${searchParams.daysBack} days.`;
 
       await slack.sendResponseUrl(response_url,
         `:mag: *No emails found*\n\n` +
-        `No emails matching "${subject}" found${daysBack === 0 ? ' today' : ` in the last ${daysBack} days`}.\n\n` +
+        `No emails matching "${searchParams.subject}" found${searchParams.daysBack === 0 ? ' today' : ` in the last ${searchParams.daysBack} days`} (${searchParams.matchMode} match).\n\n` +
         `${suggestion}`
       );
       return;
     }
 
-    // Handle multiple matches - use the most recent
-    let selectedEmail = emails[0];
-    let multipleNote = '';
-    if (emails.length > 1) {
-      multipleNote = `\n_Found ${emails.length} emails, using most recent from ${selectedEmail.date.toLocaleDateString('en-US', { timeZone: 'America/New_York' })}_`;
-      console.log(`Multiple emails found (${emails.length}), using most recent: ${selectedEmail.messageId}`);
+    // Single match - create task immediately
+    if (emails.length === 1) {
+      await slack.sendResponseUrl(response_url, `⏳ Found 1 email, creating task...`);
+      await createTaskFromEmail(emails[0], user_id, response_url);
+      return;
     }
 
-    // Generate PDF from email
-    let pdfBuffer: Buffer | null = null;
-    let pdfFilename = 'email.pdf';
-
-    try {
-      if (selectedEmail.bodyHtml) {
-        const pdfResult = await convertHtmlToPdf(selectedEmail.bodyHtml, subject);
-        pdfBuffer = pdfResult.data;
-        pdfFilename = pdfResult.filename;
-      } else if (selectedEmail.bodyText) {
-        const pdfResult = await convertTextToPdf(
-          selectedEmail.bodyText,
-          selectedEmail.subject,
-          selectedEmail.from,
-          selectedEmail.date
-        );
-        pdfBuffer = pdfResult.data;
-        pdfFilename = pdfResult.filename;
-      }
-      console.log('PDF generated:', pdfFilename, pdfBuffer?.length, 'bytes');
-    } catch (pdfError) {
-      console.error('PDF generation failed (non-fatal):', pdfError);
-      // Continue without PDF
+    // Multiple matches - check if user wants latest
+    if (searchParams.useLatest) {
+      await slack.sendResponseUrl(response_url,
+        `⏳ Found ${emails.length} emails, using most recent...`
+      );
+      await createTaskFromEmail(emails[0], user_id, response_url);
+      return;
     }
 
-    // Execute the email task workflow
-    const result = await executeEmailTaskWorkflowSafe({
-      subject: selectedEmail.subject,
-      bodyText: selectedEmail.bodyText,
-      bodyHtml: selectedEmail.bodyHtml,
-      fromEmail: selectedEmail.from,
-      toEmail: selectedEmail.to,
-      emailDate: selectedEmail.date,
-      pdfBuffer,
-      pdfFilename,
-      source: 'Email Task',
+    // Multiple matches - show list for user to choose
+    const topEmails = emails.slice(0, 5);
+    const listItems = topEmails.map((email, i) => {
+      const dateStr = email.date.toLocaleDateString('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      });
+      const timeStr = email.date.toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      const from = email.from?.replace(/<[^>]+>/, '').trim().substring(0, 30) || 'Unknown';
+      return `*${i + 1}.* ${dateStr} ${timeStr} - ${from}`;
     });
 
-    if (result.success) {
-      const mondayUrl = monday.getItemUrl(result.mondayItemId);
-      const slackThreadUrl = `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${result.slackThreadTs}`;
+    // Store pending selection
+    pendingEmailSelections.set(user_id, {
+      emails: topEmails,
+      subject: searchParams.subject,
+      responseUrl: response_url,
+      expiresAt: Date.now() + SELECTION_TIMEOUT_MS,
+    });
 
-      // Post attribution to thread
-      await slack.postToThread(
-        result.slackThreadTs,
-        `📧 Created via \`/emailtask\` by <@${user_id}>${multipleNote}`
-      );
-
-      await slack.sendResponseUrl(response_url,
-        `✅ *Task Created from Email*\n\n` +
-        `• *Subject:* ${selectedEmail.subject}\n` +
-        `• *Monday:* <${mondayUrl}|View Item>\n` +
-        `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
-        `• *Run ID:* \`${result.runId?.substring(0, 8)}\`${multipleNote}`
-      );
-    } else {
-      console.error('Email task creation failed:', result.error);
-      await slack.sendResponseUrl(response_url,
-        `:x: *Task Creation Failed*\n\n${result.error}`
-      );
-    }
+    await slack.sendResponseUrl(response_url,
+      `:mag: *Found ${emails.length} emails matching "${searchParams.subject}"*\n\n` +
+      `${listItems.join('\n')}\n\n` +
+      `Reply with \`/emailtask 1\` to \`/emailtask 5\` to select one.\n` +
+      `Or \`/emailtask cancel\` to cancel.\n\n` +
+      `_Tip: Add "use most recent" to auto-select the newest._`
+    );
   } catch (error) {
     console.error('/emailtask command error:', error);
     res.json({

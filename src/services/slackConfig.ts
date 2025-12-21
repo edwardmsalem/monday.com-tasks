@@ -4,9 +4,46 @@
  * Fetches configuration from pinned messages in a control channel.
  * No redeploy required - edit the pinned message to update config.
  *
- * Configs:
- * - Owners Map: Assignment rules for subitems/automation
- * - Sheets Registry: Team → Google Sheet mapping
+ * =============================================================================
+ * SETUP REQUIREMENTS
+ * =============================================================================
+ *
+ * 1. Set SLACK_CONTROL_CHANNEL_ID environment variable to the channel ID
+ *    (e.g., C08QCFC4Y0H - find in channel details)
+ *
+ * 2. Pin a message with the Owners map in this YAML format:
+ *    ```yaml
+ *    owners:
+ *      relocation:
+ *        accounts_checked: "@Johanna"
+ *        board_setup: "@Dayna"
+ *        logins_confirmed: "@Sean"
+ *        card_active: "@Chantay"
+ *      refund: "@Chantay"
+ *      decline: "@Johanna"
+ *    ```
+ *
+ * 3. Pin a message with the Sheets registry in this YAML format:
+ *    ```yaml
+ *    sheets:
+ *      nba:
+ *        knicks:
+ *          sheetId: "1abc..."
+ *          tab: "Sheet1"
+ *        nets:
+ *          sheetId: "2def..."
+ *          tab: "Accounts"
+ *      nfl:
+ *        giants:
+ *          sheetId: "3ghi..."
+ *          tab: "Main"
+ *    ```
+ *
+ * VALIDATION RULES:
+ * - owners: must have root key "owners:" with nested task types
+ * - sheets: must have root key "sheets:" with sport → team → {sheetId, tab}
+ * - All values should be strings (quoted in YAML if needed)
+ * - Slack user mentions use "@Name" format
  *
  * Cache: 5 minutes TTL
  */
@@ -355,4 +392,187 @@ export function getCacheStatus(): {
       error: sheetsCache.error,
     },
   };
+}
+
+// ============================================================================
+// Configuration Validation
+// ============================================================================
+
+/**
+ * Configuration validation result
+ */
+export interface ConfigValidationResult {
+  valid: boolean;
+  errors: string[];
+  fixSteps: string[];
+}
+
+/**
+ * Check if Slack control channel is configured
+ */
+export function isControlChannelConfigured(): boolean {
+  return !!(config.slack.controlChannelId && config.slack.controlChannelId.length > 0);
+}
+
+/**
+ * Validate Slack-driven configuration
+ * Returns detailed errors and fix steps for missing/malformed config
+ *
+ * Call this before any operation that requires Slack config.
+ * If not valid, respond ephemerally with the fixSteps and stop the flow.
+ */
+export async function validateSlackConfig(): Promise<ConfigValidationResult> {
+  const errors: string[] = [];
+  const fixSteps: string[] = [];
+
+  // Check 1: Control channel ID
+  if (!isControlChannelConfigured()) {
+    errors.push('SLACK_CONTROL_CHANNEL_ID environment variable is not set');
+    fixSteps.push(
+      '1. Find your control channel ID:',
+      '   • Open the channel in Slack',
+      '   • Click the channel name at the top',
+      '   • Scroll to the bottom - Channel ID is there (e.g., C08QCFC4Y0H)',
+      '2. Set the environment variable:',
+      '   `SLACK_CONTROL_CHANNEL_ID=C08QCFC4Y0H`',
+      '3. Redeploy the application'
+    );
+    return { valid: false, errors, fixSteps };
+  }
+
+  // Check 2: Try to fetch pinned messages
+  let pinnedMessages: Array<{ text: string; ts: string }> = [];
+  try {
+    pinnedMessages = await fetchPinnedMessages();
+  } catch (error) {
+    errors.push(`Failed to fetch pinned messages: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    fixSteps.push(
+      '1. Verify the bot has access to the control channel',
+      '2. Check that the bot has the pins:read permission',
+      '3. Ensure SLACK_CONTROL_CHANNEL_ID is correct'
+    );
+    return { valid: false, errors, fixSteps };
+  }
+
+  if (pinnedMessages.length === 0) {
+    errors.push('No pinned messages found in control channel');
+    fixSteps.push(
+      '1. Go to the control channel',
+      '2. Post a message with the owners config (see format below)',
+      '3. Pin the message',
+      '',
+      '*Owners config format:*',
+      '```yaml',
+      'owners:',
+      '  relocation:',
+      '    accounts_checked: "@Johanna"',
+      '    board_setup: "@Dayna"',
+      '    logins_confirmed: "@Sean"',
+      '    card_active: "@Chantay"',
+      '  refund: "@Chantay"',
+      '  decline: "@Johanna"',
+      '```'
+    );
+    return { valid: false, errors, fixSteps };
+  }
+
+  // Check 3: Owners map
+  const ownersText = await findPinnedConfig('owners:');
+  if (!ownersText) {
+    errors.push('Owners map not found in pinned messages');
+    fixSteps.push(
+      '*Missing owners config. Pin a message with this format:*',
+      '```yaml',
+      'owners:',
+      '  relocation:',
+      '    accounts_checked: "@Johanna"',
+      '    board_setup: "@Dayna"',
+      '    logins_confirmed: "@Sean"',
+      '    card_active: "@Chantay"',
+      '  refund: "@Chantay"',
+      '  decline: "@Johanna"',
+      '```'
+    );
+  } else {
+    // Validate YAML
+    try {
+      const parsed = YAML.parse(ownersText);
+      if (!parsed || typeof parsed !== 'object') {
+        errors.push('Owners config is not valid YAML');
+        fixSteps.push('*Owners YAML is malformed.* Check for:',
+          '• Correct indentation (2 spaces per level)',
+          '• Colons after keys (owners:, relocation:, etc.)',
+          '• Quoted values if they contain special characters'
+        );
+      } else if (!parsed.owners) {
+        errors.push('Owners config missing root "owners:" key');
+        fixSteps.push('*Owners config must start with "owners:"*',
+          'Example:',
+          '```yaml',
+          'owners:',
+          '  refund: "@Chantay"',
+          '```'
+        );
+      }
+    } catch (yamlError) {
+      errors.push(`Owners YAML parse error: ${yamlError instanceof Error ? yamlError.message : 'Unknown'}`);
+      fixSteps.push(
+        '*Owners YAML is malformed.* Check for:',
+        '• Correct indentation (2 spaces per level)',
+        '• Colons after keys',
+        '• No tabs (use spaces only)',
+        '• Quoted values if needed'
+      );
+    }
+  }
+
+  // Check 4: Sheets registry (optional - warn only)
+  const sheetsText = await findPinnedConfig('sheets:');
+  if (!sheetsText) {
+    // Sheets is optional, just log warning
+    console.warn('Sheets registry not found in pinned messages (optional)');
+  } else {
+    try {
+      const parsed = YAML.parse(sheetsText);
+      if (!parsed || typeof parsed !== 'object' || !parsed.sheets) {
+        errors.push('Sheets config is malformed or missing root "sheets:" key');
+        fixSteps.push(
+          '*Sheets config format:*',
+          '```yaml',
+          'sheets:',
+          '  nba:',
+          '    knicks:',
+          '      sheetId: "1abc..."',
+          '      tab: "Sheet1"',
+          '```'
+        );
+      }
+    } catch (yamlError) {
+      errors.push(`Sheets YAML parse error: ${yamlError instanceof Error ? yamlError.message : 'Unknown'}`);
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    fixSteps,
+  };
+}
+
+/**
+ * Format validation errors as Slack ephemeral message
+ */
+export function formatValidationError(result: ConfigValidationResult): string {
+  const parts: string[] = [
+    ':warning: *Slack Configuration Error*',
+    '',
+    '*Errors:*',
+    ...result.errors.map(e => `• ${e}`),
+  ];
+
+  if (result.fixSteps.length > 0) {
+    parts.push('', '*How to fix:*', ...result.fixSteps);
+  }
+
+  return parts.join('\n');
 }
