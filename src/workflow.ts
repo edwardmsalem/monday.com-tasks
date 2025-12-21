@@ -1019,7 +1019,7 @@ export async function executeEmailTaskWorkflowSafe(input: EmailTaskInput): Promi
 export const RELOCATION_CHECKLIST = [
   { key: 'accounts_checked', label: 'Accounts Checked' },
   { key: 'board_setup', label: 'Board Setup' },
-  { key: 'logins_confirmed', label: 'Logins Confirmed' },
+  { key: 'logins_confirmed', label: 'Logins Confirmed (10:00 AM ET day-of)' },
   { key: 'card_active', label: 'Card Active' },
 ] as const;
 
@@ -1230,6 +1230,16 @@ export async function applyIntentDrivenMode(
       actions.push(`Created ${result.created.length} Relocation checklist items`);
       if (ownersSummary) {
         actions.push(`Assigned: ${ownersSummary}`);
+      }
+
+      // Post timing requirement for Logins Confirmed step
+      const hasLoginsStep = result.created.some(s => s.name.toLowerCase().includes('logins confirmed'));
+      if (hasLoginsStep) {
+        await monday.createUpdate(mondayItemId,
+          `⏰ *Logins Confirmed Timing*\n\n` +
+          `The "Logins Confirmed" step should be completed by *10:00 AM ET on day-of* to ensure accounts are ready before the event.`
+        );
+        actions.push('Posted Logins Confirmed timing requirement (10:00 AM ET day-of)');
       }
 
       // Collect unresolved owner warnings
