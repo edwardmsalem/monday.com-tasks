@@ -46,6 +46,7 @@ import { parseDate, formatDateForDisplay, isAsapDate } from './utils/dateParser.
 import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from './services/gmail.js';
 import { createRecipientSheet, shouldCreateSheet } from './services/sheets.js';
 import * as todoist from './services/todoist.js';
+import { getRelocationOwners } from './services/slackConfig.js';
 
 /**
  * Map Claude priority to Monday urgency label
@@ -195,7 +196,22 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   log.log('Creating initial Monday update...');
   await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
 
-  // Step 8.5: Project to Todoist (if enabled)
+  // Step 8.5: Apply intent-driven mode behavior (Phase 4/5)
+  // - Relocation: Creates 4 checklist subitems with owners from Slack config
+  // - Exclusive Presale: Detection only (uses /scan for recipients)
+  try {
+    const intentMode = await applyIntentDrivenMode(mondayItem.id, taskType, taskName, log);
+    if (intentMode.mode !== 'none' && intentMode.actions.length > 0) {
+      // Post intent mode actions as Monday update
+      const intentUpdate = `🎯 *${intentMode.mode.charAt(0).toUpperCase() + intentMode.mode.slice(1)} Mode*\n${intentMode.actions.map(a => `• ${a}`).join('\n')}`;
+      await monday.createUpdate(mondayItem.id, intentUpdate);
+    }
+  } catch (error) {
+    log.error('Intent-driven mode failed (non-fatal):', error);
+    // Don't fail the whole workflow if intent-driven mode fails
+  }
+
+  // Step 8.6: Project to Todoist (if enabled)
   if (todoist.isEnabled()) {
     log.log('Projecting task to Todoist...');
     const todoistTask = await todoist.projectFromMonday({
@@ -668,6 +684,17 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   log.log('Creating initial Monday update...');
   await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
 
+  // Step 4.5: Apply intent-driven mode behavior (Phase 4/5)
+  try {
+    const intentMode = await applyIntentDrivenMode(mondayItem.id, parsed.taskType, taskName, log);
+    if (intentMode.mode !== 'none' && intentMode.actions.length > 0) {
+      const intentUpdate = `🎯 *${intentMode.mode.charAt(0).toUpperCase() + intentMode.mode.slice(1)} Mode*\n${intentMode.actions.map(a => `• ${a}`).join('\n')}`;
+      await monday.createUpdate(mondayItem.id, intentUpdate);
+    }
+  } catch (error) {
+    log.error('Intent-driven mode failed (non-fatal):', error);
+  }
+
   // Step 5: Send Slack notification (respects quiet-hours)
   log.log('Sending Slack notification...');
   const slackMessage = await slack.sendNotification({
@@ -844,6 +871,17 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
     await monday.createUpdate(mondayItem.id, '⚠️ Team not identified. Please update the Team field if this relates to a specific sports team.');
   }
 
+  // Step 8.5: Apply intent-driven mode behavior (Phase 4/5)
+  try {
+    const intentMode = await applyIntentDrivenMode(mondayItem.id, taskType, taskName, log);
+    if (intentMode.mode !== 'none' && intentMode.actions.length > 0) {
+      const intentUpdate = `🎯 *${intentMode.mode.charAt(0).toUpperCase() + intentMode.mode.slice(1)} Mode*\n${intentMode.actions.map(a => `• ${a}`).join('\n')}`;
+      await monday.createUpdate(mondayItem.id, intentUpdate);
+    }
+  } catch (error) {
+    log.error('Intent-driven mode failed (non-fatal):', error);
+  }
+
   // Step 9: Send Slack notification
   log.log('Sending Slack notification...');
   const slackMessage = await slack.sendNotification({
@@ -968,4 +1006,140 @@ export async function executeEmailTaskWorkflowSafe(input: EmailTaskInput): Promi
       runId,
     };
   }
+}
+
+// ============================================================================
+// Phase 4: Intent-Driven Modes
+// ============================================================================
+
+/**
+ * Relocation checklist items with their display names
+ * These map to the Slack-driven config keys in slackConfig.ts
+ */
+export const RELOCATION_CHECKLIST = [
+  { key: 'accounts_checked', label: 'Accounts Checked' },
+  { key: 'board_setup', label: 'Board Setup' },
+  { key: 'logins_confirmed', label: 'Logins Confirmed' },
+  { key: 'card_active', label: 'Card Active' },
+] as const;
+
+/**
+ * Detect if a task is a Relocation task
+ */
+export function isRelocationTask(taskType: string): boolean {
+  return taskType.toLowerCase() === 'relocation';
+}
+
+/**
+ * Detect if a task is an Exclusive Presale task
+ * Looks for "presale" or "exclusive" keywords in subject
+ */
+export function isExclusivePresaleTask(subject: string): boolean {
+  const lowerSubject = subject.toLowerCase();
+  return lowerSubject.includes('presale') ||
+         lowerSubject.includes('pre-sale') ||
+         lowerSubject.includes('exclusive');
+}
+
+/**
+ * Create Relocation checklist subitems with owners from Slack config
+ * Returns created subitems with their assigned owners
+ *
+ * PHASE 5: Creates 4 subitems for Relocation tasks:
+ * - Accounts Checked → @owner from config
+ * - Board Setup → @owner from config
+ * - Logins Confirmed → @owner from config
+ * - Card Active → @owner from config
+ *
+ * Note: No per-subitem Slack notifications (per guardrails)
+ * Owner is included in subitem name for visibility
+ */
+export async function createRelocationSubitems(
+  parentItemId: string,
+  log: { log: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+): Promise<Array<{ id: string; name: string; owner: string | null }>> {
+  log.log('Creating Relocation checklist subitems...');
+
+  // Get owners from Slack-driven config
+  const owners = await getRelocationOwners();
+  log.log('Relocation owners from config:', owners);
+
+  const results: Array<{ id: string; name: string; owner: string | null }> = [];
+
+  for (const item of RELOCATION_CHECKLIST) {
+    const owner = owners[item.key as keyof typeof owners];
+
+    // Format: "Accounts Checked (@Johanna)" or "Accounts Checked" if no owner
+    const subitemName = owner
+      ? `${item.label} (${owner})`
+      : item.label;
+
+    try {
+      const subitem = await monday.createSubitem(parentItemId, subitemName);
+      results.push({
+        id: subitem.id,
+        name: subitem.name,
+        owner,
+      });
+      log.log(`Created Relocation subitem: ${subitemName}`);
+    } catch (error) {
+      log.error(`Failed to create Relocation subitem "${subitemName}":`, error);
+    }
+  }
+
+  log.log(`Created ${results.length}/${RELOCATION_CHECKLIST.length} Relocation subitems`);
+  return results;
+}
+
+/**
+ * Apply intent-driven mode behavior based on task type and subject
+ *
+ * Called after Monday item creation to add specialized behavior:
+ * - Relocation: Creates 4 checklist subitems with assigned owners
+ * - Exclusive Presale: May trigger /scan-like behavior (recipient extraction)
+ *
+ * Returns summary of actions taken for logging/updates
+ */
+export async function applyIntentDrivenMode(
+  mondayItemId: string,
+  taskType: string,
+  subject: string,
+  log: { log: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+): Promise<{
+  mode: 'relocation' | 'presale' | 'none';
+  actions: string[];
+}> {
+  const actions: string[] = [];
+
+  // Check for Relocation intent
+  if (isRelocationTask(taskType)) {
+    log.log('Intent-driven mode: RELOCATION detected');
+
+    const subitems = await createRelocationSubitems(mondayItemId, log);
+
+    if (subitems.length > 0) {
+      const ownersSummary = subitems
+        .filter(s => s.owner)
+        .map(s => `${s.name.split(' (')[0]}: ${s.owner}`)
+        .join(', ');
+
+      actions.push(`Created ${subitems.length} Relocation checklist items`);
+      if (ownersSummary) {
+        actions.push(`Assigned: ${ownersSummary}`);
+      }
+    }
+
+    return { mode: 'relocation', actions };
+  }
+
+  // Check for Exclusive Presale intent
+  if (isExclusivePresaleTask(subject)) {
+    log.log('Intent-driven mode: EXCLUSIVE PRESALE detected');
+    // Presale mode uses the existing /scan mechanism
+    // The /scan detection happens separately in executeWorkflow
+    actions.push('Presale detected - use /scan for recipient extraction');
+    return { mode: 'presale', actions };
+  }
+
+  return { mode: 'none', actions };
 }
