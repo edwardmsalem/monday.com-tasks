@@ -90,7 +90,7 @@ export const config = {
   // Slack
   slack: {
     botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
-    channelId: getEnvVar('SLACK_CHANNEL_ID', 'C08QCFC4Y0H'),
+    channelId: getEnvVar('SLACK_CHANNEL_ID'),  // REQUIRED: notification channel for task threads
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
     // Quiet hours routing (nights + weekends)
     quietHours: {
@@ -106,7 +106,7 @@ export const config = {
       .map(id => id.trim())
       .filter(id => id.length > 0),  // Comma-separated Slack user IDs
     // Control channel for pinned config (Owners map, Sheets registry)
-    controlChannelId: getEnvVar('SLACK_CONTROL_CHANNEL_ID', ''),
+    controlChannelId: getEnvVar('SLACK_CONTROL_CHANNEL_ID', 'C0A4TMWDZJA'),
   },
 
   // ConvertAPI
@@ -119,16 +119,19 @@ export const config = {
     apiKey: getEnvVar('ANTHROPIC_API_KEY', ''),
   },
 
-  // Google (Gmail API + Calendar)
+  // Google (Gmail API, Calendar, and future Sheets read)
+  // Supports TWO auth modes (use whichever is configured, prefers Service Account):
+  //   A) Service Account: GOOGLE_SERVICE_ACCOUNT_KEY (base64 JSON)
+  //   B) OAuth User: GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REFRESH_TOKEN
   google: {
     enabled: getEnvVar('GOOGLE_CALENDAR_ENABLED', 'false') === 'true',
     calendarId: getEnvVar('GOOGLE_CALENDAR_ID', 'primary'),
     timeZone: getEnvVar('GOOGLE_CALENDAR_TIMEZONE', 'America/New_York'),
     // Forwarding inbox email for /scan feature
     forwardingEmail: getEnvVar('GOOGLE_FORWARDING_EMAIL', 'forwarding@salemseats.com'),
-    // Service Account (recommended for server-side automation)
+    // Auth Mode A: Service Account (recommended - base64 encoded JSON key)
     serviceAccountKey: getEnvVarOptional('GOOGLE_SERVICE_ACCOUNT_KEY'),
-    // OR OAuth (for personal use)
+    // Auth Mode B: OAuth User (reads as a workspace user with existing access)
     clientId: getEnvVarOptional('GOOGLE_CLIENT_ID'),
     clientSecret: getEnvVarOptional('GOOGLE_CLIENT_SECRET'),
     refreshToken: getEnvVarOptional('GOOGLE_REFRESH_TOKEN'),
@@ -150,6 +153,7 @@ export function validateConfig(): void {
 
   if (!config.monday.apiToken) missing.push('MONDAY_API_TOKEN');
   if (!config.slack.botToken) missing.push('SLACK_BOT_TOKEN');
+  if (!config.slack.channelId) missing.push('SLACK_CHANNEL_ID');
   if (!config.convertApi.secret) missing.push('CONVERTAPI_SECRET');
   if (!config.anthropic.apiKey) missing.push('ANTHROPIC_API_KEY');
 

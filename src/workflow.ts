@@ -1133,7 +1133,7 @@ export async function createRelocationSubitems(
 
     // OWNER VALIDATION: Try to resolve owner to a real user
     if (ownerFromConfig) {
-      // Strip @ prefix if present (e.g., "@Johanna" → "Johanna")
+      // Strip @ prefix if present (e.g., "@Assignee" → "Assignee")
       const ownerName = ownerFromConfig.replace(/^@/, '').trim();
 
       try {
@@ -1152,7 +1152,7 @@ export async function createRelocationSubitems(
       }
     }
 
-    // Format: "Accounts Checked (@Johanna)" or "Accounts Checked" if no owner
+    // Format: "Accounts Checked (@Assignee)" or "Accounts Checked" if no owner
     const subitemName = resolvedOwnerName
       ? `${item.label} (@${resolvedOwnerName})`
       : item.label;

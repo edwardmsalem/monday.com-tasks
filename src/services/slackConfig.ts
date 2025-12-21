@@ -15,12 +15,12 @@
  *    ```yaml
  *    owners:
  *      relocation:
- *        accounts_checked: "@Johanna"
- *        board_setup: "@Dayna"
- *        logins_confirmed: "@Sean"
- *        card_active: "@Chantay"
- *      refund: "@Chantay"
- *      decline: "@Johanna"
+ *        accounts_checked: "@Assignee1"
+ *        board_setup: "@Assignee2"
+ *        logins_confirmed: "@Assignee3"
+ *        card_active: "@Assignee4"
+ *      refund: "@Assignee4"
+ *      decline: "@Assignee1"
  *    ```
  *
  * 3. Pin a message with the Sheets registry in this YAML format:
@@ -202,12 +202,12 @@ function parseYamlConfig<T>(text: string, rootKey: string): T | null {
  * ```yaml
  * owners:
  *   relocation:
- *     accounts_checked: "@Johanna"
- *     board_setup: "@Dayna"
- *     logins_confirmed: "@Sean"
- *     card_active: "@Chantay"
- *   refund: "@Chantay"
- *   decline: "@Johanna"
+ *     accounts_checked: "@Assignee1"
+ *     board_setup: "@Assignee2"
+ *     logins_confirmed: "@Assignee3"
+ *     card_active: "@Assignee4"
+ *   refund: "@Assignee4"
+ *   decline: "@Assignee1"
  * ```
  */
 export async function getOwnersMap(): Promise<OwnersMap | null> {
@@ -239,7 +239,7 @@ export async function getOwnersMap(): Promise<OwnersMap | null> {
 
 /**
  * Get owner for a specific task type and role
- * Returns the Slack user mention (e.g., "@Sean") or null if not found
+ * Returns the Slack user mention (e.g., "@Assignee") or null if not found
  */
 export async function getOwnerForRole(
   taskType: string,
@@ -465,12 +465,12 @@ export async function validateSlackConfig(): Promise<ConfigValidationResult> {
       '```yaml',
       'owners:',
       '  relocation:',
-      '    accounts_checked: "@Johanna"',
-      '    board_setup: "@Dayna"',
-      '    logins_confirmed: "@Sean"',
-      '    card_active: "@Chantay"',
-      '  refund: "@Chantay"',
-      '  decline: "@Johanna"',
+      '    accounts_checked: "@Assignee1"',
+      '    board_setup: "@Assignee2"',
+      '    logins_confirmed: "@Assignee3"',
+      '    card_active: "@Assignee4"',
+      '  refund: "@Assignee4"',
+      '  decline: "@Assignee1"',
       '```'
     );
     return { valid: false, errors, fixSteps };
@@ -485,12 +485,12 @@ export async function validateSlackConfig(): Promise<ConfigValidationResult> {
       '```yaml',
       'owners:',
       '  relocation:',
-      '    accounts_checked: "@Johanna"',
-      '    board_setup: "@Dayna"',
-      '    logins_confirmed: "@Sean"',
-      '    card_active: "@Chantay"',
-      '  refund: "@Chantay"',
-      '  decline: "@Johanna"',
+      '    accounts_checked: "@Assignee1"',
+      '    board_setup: "@Assignee2"',
+      '    logins_confirmed: "@Assignee3"',
+      '    card_active: "@Assignee4"',
+      '  refund: "@Assignee4"',
+      '  decline: "@Assignee1"',
       '```'
     );
   } else {
@@ -510,7 +510,7 @@ export async function validateSlackConfig(): Promise<ConfigValidationResult> {
           'Example:',
           '```yaml',
           'owners:',
-          '  refund: "@Chantay"',
+          '  refund: "@Assignee"',
           '```'
         );
       }
