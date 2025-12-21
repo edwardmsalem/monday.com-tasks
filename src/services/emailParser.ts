@@ -74,12 +74,108 @@ export async function parseEmlAttachment(
 ): Promise<EmlHeaders> {
   const parsed = await simpleParser(emlContent);
 
+  // Extract BCC from headers if available
+  // Check multiple header sources: Bcc, X-Original-To, Delivered-To, Envelope-To
+  const bccEmails: string[] = [];
+
+  // Standard Bcc header
+  if (parsed.bcc) {
+    const bccText = getAddressText(parsed.bcc);
+    const emails = extractAllEmails(bccText);
+    bccEmails.push(...emails);
+  }
+
+  // Check raw headers for additional BCC-like fields
+  if (parsed.headers) {
+    const bccHeaders = ['x-original-to', 'delivered-to', 'envelope-to'];
+    for (const headerName of bccHeaders) {
+      const headerValue = parsed.headers.get(headerName);
+      if (headerValue && typeof headerValue === 'string') {
+        const email = extractEmail(headerValue);
+        if (email && !bccEmails.includes(email)) {
+          bccEmails.push(email);
+        }
+      }
+    }
+  }
+
+  // BCC Fallback: If no BCC found in headers, try parsing from forwarding body
+  if (bccEmails.length === 0 && parsed.text) {
+    const fallbackBcc = extractBccFromForwardingBody(parsed.text);
+    if (fallbackBcc.length > 0) {
+      console.log(`BCC fallback: found ${fallbackBcc.length} recipient(s) from forwarding body`);
+      bccEmails.push(...fallbackBcc);
+    }
+  }
+
   return {
     subject: parsed.subject ?? null,
     from: extractEmail(getAddressText(parsed.from)),
     to: extractEmail(getAddressText(parsed.to)),
+    bcc: bccEmails.length > 0 ? bccEmails : null,
     body: parsed.text ?? null,  // Extract the email body text
   };
+}
+
+/**
+ * Extract all email addresses from a string
+ */
+function extractAllEmails(text: string): string[] {
+  if (!text) return [];
+  const emails: string[] = [];
+  const regex = /([^\s<>,'"]+@[^\s<>,'"]+)/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    emails.push(match[1].trim());
+  }
+  return emails;
+}
+
+/**
+ * BCC Fallback: Parse recipients from forwarding body when headers are incomplete
+ *
+ * Patterns matched:
+ * - "Bcc: email@example.com" in forwarded message header block
+ * - Recipients listed after "Recipients:" or "To:" in body
+ * - Comma or newline separated email lists
+ *
+ * Only used when BCC headers are empty.
+ */
+function extractBccFromForwardingBody(body: string | null): string[] {
+  if (!body) return [];
+
+  const bccEmails: string[] = [];
+
+  // Pattern 1: Forwarded message header style "Bcc: email@example.com"
+  const bccHeaderMatch = body.match(/\bBcc:\s*([^\n]+)/i);
+  if (bccHeaderMatch) {
+    const emails = extractAllEmails(bccHeaderMatch[1]);
+    bccEmails.push(...emails);
+  }
+
+  // Pattern 2: "Recipients:" followed by email list
+  const recipientsMatch = body.match(/\bRecipients?:\s*([^\n]+(?:\n[^\n]*@[^\n]*)*)/i);
+  if (recipientsMatch) {
+    const emails = extractAllEmails(recipientsMatch[1]);
+    for (const email of emails) {
+      if (!bccEmails.includes(email)) {
+        bccEmails.push(email);
+      }
+    }
+  }
+
+  // Pattern 3: Look for "Sent to:" or "Distributed to:" patterns
+  const sentToMatch = body.match(/\b(?:Sent to|Distributed to|Sending to):\s*([^\n]+(?:\n[^\n]*@[^\n]*)*)/i);
+  if (sentToMatch) {
+    const emails = extractAllEmails(sentToMatch[1]);
+    for (const email of emails) {
+      if (!bccEmails.includes(email)) {
+        bccEmails.push(email);
+      }
+    }
+  }
+
+  return bccEmails;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { config } from '../config/environment.js';
-import type { MondayItem, MondayUser } from '../types/index.js';
+import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
 import FormData from 'form-data';
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -43,40 +43,51 @@ async function executeQuery<T>(query: string, variables?: Record<string, unknown
 
 interface CreateItemInput {
   name: string;
-  dueDate: string;
-  ownerIds: number[];  // Support multiple owners
+  dueDate: string | null;  // Can be null if only urgency is set (ASAP case)
+  ownerIds: number[];      // Primary owners (Monday Person column)
+  supportIds?: string[];   // Support users (Monday Multiple Person column) - optional
   taskType: string;
-  source: string;      // Source (Forwarding Tasks, Slack Tasks, etc.)
-  team?: string;       // Sports team (optional)
-  fromEmail: string | null;
-  toEmail: string | null;
+  source: string;          // Source (Forwarding Tasks, Slack Tasks, etc.)
+  team?: string;           // Sports team (optional)
+  urgency?: 'High' | 'Medium' | 'Low';  // Priority/urgency level
+  // NOTE: fromEmail/toEmail removed - narrative belongs in Updates, not columns
 }
 
 /**
  * Create a new item in Monday.com
+ * LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
+ * All narrative/context goes to Updates via createUpdate()
  */
 export async function createItem(input: CreateItemInput): Promise<MondayItem> {
   const { columns } = config.monday;
 
-  // Build column values JSON - support multiple owners
+  // Build column values - STATE and ROUTING columns only
   const columnValues: Record<string, unknown> = {
-    [columns.date]: { date: input.dueDate },
     [columns.owner]: { personsAndTeams: input.ownerIds.map(id => ({ id, kind: 'person' })) },
     [columns.type]: { label: input.taskType },
     [columns.source]: { label: input.source },
   };
 
+  // Set support users if provided (Multiple Person column)
+  if (input.supportIds && input.supportIds.length > 0) {
+    columnValues[columns.support] = {
+      personsAndTeams: input.supportIds.map(id => ({ id: parseInt(id, 10), kind: 'person' })),
+    };
+  }
+
+  // Only set due date if provided (ASAP tasks may have no date, just urgency)
+  if (input.dueDate) {
+    columnValues[columns.date] = { date: input.dueDate };
+  }
+
+  // Set urgency if provided (maps Claude priority to Monday status column)
+  if (input.urgency) {
+    columnValues[columns.urgency] = { label: input.urgency };
+  }
+
   // Set team if provided (dropdown column uses labels array)
   if (input.team) {
     columnValues[columns.team] = { labels: [input.team] };
-  }
-
-  if (input.fromEmail) {
-    columnValues[columns.from] = { email: input.fromEmail, text: input.fromEmail };
-  }
-
-  if (input.toEmail) {
-    columnValues[columns.to] = { email: input.toEmail, text: input.toEmail };
   }
 
   const query = `
@@ -129,23 +140,42 @@ export async function updateSlackThreadId(itemId: string, threadTs: string): Pro
 /**
  * Upload a file to an item's file column
  * Uses Monday's /v2/file endpoint with proper multipart format
+ *
+ * Key fixes:
+ * - Uses form.getHeaders() to ensure correct Content-Type with boundary
+ * - Consistent field naming: "file" instead of "image"
+ * - Uses variables for itemId and columnId to avoid interpolation issues
  */
 export async function uploadFileToItem(
   itemId: string,
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  const query = `mutation ($file: File!) { add_file_to_column (item_id: ${itemId}, column_id: "${config.monday.fileColumnId}", file: $file) { id } }`;
+  // Use variables for itemId and columnId to avoid GraphQL parsing issues
+  const query = `mutation AddFileToColumn($itemId: ID!, $columnId: String!, $file: File!) {
+    add_file_to_column(item_id: $itemId, column_id: $columnId, file: $file) {
+      id
+    }
+  }`;
+
+  const variables = {
+    itemId,
+    columnId: config.monday.fileColumnId,
+  };
 
   const form = new FormData();
   form.append('query', query);
-  form.append('map', JSON.stringify({ 'image': 'variables.file' }));
-  form.append('image', fileData, { filename, contentType: 'application/pdf' });
+  form.append('variables', JSON.stringify(variables));
+  // Map "file" field to variables.file (consistent naming)
+  form.append('map', JSON.stringify({ file: 'variables.file' }));
+  form.append('file', fileData, { filename, contentType: 'application/pdf' });
 
+  // Merge FormData headers (includes correct Content-Type with boundary)
   const response = await fetch(MONDAY_FILE_URL, {
     method: 'POST',
     headers: {
       Authorization: config.monday.apiToken,
+      ...form.getHeaders(),
     },
     body: form as unknown as BodyInit,
   });
@@ -163,8 +193,16 @@ export async function uploadFileToItem(
     if (result.errors && result.errors.length > 0) {
       throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
     }
+    if (!result.data?.add_file_to_column?.id) {
+      throw new Error('Monday file upload returned no file ID');
+    }
+    console.log('Monday file uploaded successfully, file ID:', result.data.add_file_to_column.id);
   } catch (e) {
-    // If parse fails, that's fine - response was successful
+    if (e instanceof Error && e.message.includes('Monday file upload')) {
+      throw e;
+    }
+    // If JSON parse fails but response was 200, that's unusual but not fatal
+    console.warn('Could not parse Monday file upload response:', e);
   }
 }
 
@@ -413,6 +451,34 @@ export async function createSubitems(parentItemId: string, names: string[]): Pro
 }
 
 /**
+ * Get existing subitems for a parent item
+ * Used for idempotency checks before creating new subitems
+ */
+export async function getSubitems(parentItemId: string): Promise<Array<{ id: string; name: string }>> {
+  const query = `
+    query GetSubitems($itemId: ID!) {
+      items(ids: [$itemId]) {
+        subitems {
+          id
+          name
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{ subitems: Array<{ id: string; name: string }> }>;
+    }>(query, { itemId: parentItemId });
+
+    return result.items[0]?.subitems ?? [];
+  } catch (error) {
+    console.error('Error fetching subitems:', error);
+    return [];
+  }
+}
+
+/**
  * Get item details including name and workflow status
  */
 export async function getItem(itemId: string): Promise<{
@@ -457,6 +523,486 @@ export async function getItem(itemId: string): Promise<{
     };
   } catch (error) {
     console.error('Error getting item:', error);
+    return null;
+  }
+}
+
+/**
+ * Check if an item has a Run ID (indicating automated creation)
+ */
+export async function hasRunId(itemId: string): Promise<boolean> {
+  const result = await checkItemAutomation(itemId);
+  return result.hasRunId;
+}
+
+/**
+ * Known automated source values
+ */
+const AUTOMATED_SOURCES = ['Forwarding Tasks', 'Slack', 'Email Task'];
+
+/**
+ * Check item automation indicators (Run ID and Source)
+ * Used to determine if an item was created via automation
+ */
+export async function checkItemAutomation(itemId: string): Promise<{
+  hasRunId: boolean;
+  source: string | null;
+  isAutomated: boolean;
+}> {
+  const query = `
+    query CheckAutomation($itemId: ID!) {
+      items(ids: [$itemId]) {
+        column_values(ids: ["${config.monday.columns.runId}", "${config.monday.columns.source}"]) {
+          id
+          text
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{
+        column_values: Array<{ id: string; text: string }>;
+      }>;
+    }>(query, { itemId });
+
+    const item = result.items[0];
+    if (!item) {
+      return { hasRunId: false, source: null, isAutomated: false };
+    }
+
+    const runIdCol = item.column_values.find(c => c.id === config.monday.columns.runId);
+    const sourceCol = item.column_values.find(c => c.id === config.monday.columns.source);
+
+    const hasRunId = !!(runIdCol?.text && runIdCol.text.length > 0);
+    const source = sourceCol?.text || null;
+    const isAutomated = hasRunId || (source !== null && AUTOMATED_SOURCES.includes(source));
+
+    return { hasRunId, source, isAutomated };
+  } catch (error) {
+    console.error('Error checking item automation:', error);
+    return { hasRunId: false, source: null, isAutomated: false };
+  }
+}
+
+/**
+ * Store the durable PDF URL on a Monday item for retry scenarios
+ */
+export async function storePdfUrl(itemId: string, pdfUrl: string): Promise<void> {
+  const query = `
+    mutation StorePdfUrl($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    await executeQuery(query, {
+      boardId: config.monday.boardId,
+      itemId,
+      columnValues: JSON.stringify({
+        [config.monday.columns.pdfUrl]: pdfUrl,
+      }),
+    });
+    console.log('PDF URL stored on Monday item:', itemId);
+  } catch (error) {
+    // Non-fatal - PDF URL storage is optional (column may not exist yet)
+    console.warn('Could not store PDF URL on Monday item (column may not exist):', error);
+  }
+}
+
+/**
+ * Retry configuration for Monday file uploads
+ */
+const RETRY_DELAYS_MS = [
+  2 * 60 * 1000,   // 2 minutes
+  10 * 60 * 1000,  // 10 minutes
+  30 * 60 * 1000,  // 30 minutes
+];
+
+/**
+ * Upload file to Monday with retry logic
+ * Returns success status and schedules background retries if initial upload fails
+ */
+export async function uploadFileToItemWithRetry(
+  itemId: string,
+  filename: string,
+  fileData: Buffer,
+  slackThreadTs?: string,
+  postToSlack?: (message: string) => Promise<void>
+): Promise<{ success: boolean; retryScheduled: boolean }> {
+  // First attempt
+  try {
+    await uploadFileToItem(itemId, filename, fileData);
+    return { success: true, retryScheduled: false };
+  } catch (error) {
+    console.error('Initial Monday file upload failed:', error);
+  }
+
+  // Schedule background retries
+  console.log('Scheduling Monday file upload retries...');
+
+  // Post notification to Slack thread if available
+  if (postToSlack) {
+    try {
+      await postToSlack('⚠️ PDF upload to Monday failed. Retrying automatically (2min, 10min, 30min)...');
+    } catch {
+      // Ignore Slack notification failure
+    }
+  }
+
+  // Schedule retries in background (non-blocking)
+  scheduleRetries(itemId, filename, fileData, slackThreadTs, postToSlack);
+
+  return { success: false, retryScheduled: true };
+}
+
+/**
+ * Schedule background retries for Monday file upload
+ */
+function scheduleRetries(
+  itemId: string,
+  filename: string,
+  fileData: Buffer,
+  slackThreadTs?: string,
+  postToSlack?: (message: string) => Promise<void>
+): void {
+  let attemptIndex = 0;
+
+  const attemptRetry = async () => {
+    attemptIndex++;
+    const delayMs = RETRY_DELAYS_MS[attemptIndex - 1];
+
+    if (!delayMs) {
+      // All retries exhausted
+      console.error(`Monday file upload failed after ${RETRY_DELAYS_MS.length} retries for item ${itemId}`);
+
+      // Set workflow status to indicate failure
+      try {
+        await updateWorkflowStatus(itemId, 'Attachment Failed');
+      } catch {
+        console.error('Could not update workflow status to Attachment Failed');
+      }
+
+      // Notify via Slack
+      if (postToSlack) {
+        try {
+          await postToSlack('❌ PDF upload to Monday failed after all retries. Please upload manually.');
+        } catch {
+          // Ignore
+        }
+      }
+      return;
+    }
+
+    console.log(`Monday file upload retry ${attemptIndex} scheduled in ${delayMs / 1000}s for item ${itemId}`);
+
+    setTimeout(async () => {
+      try {
+        await uploadFileToItem(itemId, filename, fileData);
+        console.log(`Monday file upload retry ${attemptIndex} succeeded for item ${itemId}`);
+
+        // Notify success via Slack
+        if (postToSlack) {
+          try {
+            await postToSlack('✅ PDF successfully uploaded to Monday (retry succeeded).');
+          } catch {
+            // Ignore
+          }
+        }
+      } catch (error) {
+        console.error(`Monday file upload retry ${attemptIndex} failed for item ${itemId}:`, error);
+        attemptRetry(); // Schedule next retry
+      }
+    }, delayMs);
+  };
+
+  attemptRetry();
+}
+
+/**
+ * Find all items with "Attachment Failed" status that have a stored PDF URL
+ * Used by hourly sweep to retry uploads that failed after all in-memory retries
+ */
+export async function findItemsWithFailedAttachments(): Promise<Array<{
+  id: string;
+  name: string;
+  pdfUrl: string;
+  slackThreadId: string | null;
+}>> {
+  const query = `
+    query FindFailedAttachments($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(limit: 50) {
+          items {
+            id
+            name
+            column_values {
+              id
+              text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      boards: Array<{
+        items_page: {
+          items: Array<{
+            id: string;
+            name: string;
+            column_values: Array<{ id: string; text: string }>;
+          }>;
+        };
+      }>;
+    }>(query, { boardId: config.monday.boardId });
+
+    const items = result.boards[0]?.items_page?.items ?? [];
+    const failedItems: Array<{
+      id: string;
+      name: string;
+      pdfUrl: string;
+      slackThreadId: string | null;
+    }> = [];
+
+    for (const item of items) {
+      const getValue = (colId: string) =>
+        item.column_values.find(cv => cv.id === colId)?.text ?? '';
+
+      const workflowStatus = getValue(config.monday.columns.workflowStatus);
+      const pdfUrl = getValue(config.monday.columns.pdfUrl);
+      const slackThreadId = getValue(config.monday.columns.slackThreadId) || null;
+
+      // Only include items with "Attachment Failed" status AND a stored PDF URL
+      if (workflowStatus === 'Attachment Failed' && pdfUrl) {
+        failedItems.push({
+          id: item.id,
+          name: item.name,
+          pdfUrl,
+          slackThreadId,
+        });
+      }
+    }
+
+    return failedItems;
+  } catch (error) {
+    console.error('Error finding items with failed attachments:', error);
+    return [];
+  }
+}
+
+/**
+ * Store the Run ID on a Monday item for debugging/tracing
+ */
+export async function storeRunId(itemId: string, runId: string): Promise<void> {
+  const query = `
+    mutation StoreRunId($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    await executeQuery(query, {
+      boardId: config.monday.boardId,
+      itemId,
+      columnValues: JSON.stringify({
+        [config.monday.columns.runId]: runId,
+      }),
+    });
+    console.log('Run ID stored on Monday item:', itemId, runId.substring(0, 8));
+  } catch (error) {
+    // Non-fatal - Run ID column may not exist yet
+    console.warn('Could not store Run ID on Monday item (column may not exist):', error);
+  }
+}
+
+/**
+ * Update attachment state on a Monday item
+ * States: Queued | Uploaded | Retrying | Failed | Skipped
+ * Note: Errors go to Updates/Slack, not columns (keeping board lean)
+ */
+export async function updateAttachmentState(itemId: string, state: string): Promise<void> {
+  const query = `
+    mutation UpdateAttachmentState($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    await executeQuery(query, {
+      boardId: config.monday.boardId,
+      itemId,
+      columnValues: JSON.stringify({
+        [config.monday.columns.attachmentState]: { label: state },
+      }),
+    });
+    console.log('Attachment state updated on Monday item:', itemId, state);
+  } catch (error) {
+    // Non-fatal - attachment state column may not exist yet
+    console.warn('Could not update attachment state on Monday item (column may not exist):', error);
+  }
+}
+
+/**
+ * Retry failed attachment uploads using stored PDF URLs
+ * Called by hourly sweep - survives server restarts
+ */
+export async function retryFailedAttachments(
+  postToSlack?: (threadTs: string, message: string) => Promise<void>
+): Promise<{ attempted: number; succeeded: number }> {
+  console.log('Checking for failed attachment uploads to retry...');
+
+  const failedItems = await findItemsWithFailedAttachments();
+
+  if (failedItems.length === 0) {
+    console.log('No failed attachment uploads to retry');
+    return { attempted: 0, succeeded: 0 };
+  }
+
+  console.log(`Found ${failedItems.length} items with failed attachments, retrying...`);
+
+  let succeeded = 0;
+
+  for (const item of failedItems) {
+    try {
+      console.log(`Retrying attachment upload for item ${item.id}: ${item.name}`);
+
+      // Download PDF from stored URL
+      const response = await fetch(item.pdfUrl);
+      if (!response.ok) {
+        console.error(`Failed to download PDF for item ${item.id}: ${response.statusText}`);
+        continue;
+      }
+
+      const pdfBuffer = Buffer.from(await response.arrayBuffer());
+      const filename = `${item.name.substring(0, 50).replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+
+      // Upload to Monday
+      await uploadFileToItem(item.id, filename, pdfBuffer);
+
+      // Clear the "Attachment Failed" status
+      await updateWorkflowStatus(item.id, '');
+
+      // Clear the stored PDF URL (no longer needed)
+      await storePdfUrl(item.id, '');
+
+      // Notify via Slack if available
+      if (postToSlack && item.slackThreadId) {
+        try {
+          await postToSlack(item.slackThreadId, '✅ PDF successfully uploaded to Monday (hourly retry succeeded).');
+        } catch {
+          // Ignore Slack errors
+        }
+      }
+
+      console.log(`Successfully retried attachment for item ${item.id}`);
+      succeeded++;
+    } catch (error) {
+      console.error(`Failed to retry attachment for item ${item.id}:`, error);
+      // Leave status as "Attachment Failed" for next retry cycle
+    }
+  }
+
+  console.log(`Attachment retry complete: ${succeeded}/${failedItems.length} succeeded`);
+  return { attempted: failedItems.length, succeeded };
+}
+
+/**
+ * Get task debug info for /taskdebug command
+ * Returns state/routing columns for debugging
+ * Note: Errors are in Updates/Slack, not columns (keeping board lean)
+ */
+export async function getTaskDebugInfo(itemId: string): Promise<TaskDebugInfo | null> {
+  const { columns } = config.monday;
+
+  const query = `
+    query GetTaskDebugInfo($itemId: ID!) {
+      items(ids: [$itemId]) {
+        id
+        name
+        column_values {
+          id
+          text
+          value
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{
+        id: string;
+        name: string;
+        column_values: Array<{ id: string; text: string; value: string }>;
+      }>;
+    }>(query, { itemId });
+
+    const item = result.items[0];
+    if (!item) return null;
+
+    // Helper to get column value by ID
+    const getValue = (colId: string): string | null => {
+      const col = item.column_values.find(c => c.id === colId);
+      return col?.text || null;
+    };
+
+    // Parse person column value to get owner name
+    const getOwnerName = (): string | null => {
+      const col = item.column_values.find(c => c.id === columns.owner);
+      if (!col?.value) return null;
+      try {
+        // Monday person column format: { personsAndTeams: [{ id: number, kind: 'person' }] }
+        // The text field usually contains the name
+        return col.text || null;
+      } catch {
+        return col.text || null;
+      }
+    };
+
+    // Build Slack thread URL if we have the thread ID
+    const slackThreadId = getValue(columns.slackThreadId);
+    const slackThreadUrl = slackThreadId
+      ? `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${slackThreadId}`
+      : null;
+
+    return {
+      mondayItemId: item.id,
+      mondayUrl: getItemUrl(item.id),
+      slackThreadTs: slackThreadId,
+      slackThreadUrl,
+      taskType: getValue(columns.type),
+      workflowStatus: getValue(columns.workflowStatus),
+      urgency: getValue(columns.urgency),
+      pdfUrl: getValue(columns.pdfUrl),
+      attachmentState: getValue(columns.attachmentState),
+      runId: getValue(columns.runId),
+      dueDate: getValue(columns.date),
+      owner: getOwnerName(),
+    };
+  } catch (error) {
+    console.error('Error getting task debug info:', error);
     return null;
   }
 }

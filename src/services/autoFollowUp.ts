@@ -11,6 +11,7 @@
 
 import { config } from '../config/environment.js';
 import * as slack from './slack.js';
+import * as monday from './monday.js';
 import { getAllUsers, type UnifiedUser } from './userResolver.js';
 
 // US Federal Holidays (fixed dates and observed dates for 2024-2025)
@@ -445,15 +446,77 @@ function markFollowUpSent(key: string): void {
 }
 
 /**
+ * Retry failed attachment uploads
+ * Runs hourly as part of the scheduler - survives restarts
+ */
+async function runAttachmentRetry(): Promise<void> {
+  try {
+    // Create a Slack poster function for notifications
+    const postToSlack = async (threadTs: string, message: string) => {
+      await slack.postToThread(threadTs, message);
+    };
+
+    const result = await monday.retryFailedAttachments(postToSlack);
+
+    if (result.attempted > 0) {
+      console.log(`Attachment retry sweep: ${result.succeeded}/${result.attempted} succeeded`);
+    }
+  } catch (error) {
+    console.error('Attachment retry sweep failed:', error);
+  }
+}
+
+/**
+ * Check if it's 10am (start of business hours) and release deferred notifications
+ * Only runs Mon-Fri at 10am in configured timezone
+ */
+async function checkAndReleaseQuietHoursNotifications(): Promise<void> {
+  const { quietHours } = config.slack;
+
+  // Skip if quiet hours not enabled
+  if (!quietHours.enabled) return;
+
+  // Get current time in configured timezone
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: quietHours.timezone,
+    weekday: 'short',
+    hour: 'numeric',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(now);
+  const weekday = parts.find(p => p.type === 'weekday')?.value ?? '';
+  const hour = parseInt(parts.find(p => p.type === 'hour')?.value ?? '0', 10);
+
+  // Only run at 10am Mon-Fri
+  if (weekday === 'Sat' || weekday === 'Sun') return;
+  if (hour !== quietHours.workingHoursStart) return;
+
+  console.log('10am business hour - checking for deferred quiet-hours notifications...');
+  await slack.releaseAllDeferredNotifications();
+}
+
+/**
  * Start the follow-up scheduler
  * Runs every hour by default
+ * Includes:
+ * - Follow-up reminders (acknowledge, overdue)
+ * - Failed attachment retry sweep (persistent across restarts)
+ * - Quiet hours notification release (10am Mon-Fri)
  */
 export function startFollowUpScheduler(intervalMs: number = 60 * 60 * 1000): void {
   console.log(`Starting follow-up scheduler (interval: ${intervalMs / 1000 / 60} minutes)`);
 
   // Run immediately on start
   checkAndSendFollowUps();
+  runAttachmentRetry();
+  checkAndReleaseQuietHoursNotifications();
 
   // Then run on interval
-  setInterval(checkAndSendFollowUps, intervalMs);
+  setInterval(() => {
+    checkAndSendFollowUps();
+    runAttachmentRetry();
+    checkAndReleaseQuietHoursNotifications();
+  }, intervalMs);
 }

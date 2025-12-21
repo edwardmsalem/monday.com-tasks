@@ -334,3 +334,178 @@ export function formatRecipientSubtaskName(recipient: RecipientWithAppointment):
   }
   return recipient.email;
 }
+
+// ============================================================================
+// /emailtask - Gmail Search for Task Creation
+// ============================================================================
+
+/**
+ * Email found via Gmail search for /emailtask
+ */
+export interface GmailEmailResult {
+  messageId: string;
+  subject: string;
+  from: string | null;
+  to: string | null;
+  date: Date;
+  bodyText: string;
+  bodyHtml: string | null;
+}
+
+export type EmailMatchMode = 'equals' | 'contains';
+
+/**
+ * Get today's date in Eastern Time as YYYY/MM/DD for Gmail query
+ */
+function getTodayEastern(): string {
+  const now = new Date();
+  // Format in Eastern time
+  const eastern = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+  // Convert from YYYY-MM-DD to YYYY/MM/DD
+  return eastern.replace(/-/g, '/');
+}
+
+/**
+ * Search Gmail for emails by subject
+ *
+ * @param subject - The subject to search for
+ * @param matchMode - 'equals' for exact match, 'contains' for partial match
+ * @param daysBack - Number of days to search (0 = today only, default)
+ * @returns Array of matching emails sorted by date (most recent first)
+ */
+export async function searchEmailsBySubject(
+  subject: string,
+  matchMode: EmailMatchMode = 'equals',
+  daysBack: number = 0
+): Promise<GmailEmailResult[]> {
+  const gmail = await getGmailClient();
+
+  const normalizedSubject = normalizeSubject(subject);
+
+  // Build date range for Gmail query
+  let afterDate: string;
+  if (daysBack === 0) {
+    afterDate = getTodayEastern();
+  } else {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - daysBack);
+    afterDate = startDate.toISOString().split('T')[0].replace(/-/g, '/');
+  }
+
+  // Gmail API uses "subject:" for partial match
+  // We'll do exact matching client-side for 'equals' mode
+  const query = `subject:"${normalizedSubject}" after:${afterDate}`;
+  console.log(`Gmail search query: ${query} (matchMode: ${matchMode})`);
+
+  try {
+    const searchResponse = await gmail.users.messages.list({
+      userId: 'me',
+      q: query,
+      maxResults: 50,
+    });
+
+    const messages = searchResponse.data.messages ?? [];
+    console.log(`Gmail returned ${messages.length} messages`);
+
+    if (messages.length === 0) {
+      return [];
+    }
+
+    const results: GmailEmailResult[] = [];
+
+    for (const message of messages) {
+      if (!message.id) continue;
+
+      const msgResponse = await gmail.users.messages.get({
+        userId: 'me',
+        id: message.id,
+        format: 'full',
+      });
+
+      const headers = msgResponse.data.payload?.headers ?? [];
+      const subjectHeader = headers.find(h => h.name?.toLowerCase() === 'subject');
+      const fromHeader = headers.find(h => h.name?.toLowerCase() === 'from');
+      const toHeader = headers.find(h => h.name?.toLowerCase() === 'to');
+      const dateHeader = headers.find(h => h.name?.toLowerCase() === 'date');
+
+      const emailSubject = subjectHeader?.value || '';
+      const normalizedEmailSubject = normalizeSubject(emailSubject);
+
+      // Apply client-side matching
+      if (matchMode === 'equals') {
+        // Exact match (case-insensitive)
+        if (normalizedEmailSubject.toLowerCase() !== normalizedSubject.toLowerCase()) {
+          console.log(`Skipping email - subject mismatch: "${normalizedEmailSubject}" != "${normalizedSubject}"`);
+          continue;
+        }
+      }
+      // 'contains' mode - Gmail already filtered, but double-check
+      else if (!normalizedEmailSubject.toLowerCase().includes(normalizedSubject.toLowerCase())) {
+        continue;
+      }
+
+      // Extract body
+      const bodyText = extractEmailBody(msgResponse.data.payload);
+      const bodyHtml = extractEmailBodyHtml(msgResponse.data.payload);
+
+      // Parse date
+      let date = new Date();
+      if (dateHeader?.value) {
+        const parsed = new Date(dateHeader.value);
+        if (!isNaN(parsed.getTime())) {
+          date = parsed;
+        }
+      }
+
+      results.push({
+        messageId: message.id,
+        subject: emailSubject,
+        from: fromHeader?.value || null,
+        to: toHeader?.value || null,
+        date,
+        bodyText,
+        bodyHtml,
+      });
+    }
+
+    // Sort by date, most recent first
+    results.sort((a, b) => b.date.getTime() - a.date.getTime());
+
+    console.log(`Found ${results.length} emails matching "${normalizedSubject}" (${matchMode})`);
+    return results;
+
+  } catch (error) {
+    console.error('Gmail search error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Extract HTML body from Gmail message payload
+ */
+function extractEmailBodyHtml(payload: any): string | null {
+  if (!payload) return null;
+
+  // Check for HTML part
+  if (payload.mimeType === 'text/html' && payload.body?.data) {
+    return Buffer.from(payload.body.data, 'base64').toString('utf-8');
+  }
+
+  // Recursively check parts
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      if (part.mimeType === 'text/html' && part.body?.data) {
+        return Buffer.from(part.body.data, 'base64').toString('utf-8');
+      }
+      const nested = extractEmailBodyHtml(part);
+      if (nested) return nested;
+    }
+  }
+
+  return null;
+}

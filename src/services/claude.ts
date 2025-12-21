@@ -252,6 +252,113 @@ export async function analyzeEmail(
   };
 }
 
+// ============================================================================
+// /emailtask Input Parsing
+// ============================================================================
+
+/**
+ * Parsed /emailtask search parameters
+ */
+export interface EmailTaskSearchParams {
+  subject: string;
+  matchMode: 'equals' | 'contains';
+  daysBack: number;
+  useLatest: boolean;  // If true, auto-select most recent match
+}
+
+/**
+ * Parse natural language /emailtask input using Claude AI
+ *
+ * Supports:
+ * - Natural language: "Knicks Presale 2025 from last week"
+ * - Structured: "subject: Knicks Presale days: 7 match: equals"
+ * - Mixed: "find Yankees email from yesterday use most recent"
+ *
+ * @param input - Raw user input from /emailtask command
+ * @returns Parsed search parameters
+ */
+export async function parseEmailTaskInput(input: string): Promise<EmailTaskSearchParams> {
+  const client = getClient();
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 512,
+    system: `You are parsing a Gmail search command. Extract search parameters from natural language input.
+
+Rules:
+- subject: The email subject line to search for. This is the MOST IMPORTANT field.
+- matchMode: "equals" for exact match (default), "contains" for partial match
+  - Use "contains" ONLY if user explicitly says "contains", "partial", "includes", or similar
+- daysBack: Number of days to search (0 = today only, default)
+  - "today" or no time mentioned → 0
+  - "yesterday" → 1
+  - "last week" → 7
+  - "last month" → 30
+  - "last N days" → N
+- useLatest: true ONLY if user explicitly says "use most recent", "latest", "newest", or similar
+
+Examples:
+- "Knicks Presale 2025" → subject: "Knicks Presale 2025", matchMode: equals, daysBack: 0, useLatest: false
+- "Yankees relocation from last week" → subject: "Yankees relocation", matchMode: equals, daysBack: 7, useLatest: false
+- "any email containing season tickets" → subject: "season tickets", matchMode: contains, daysBack: 0, useLatest: false
+- "Rangers presale use most recent" → subject: "Rangers presale", matchMode: equals, daysBack: 0, useLatest: true
+- "subject: Knicks days: 7 match: contains" → subject: "Knicks", matchMode: contains, daysBack: 7, useLatest: false`,
+    tools: [{
+      name: 'extract_search_params',
+      description: 'Extract Gmail search parameters from user input',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          subject: {
+            type: 'string',
+            description: 'The email subject line to search for',
+          },
+          matchMode: {
+            type: 'string',
+            enum: ['equals', 'contains'],
+            description: 'equals = exact match (default), contains = partial match',
+          },
+          daysBack: {
+            type: 'number',
+            description: 'Number of days to search (0 = today only)',
+          },
+          useLatest: {
+            type: 'boolean',
+            description: 'Whether to auto-select the most recent match',
+          },
+        },
+        required: ['subject', 'matchMode', 'daysBack', 'useLatest'],
+      },
+    }],
+    tool_choice: { type: 'tool', name: 'extract_search_params' },
+    messages: [{ role: 'user', content: input }],
+  });
+
+  const toolUse = response.content.find(
+    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+  );
+
+  if (!toolUse || toolUse.name !== 'extract_search_params') {
+    throw new Error('Claude did not return search parameters');
+  }
+
+  const params = toolUse.input as {
+    subject: string;
+    matchMode: 'equals' | 'contains';
+    daysBack: number;
+    useLatest: boolean;
+  };
+
+  console.log('Parsed /emailtask params:', params);
+
+  return {
+    subject: params.subject,
+    matchMode: params.matchMode || 'equals',
+    daysBack: params.daysBack ?? 0,
+    useLatest: params.useLatest ?? false,
+  };
+}
+
 /**
  * Analyze email with fallback to manual parsing if AI fails
  */

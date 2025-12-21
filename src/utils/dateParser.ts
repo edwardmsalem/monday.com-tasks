@@ -4,15 +4,35 @@
  * - Relative: "+3" (3 days from now)
  * - Full date: "12/25/24" or "12/25/2024"
  * - Partial date: "12/25" (assumes current year)
+ * - ASAP: treated as urgency, not a date
  */
 
 /**
- * Parse a date string and return ISO format (YYYY-MM-DD)
- * @param dateStr - The date string to parse
- * @returns ISO formatted date string
+ * Check if a date string represents ASAP (no real date, just urgency)
  */
-export function parseDate(dateStr: string): string {
+export function isAsapDate(dateStr: string): boolean {
+  const trimmed = dateStr.trim().toLowerCase();
+  return trimmed === 'asap' ||
+         trimmed === 'immediately' ||
+         trimmed === 'urgent' ||
+         trimmed === 'now' ||
+         trimmed === 'today' ||
+         trimmed === '+0';
+}
+
+/**
+ * Parse a date string and return ISO format (YYYY-MM-DD) or null for ASAP
+ * @param dateStr - The date string to parse
+ * @returns ISO formatted date string, or null if ASAP/no date
+ */
+export function parseDate(dateStr: string): string | null {
   const trimmed = dateStr.trim();
+
+  // Handle ASAP-type dates - return null (no date, use urgency instead)
+  if (isAsapDate(trimmed)) {
+    console.log(`ASAP date detected: "${trimmed}" - no due date will be set, use urgency instead`);
+    return null;
+  }
 
   // Handle relative dates: "+3" means 3 days from now
   if (trimmed.startsWith('+')) {
@@ -89,8 +109,12 @@ export function formatDate(date: Date): string {
 
 /**
  * Format date for display (e.g., "Dec 25, 2024")
+ * Returns "ASAP" for null dates
  */
-export function formatDateForDisplay(isoDate: string): string {
+export function formatDateForDisplay(isoDate: string | null): string {
+  if (!isoDate) {
+    return 'ASAP';
+  }
   const date = new Date(isoDate + 'T00:00:00');
   return date.toLocaleDateString('en-US', {
     month: 'short',

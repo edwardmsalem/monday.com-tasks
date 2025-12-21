@@ -28,9 +28,33 @@ function getEnvVarNumber(name: string, defaultValue?: number): number {
   return value;
 }
 
+function getEnvVarBool(name: string, defaultValue: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined) return defaultValue;
+  return value.toLowerCase() === 'true' || value === '1';
+}
+
+export type AttachmentsMode = 'off' | 'slack_only' | 'monday_only' | 'both';
+
+function getAttachmentsMode(): AttachmentsMode {
+  const value = process.env['ATTACHMENTS_MODE']?.toLowerCase();
+  if (value === 'off' || value === 'slack_only' || value === 'monday_only' || value === 'both') {
+    return value;
+  }
+  return 'both'; // default
+}
+
 export const config = {
   // Server
   port: getEnvVarNumber('PORT', 3000),
+
+  // Safety valves
+  safetyValves: {
+    /** If true, skip all email processing (log receipt only) */
+    disableEmailAutomation: getEnvVarBool('DISABLE_EMAIL_AUTOMATION', false),
+    /** Control attachment upload behavior: off | slack_only | monday_only | both */
+    attachmentsMode: getAttachmentsMode(),
+  },
 
   // Monday.com
   monday: {
@@ -41,27 +65,57 @@ export const config = {
     boardUrl: getEnvVar('MONDAY_BOARD_URL', 'https://salemseats.monday.com/boards/18383923820'),
 
     // Column IDs from the board
+    // LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
+    // Narrative/context goes to Updates, not columns
     columns: {
-      date: 'date4',
-      from: 'email_mkxvy5nq',
+      // Core state/routing columns
       owner: 'person',
       support: 'multiple_person_mky0vdq1',
+      type: 'status',                         // Task type (General, Opportunity, etc.)
+      workflowStatus: 'color_mkxvxxxn',       // Workflow status (Acknowledged, Working on it, etc.)
+      urgency: 'color_mkytzsrj',              // Urgency (High, Medium, Low)
+      date: 'date4',                          // Due Date
+      source: 'color_mky0b1yr',               // Source (Forwarding Tasks, Slack Tasks, etc.)
+      attachmentState: 'color_mkytqrh8',      // Status: Queued/Uploaded/Retrying/Failed/Skipped
+      runId: 'text_mkyt4seq',                 // Text: Workflow run ID
+      // Internal linking (not user-facing state)
       slackThreadId: 'text_mkxxn3hz',
-      slackLink: 'link_mky1j0j6',
-      to: 'email_mkxv1hyd',
-      type: 'status',                    // Task type (General, Opportunity, etc.)
-      workflowStatus: 'color_mkxvxxxn',  // Workflow status (Acknowledged, Working on it, etc.)
-      source: 'color_mky0b1yr',          // Source (Forwarding Tasks, Slack Tasks, etc.)
-      team: 'dropdown_mkyqe4we',         // Sports team
+      team: 'dropdown_mkyqe4we',              // Sports team
       file: 'file_mkxv6aa0',
+      pdfUrl: 'text_mkythpzx',                // Durable PDF URL for retries
+      // REMOVED: from, to, notes, slackLink - narrative belongs in Updates
     },
   },
 
   // Slack
   slack: {
     botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
-    channelId: getEnvVar('SLACK_CHANNEL_ID', 'C08QCFC4Y0H'),
+    channelId: getEnvVar('SLACK_CHANNEL_ID'),  // REQUIRED: notification channel for task threads
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
+    // After-hours behavior (nights + weekends)
+    // Tasks created after-hours are created quietly (no pings), then released at business start
+    quietHours: {
+      enabled: getEnvVarBool('SLACK_QUIET_HOURS_ENABLED', true),
+      onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID', ''),  // On-call user for after-hours/weekend routing
+      timezone: getEnvVar('SLACK_TIMEZONE', 'America/New_York'),
+      workingHoursStart: getEnvVarNumber('SLACK_WORKING_HOURS_START', 8),   // 8:00 AM ET
+      workingHoursEnd: getEnvVarNumber('SLACK_WORKING_HOURS_END', 20),      // 8:00 PM ET (20:00)
+      releaseHour: getEnvVarNumber('SLACK_RELEASE_HOUR', 8),                // 8:00 AM - ping deferred tasks
+      ackDeadlineHour: getEnvVarNumber('SLACK_ACK_DEADLINE_HOUR', 11),      // 11:00 AM - follow up if no 👀
+    },
+    // /task command permissions
+    taskCommandWhitelist: getEnvVar('SLACK_TASK_COMMAND_WHITELIST', '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(id => id.length > 0),  // Comma-separated Slack user IDs
+    // Users who can set Owner to someone other than themselves
+    // Everyone else: Owner = task creator (Support can be set by anyone)
+    ownerOverrideUserIds: getEnvVar('SLACK_OWNER_OVERRIDE_USER_IDS', '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(id => id.length > 0),  // Comma-separated Slack user IDs
+    // Control channel for pinned config (Owners map, Sheets registry)
+    controlChannelId: getEnvVar('SLACK_CONTROL_CHANNEL_ID', 'C0A4TMWDZJA'),
   },
 
   // ConvertAPI
@@ -74,19 +128,28 @@ export const config = {
     apiKey: getEnvVar('ANTHROPIC_API_KEY', ''),
   },
 
-  // Google (Gmail API + Calendar)
+  // Google (Gmail API, Calendar, and future Sheets read)
+  // Supports TWO auth modes (use whichever is configured, prefers Service Account):
+  //   A) Service Account: GOOGLE_SERVICE_ACCOUNT_KEY (base64 JSON)
+  //   B) OAuth User: GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REFRESH_TOKEN
   google: {
     enabled: getEnvVar('GOOGLE_CALENDAR_ENABLED', 'false') === 'true',
     calendarId: getEnvVar('GOOGLE_CALENDAR_ID', 'primary'),
     timeZone: getEnvVar('GOOGLE_CALENDAR_TIMEZONE', 'America/New_York'),
     // Forwarding inbox email for /scan feature
     forwardingEmail: getEnvVar('GOOGLE_FORWARDING_EMAIL', 'forwarding@salemseats.com'),
-    // Service Account (recommended for server-side automation)
+    // Auth Mode A: Service Account (recommended - base64 encoded JSON key)
     serviceAccountKey: getEnvVarOptional('GOOGLE_SERVICE_ACCOUNT_KEY'),
-    // OR OAuth (for personal use)
+    // Auth Mode B: OAuth User (reads as a workspace user with existing access)
     clientId: getEnvVarOptional('GOOGLE_CLIENT_ID'),
     clientSecret: getEnvVarOptional('GOOGLE_CLIENT_SECRET'),
     refreshToken: getEnvVarOptional('GOOGLE_REFRESH_TOKEN'),
+  },
+
+  // Todoist integration (feature-flagged, projection only in v1)
+  todoist: {
+    enabled: getEnvVarBool('ENABLE_TODOIST_SYNC', false),
+    apiToken: getEnvVarOptional('TODOIST_API_TOKEN'),
   },
 } as const;
 
@@ -99,11 +162,23 @@ export function validateConfig(): void {
 
   if (!config.monday.apiToken) missing.push('MONDAY_API_TOKEN');
   if (!config.slack.botToken) missing.push('SLACK_BOT_TOKEN');
+  if (!config.slack.channelId) missing.push('SLACK_CHANNEL_ID');
   if (!config.convertApi.secret) missing.push('CONVERTAPI_SECRET');
   if (!config.anthropic.apiKey) missing.push('ANTHROPIC_API_KEY');
 
   if (missing.length > 0) {
     console.warn(`Warning: Missing environment variables: ${missing.join(', ')}`);
     console.warn('Some features may not work correctly.');
+  }
+
+  // Log safety valve status
+  if (config.safetyValves.disableEmailAutomation) {
+    console.warn('⚠️ DISABLE_EMAIL_AUTOMATION=true - Email processing is DISABLED');
+  }
+  if (config.safetyValves.attachmentsMode !== 'both') {
+    console.warn(`⚠️ ATTACHMENTS_MODE=${config.safetyValves.attachmentsMode}`);
+  }
+  if (config.todoist.enabled) {
+    console.log('📋 Todoist sync ENABLED (projection only)');
   }
 }
