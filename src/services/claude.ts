@@ -234,7 +234,7 @@ export async function analyzeEmail(
     team?: string;
   };
 
-  console.log('Claude analysis result:', input);
+  console.log('Claude analysis result:', { owner: input.owner, taskType: input.taskType, dueDate: input.dueDate, priority: input.priority, confidence: input.confidence });
 
   return {
     owner: input.owner.toLowerCase(),

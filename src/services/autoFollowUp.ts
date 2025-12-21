@@ -370,15 +370,15 @@ const OVERDUE_REMINDERS = [
 ];
 
 // Escalation reminder messages (day 2+) - includes manager visibility
-const ESCALATION_SLACK_ID = 'U0144K906KA'; // Edward Salem - for visibility on repeat overdue
+// Uses SLACK_ESCALATION_USER_ID from config (required env var)
 
 const ESCALATION_REMINDERS = [
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `${mentions} - "${task.name}" is now ${days} days overdue. <@${ESCALATION_SLACK_ID}> for visibility. Please update or mark ✅ when complete.`,
+    `${mentions} - "${task.name}" is now ${days} days overdue. <@${config.slack.escalationUserId}> for visibility. Please update or mark ✅ when complete.`,
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `Hey ${mentions}, this task has been overdue for ${days} days. Looping in <@${ESCALATION_SLACK_ID}>. Add ✅ once it's done.`,
+    `Hey ${mentions}, this task has been overdue for ${days} days. Looping in <@${config.slack.escalationUserId}>. Add ✅ once it's done.`,
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `${mentions} - ${days} days overdue now. cc <@${ESCALATION_SLACK_ID}>. Mark complete with ✅ when finished.`,
+    `${mentions} - ${days} days overdue now. cc <@${config.slack.escalationUserId}>. Mark complete with ✅ when finished.`,
 ];
 
 function pickRandom<T>(arr: T[]): T {

@@ -401,7 +401,7 @@ app.post(
         console.log('Using base64 PDF:', pdfFilename, pdfBuffer.length, 'bytes');
       }
 
-      console.log('Received data:', { subject, bodyText: bodyText.substring(0, 100), fromEmail, toEmail, hasPdf: !!pdfBuffer });
+      console.log('Received data:', { subject, fromEmail, toEmail, hasPdf: !!pdfBuffer });
 
       // Import required modules
       const { analyzeEmailSafe } = await import('./services/claude.js');
@@ -422,7 +422,7 @@ app.post(
         toEmail,      // from the EML
         null          // no EML body needed
       );
-      console.log('Claude analysis:', analysisResult);
+      console.log('Claude analysis:', { owner: analysisResult.owner, taskType: analysisResult.taskType, dueDate: analysisResult.dueDate, priority: analysisResult.priority, confidence: analysisResult.confidence });
 
       // Resolve task type
       const taskType = getTaskTypeDisplayName(analysisResult.taskType);

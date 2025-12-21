@@ -56,51 +56,56 @@ export const config = {
     attachmentsMode: getAttachmentsMode(),
   },
 
-  // Monday.com
+  // Monday.com (all board/column IDs are REQUIRED - no defaults)
   monday: {
-    apiToken: getEnvVar('MONDAY_API_TOKEN', ''),
-    boardId: getEnvVar('MONDAY_BOARD_ID', '18383923820'),
-    fileColumnId: getEnvVar('MONDAY_FILE_COLUMN_ID', 'file_mkxv6aa0'),
-    slackThreadColumnId: getEnvVar('MONDAY_SLACK_THREAD_COLUMN_ID', 'text_mkxxn3hz'),
-    boardUrl: getEnvVar('MONDAY_BOARD_URL', 'https://salemseats.monday.com/boards/18383923820'),
+    apiToken: getEnvVar('MONDAY_API_TOKEN'),
+    boardId: getEnvVar('MONDAY_BOARD_ID'),
+    fileColumnId: getEnvVar('MONDAY_FILE_COLUMN_ID'),
+    slackThreadColumnId: getEnvVar('MONDAY_SLACK_THREAD_COLUMN_ID'),
+    // Board URL derived from board ID (no hardcoded URLs)
+    get boardUrl(): string {
+      return `https://salemseats.monday.com/boards/${this.boardId}`;
+    },
 
-    // Column IDs from the board
+    // Column IDs from the board - ALL REQUIRED
     // LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
     // Narrative/context goes to Updates, not columns
     columns: {
-      // Core state/routing columns
-      owner: 'person',
-      support: 'multiple_person_mky0vdq1',
-      type: 'status',                         // Task type (General, Opportunity, etc.)
-      workflowStatus: 'color_mkxvxxxn',       // Workflow status (Acknowledged, Working on it, etc.)
-      urgency: 'color_mkytzsrj',              // Urgency (High, Medium, Low)
-      date: 'date4',                          // Due Date
-      source: 'color_mky0b1yr',               // Source (Forwarding Tasks, Slack Tasks, etc.)
-      attachmentState: 'color_mkytqrh8',      // Status: Queued/Uploaded/Retrying/Failed/Skipped
-      runId: 'text_mkyt4seq',                 // Text: Workflow run ID
-      // Internal linking (not user-facing state)
-      slackThreadId: 'text_mkxxn3hz',
-      team: 'dropdown_mkyqe4we',              // Sports team
-      file: 'file_mkxv6aa0',
-      pdfUrl: 'text_mkythpzx',                // Durable PDF URL for retries
+      // Core state/routing columns (required env vars)
+      owner: getEnvVar('MONDAY_COL_OWNER'),
+      support: getEnvVar('MONDAY_COL_SUPPORT'),
+      type: getEnvVar('MONDAY_COL_TYPE'),
+      workflowStatus: getEnvVar('MONDAY_COL_WORKFLOW_STATUS'),
+      urgency: getEnvVar('MONDAY_COL_URGENCY'),
+      date: getEnvVar('MONDAY_COL_DATE'),
+      source: getEnvVar('MONDAY_COL_SOURCE'),
+      attachmentState: getEnvVar('MONDAY_COL_ATTACHMENT_STATE'),
+      runId: getEnvVar('MONDAY_COL_RUN_ID'),
+      // Internal linking (required env vars)
+      slackThreadId: getEnvVar('MONDAY_COL_SLACK_THREAD_ID'),
+      team: getEnvVar('MONDAY_COL_TEAM'),
+      file: getEnvVar('MONDAY_COL_FILE'),
+      pdfUrl: getEnvVar('MONDAY_COL_PDF_URL'),
       // REMOVED: from, to, notes, slackLink - narrative belongs in Updates
     },
   },
 
   // Slack
   slack: {
-    botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
+    botToken: getEnvVar('SLACK_BOT_TOKEN'),
     channelId: getEnvVar('SLACK_CHANNEL_ID'),  // REQUIRED: notification channel for task threads
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
+    // Escalation user for overdue tasks (day 2+) - REQUIRED
+    escalationUserId: getEnvVar('SLACK_ESCALATION_USER_ID'),
     // After-hours behavior (nights + weekends)
     // Tasks created after-hours are created quietly (no pings), then released at business start
     quietHours: {
       enabled: getEnvVarBool('SLACK_QUIET_HOURS_ENABLED', true),
-      onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID', ''),  // On-call user for after-hours/weekend routing
-      timezone: getEnvVar('SLACK_TIMEZONE', 'America/New_York'),
-      workingHoursStart: getEnvVarNumber('SLACK_WORKING_HOURS_START', 8),   // 8:00 AM ET
-      workingHoursEnd: getEnvVarNumber('SLACK_WORKING_HOURS_END', 20),      // 8:00 PM ET (20:00)
-      releaseHour: getEnvVarNumber('SLACK_RELEASE_HOUR', 8),                // 8:00 AM - ping deferred tasks
+      onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID'),  // On-call user for after-hours/weekend routing - REQUIRED
+      timezone: 'America/New_York',  // Locked to Eastern Time for all time logic
+      workingHoursStart: getEnvVarNumber('SLACK_WORKING_HOURS_START', 10),  // 10:00 AM ET
+      workingHoursEnd: getEnvVarNumber('SLACK_WORKING_HOURS_END', 18),      // 6:00 PM ET (18:00)
+      releaseHour: getEnvVarNumber('SLACK_RELEASE_HOUR', 10),               // 10:00 AM - ping deferred tasks
       ackDeadlineHour: getEnvVarNumber('SLACK_ACK_DEADLINE_HOUR', 11),      // 11:00 AM - follow up if no 👀
     },
     // /task command permissions
@@ -120,12 +125,12 @@ export const config = {
 
   // ConvertAPI
   convertApi: {
-    secret: getEnvVar('CONVERTAPI_SECRET', ''),
+    secret: getEnvVar('CONVERTAPI_SECRET'),
   },
 
   // Anthropic (Claude AI)
   anthropic: {
-    apiKey: getEnvVar('ANTHROPIC_API_KEY', ''),
+    apiKey: getEnvVar('ANTHROPIC_API_KEY'),
   },
 
   // Google (Gmail API, Calendar, and future Sheets read)
@@ -156,20 +161,18 @@ export const config = {
 /**
  * Validate that all required config is present
  * Call this at startup
+ *
+ * NOTE: All critical env vars are now required at config load time.
+ * If any are missing, the app will fail fast with a clear error.
+ * This function logs config status for visibility.
  */
 export function validateConfig(): void {
-  const missing: string[] = [];
-
-  if (!config.monday.apiToken) missing.push('MONDAY_API_TOKEN');
-  if (!config.slack.botToken) missing.push('SLACK_BOT_TOKEN');
-  if (!config.slack.channelId) missing.push('SLACK_CHANNEL_ID');
-  if (!config.convertApi.secret) missing.push('CONVERTAPI_SECRET');
-  if (!config.anthropic.apiKey) missing.push('ANTHROPIC_API_KEY');
-
-  if (missing.length > 0) {
-    console.warn(`Warning: Missing environment variables: ${missing.join(', ')}`);
-    console.warn('Some features may not work correctly.');
-  }
+  // Log config summary (all required vars already validated at load time)
+  console.log('✓ Config loaded successfully');
+  console.log(`  Monday Board: ${config.monday.boardId}`);
+  console.log(`  Slack Channel: ${config.slack.channelId}`);
+  console.log(`  Working Hours: ${config.slack.quietHours.workingHoursStart}:00 - ${config.slack.quietHours.workingHoursEnd}:00 ET`);
+  console.log(`  Quiet Hours: ${config.slack.quietHours.enabled ? 'ENABLED' : 'DISABLED'}`);
 
   // Log safety valve status
   if (config.safetyValves.disableEmailAutomation) {

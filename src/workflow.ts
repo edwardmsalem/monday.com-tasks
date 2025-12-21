@@ -97,10 +97,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Step 2: Parse EML headers and body (needed for Claude analysis)
   log.log('Parsing EML attachment...');
   const emlHeaders = await parseEmlAttachment(emlAttachment.content);
-  log.log('EML headers:', emlHeaders);
-  if (emlHeaders.body) {
-    log.log('EML body length:', emlHeaders.body.length, 'chars');
-  }
+  log.log('EML headers:', { subject: emlHeaders.subject, from: emlHeaders.from, to: emlHeaders.to, bccCount: emlHeaders.bcc?.length ?? 0, bodyLength: emlHeaders.body?.length ?? 0 });
 
   // Step 3: Use Claude AI to analyze the email and extract task details
   // Now includes the actual EML body for meeting detection, etc.
@@ -113,11 +110,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     emlHeaders.to,
     emlHeaders.body  // Pass the EML body content
   );
-  log.log('Claude analysis:', analysisResult);
-  log.log(`Confidence: ${(analysisResult.confidence * 100).toFixed(0)}%`);
-  if (analysisResult.meeting.hasMeetingRequest) {
-    log.log('Meeting detected:', analysisResult.meeting);
-  }
+  log.log('Claude analysis:', { owner: analysisResult.owner, taskType: analysisResult.taskType, dueDate: analysisResult.dueDate, priority: analysisResult.priority, confidence: `${(analysisResult.confidence * 100).toFixed(0)}%`, hasMeeting: analysisResult.meeting.hasMeetingRequest });
 
   // Step 4: Resolve the task type (Claude might return alias or display name)
   const taskType = getTaskTypeDisplayName(analysisResult.taskType);
@@ -889,7 +882,7 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
     toEmail,        // to the email
     bodyText        // EML body
   );
-  log.log('Claude analysis:', analysisResult);
+  log.log('Claude analysis:', { owner: analysisResult.owner, taskType: analysisResult.taskType, dueDate: analysisResult.dueDate, priority: analysisResult.priority, confidence: `${(analysisResult.confidence * 100).toFixed(0)}%` });
 
   // Step 2: Resolve task type
   const taskType = getTaskTypeDisplayName(analysisResult.taskType);
