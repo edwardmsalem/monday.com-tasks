@@ -1075,42 +1075,33 @@ app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (r
     // Parse the input
     const parsed = parseSlackTaskInput(text);
 
-    // Handle missing owner - default to on-call user
-    if (!parsed.ownerSlackId) {
-      const onCallUserId = config.slack.quietHours.onCallUserId;
-      if (onCallUserId) {
-        parsed.ownerSlackId = onCallUserId;
-        parsed.urgency = 'Medium';  // Default urgency when defaulting owner
-        console.log(`No owner specified, defaulting to on-call user: ${onCallUserId}`);
-      } else {
-        res.json({
-          response_type: 'ephemeral',
-          text: `:warning: *Owner required*\n\n` +
-            `Please use \`@mention\` to assign the task.\n\n` +
-            `Example: \`/task @john Fix the login bug due friday\``,
-        });
-        return;
-      }
-    }
-
-    // Owner authorization check
-    // Only users in SLACK_OWNER_OVERRIDE_USER_IDS can assign owner to someone else
-    // Everyone else: owner = creator (unless they didn't specify an owner)
+    // Owner rules:
+    // - Default owner is ALWAYS the creator
+    // - owner: prefix can ONLY be used by authorized users (SLACK_OWNER_OVERRIDE_USER_IDS)
+    // - Plain @mentions go to Support, not Owner
     const ownerOverrideUserIds = config.slack.ownerOverrideUserIds;
     const isOwnerAuthorized = ownerOverrideUserIds.length === 0 || ownerOverrideUserIds.includes(user_id);
     let ownerOverridden = false;
 
-    if (!isOwnerAuthorized && parsed.ownerSlackId !== user_id) {
-      // Non-authorized user tried to assign owner to someone else
-      // Force owner = creator
-      console.log(`Owner override blocked: ${user_id} tried to assign to ${parsed.ownerSlackId}`);
+    if (parsed.ownerExplicitlySet && parsed.ownerSlackId) {
+      // User explicitly used owner: prefix
+      if (isOwnerAuthorized) {
+        // Authorized user - allow owner override
+        console.log(`Authorized owner override: ${user_id} set owner to ${parsed.ownerSlackId}`);
+      } else {
+        // Non-authorized user tried to use owner: - ignore it, set owner = creator
+        console.log(`Owner override blocked: ${user_id} tried to use owner: prefix`);
+        parsed.ownerSlackId = user_id;
+        ownerOverridden = true;
+      }
+    } else {
+      // No explicit owner: prefix - owner is always the creator
       parsed.ownerSlackId = user_id;
-      ownerOverridden = true;
     }
 
     // Acknowledge immediately (Slack requires response within 3 seconds)
     const ackMessage = ownerOverridden
-      ? `⏳ Creating task...\n\n_Note: Owner set to you (only authorized users can assign tasks to others). Support users will still be notified._`
+      ? `⏳ Creating task...\n\n_Note: The \`owner:\` prefix is restricted. Task owner set to you._`
       : `⏳ Creating task...`;
     res.json({
       response_type: 'ephemeral',

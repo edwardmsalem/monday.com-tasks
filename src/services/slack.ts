@@ -207,16 +207,16 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   const mondayUrl = monday.getItemUrl(input.mondayItemId);
   const afterHours = isAfterHours();
 
-  // During after-hours: show assignee name without @ mention (quiet)
-  // During working hours: full @ mention (pings user)
+  // During after-hours: show owner name without @ mention (quiet)
+  // During working hours: full @ mention (pings OWNER only)
   const ownerDisplay = afterHours
     ? `<@${input.assigneeSlackId}>`.replace('<@', '').replace('>', '')  // Just the ID, no ping
-    : `<@${input.assigneeSlackId}>`;  // Full mention, notifies user
+    : `<@${input.assigneeSlackId}>`;  // Full mention, notifies owner
 
-  // Support users display (if any)
+  // Support users display (if any) - NEVER ping support users, always show as plain text
   const supportSlackIds = input.supportSlackIds ?? [];
   const supportDisplay = supportSlackIds.length > 0
-    ? supportSlackIds.map(id => afterHours ? id : `<@${id}>`).join(', ')
+    ? supportSlackIds.join(', ')  // Just IDs, no @ mentions
     : null;
 
   // Build Block Kit message - use any[] to avoid type issues with mixed block types

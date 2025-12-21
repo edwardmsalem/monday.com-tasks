@@ -469,9 +469,9 @@ export interface ParsedSlackTask {
  * Parse /task command input (single-line or multiline)
  *
  * Supported formats:
- * - Single-line: /task @assignee refund due fri urgency high notes: customer called twice
- * - With explicit owner/support:
- *   /task owner: @john support: @jane @bob Fix the bug due friday
+ * - Single-line: /task @support1 @support2 refund due fri urgency high notes: customer called twice
+ * - With explicit owner (authorized users only):
+ *   /task owner: @john @support Fix the bug due friday
  * - Multiline:
  *   owner: @john
  *   support: @jane
@@ -480,9 +480,9 @@ export interface ParsedSlackTask {
  *   notes...
  *
  * Owner vs Support:
- * - owner: Sets the task owner (restricted - only authorized users can assign to others)
- * - support: Sets support users who will be pinged (anyone can set this)
- * - Plain @mention without prefix defaults to owner (backward compatible)
+ * - owner: Sets the task owner (ONLY authorized users can use this - others: owner = creator)
+ * - support: or plain @mentions → Support users (anyone can set this, not auto-pinged)
+ * - Default owner is always the task creator (set in handler, not here)
  */
 export function parseSlackTaskInput(text: string): ParsedSlackTask {
   const lines = text.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -530,7 +530,7 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
     const remainingLines: string[] = [];
 
     for (const line of lines) {
-      // Explicit owner: line
+      // Explicit owner: line (only authorized users can use this)
       if (/^owner:/i.test(line)) {
         const ownerPart = line.replace(/^owner:\s*/i, '').trim();
         const ownerId = extractMentionId(ownerPart);
@@ -549,15 +549,12 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
         continue;
       }
 
-      // Plain @mention line (defaults to owner if not set)
+      // Plain @mention line → goes to Support (NOT owner)
       const mentionMatch = line.match(mentionRegex);
-      if (mentionMatch && !ownerSlackId) {
-        const id = extractMentionId(line);
-        if (id) {
-          ownerSlackId = id;
-          // Not explicitly set via "owner:", just a plain mention
-        }
-        // If line is just the mention, skip it
+      if (mentionMatch) {
+        const ids = extractAllMentionIds(line);
+        supportSlackIds.push(...ids);
+        // If line is just mentions, skip adding to description
         if (line.replace(mentionRegex, '').trim().length === 0) continue;
       }
 
@@ -616,18 +613,11 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
       remaining = remaining.replace(supportMatch[0], '').trim();
     }
 
-    // Extract any remaining @mentions as owner (backward compatible) if owner not set
-    if (!ownerSlackId) {
-      const plainMentionMatch = remaining.match(mentionRegex);
-      if (plainMentionMatch) {
-        const id = extractMentionId(plainMentionMatch[0]);
-        if (id) {
-          ownerSlackId = id;
-        }
-        remaining = remaining.replace(mentionRegex, '').trim();
-      }
-    } else {
-      // Owner already set, remove any remaining mentions from description
+    // Extract any remaining @mentions as Support (NOT owner)
+    // Plain mentions always go to Support - owner can only be set via explicit owner:
+    const plainMentions = extractAllMentionIds(remaining);
+    if (plainMentions.length > 0) {
+      supportSlackIds.push(...plainMentions);
       remaining = remaining.replace(mentionRegex, '').trim();
     }
 
