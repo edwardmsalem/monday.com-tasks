@@ -625,6 +625,16 @@ app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<v
         } else if (['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)) {
           console.log('Checkmark reaction added, marking Monday item complete...');
           await sync.markCompleteFromSlack(event.item.ts);
+
+          // Also handle after-hours done tracking (stops future reminders)
+          const threadTs = (event.item as { thread_ts?: string }).thread_ts || event.item.ts;
+          try {
+            await slack.markThreadDone(threadTs);
+            console.log(`After-hours done tracked for thread ${threadTs}`);
+          } catch (doneError) {
+            // Non-fatal - thread might not be an after-hours task
+            console.log('After-hours done tracking skipped (not a deferred task or already done)');
+          }
         }
       }
 

@@ -791,6 +791,7 @@ const RELEASE_DELAY_MS = 1000;       // 1 second delay between releases (avoid r
 const DEFERRED_MARKER_PATTERN = /\[after-hours:deferred:([^\]]+)\]/;
 const RELEASED_MARKER = '[after-hours:released]';
 const ACKNOWLEDGED_MARKER = '[after-hours:acknowledged]';
+const DONE_MARKER = '[after-hours:done]';
 const REMINDER_MARKER = '[after-hours:reminder-sent]';
 // Legacy pattern for backwards compatibility
 const LEGACY_DEFERRED_PATTERN = /\[quiet-hours:deferred:([^\]]+)\]/;
@@ -832,7 +833,8 @@ function extractMondayUrlFromBlocks(blocks: any[] | undefined): string | null {
  */
 interface DeferredNotificationState extends DeferredNotification {
   isReleased: boolean;
-  isAcknowledged: boolean;
+  isAcknowledged: boolean;  // 👀 reaction received
+  isDone: boolean;          // ✅ reaction received
   hasReminder: boolean;
   releaseMessageTs?: string;  // Timestamp of release message (for tracking 👀)
 }
@@ -903,6 +905,7 @@ export async function findDeferredNotificationsWithState(): Promise<DeferredNoti
         let deferredUserId: string | null = null;
         let isReleased = false;
         let isAcknowledged = false;
+        let isDone = false;
         let hasReminder = false;
         let releaseMessageTs: string | undefined;
 
@@ -931,9 +934,14 @@ export async function findDeferredNotificationsWithState(): Promise<DeferredNoti
             }
           }
 
-          // Check for acknowledgement marker
+          // Check for acknowledgement marker (👀 reaction)
           if (reply.text.includes(ACKNOWLEDGED_MARKER)) {
             isAcknowledged = true;
+          }
+
+          // Check for done marker (✅ reaction)
+          if (reply.text.includes(DONE_MARKER)) {
+            isDone = true;
           }
 
           // Check for reminder marker
@@ -954,6 +962,7 @@ export async function findDeferredNotificationsWithState(): Promise<DeferredNoti
             mondayUrl,
             isReleased,
             isAcknowledged,
+            isDone,
             hasReminder,
             releaseMessageTs,
           });
@@ -1011,11 +1020,12 @@ export async function releaseDeferredNotification(
 
 /**
  * Find released but unacknowledged tasks (for 11 AM follow-up)
+ * Excludes: acknowledged (👀), done (✅), and already reminded tasks
  */
 export async function findReleasedUnacknowledgedTasks(): Promise<DeferredNotificationState[]> {
   const allDeferred = await findDeferredNotificationsWithState();
-  // Return released but not acknowledged (and no reminder sent yet)
-  return allDeferred.filter(d => d.isReleased && !d.isAcknowledged && !d.hasReminder);
+  // Return released but not acknowledged, not done, and no reminder sent yet
+  return allDeferred.filter(d => d.isReleased && !d.isAcknowledged && !d.isDone && !d.hasReminder);
 }
 
 /**
@@ -1061,6 +1071,22 @@ export async function markThreadAcknowledged(threadTs: string): Promise<boolean>
     return true;
   } catch (error) {
     console.error(`Failed to mark thread ${threadTs} as acknowledged:`, error);
+    return false;
+  }
+}
+
+/**
+ * Mark a thread as done (when ✅ reaction is received)
+ */
+export async function markThreadDone(threadTs: string): Promise<boolean> {
+  try {
+    await postToThread(
+      threadTs,
+      `${DONE_MARKER} ✓ _Task marked done_`
+    );
+    return true;
+  } catch (error) {
+    console.error(`Failed to mark thread ${threadTs} as done:`, error);
     return false;
   }
 }
