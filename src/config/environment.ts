@@ -95,7 +95,7 @@ export const config = {
     // Quiet hours routing (nights + weekends)
     quietHours: {
       enabled: getEnvVarBool('SLACK_QUIET_HOURS_ENABLED', true),
-      onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID', ''),  // Sean's Slack ID
+      onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID', ''),  // On-call user for after-hours/weekend routing
       timezone: getEnvVar('SLACK_TIMEZONE', 'America/New_York'),
       workingHoursStart: 10,  // 10:00 AM
       workingHoursEnd: 18,    // 6:00 PM (18:00)
