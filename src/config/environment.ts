@@ -1,11 +1,64 @@
 /**
  * Environment configuration
  * Validates and exports all required environment variables
+ *
+ * FAIL-FAST: All required env vars are checked upfront at module load.
+ * If any are missing, the app will NOT start and will list ALL missing vars.
  */
+
+// List of all required environment variables (no defaults)
+const REQUIRED_ENV_VARS = [
+  // Monday.com
+  'MONDAY_API_TOKEN',
+  'MONDAY_BOARD_ID',
+  'MONDAY_FILE_COLUMN_ID',
+  'MONDAY_SLACK_THREAD_COLUMN_ID',
+  'MONDAY_COL_OWNER',
+  'MONDAY_COL_SUPPORT',
+  'MONDAY_COL_TYPE',
+  'MONDAY_COL_WORKFLOW_STATUS',
+  'MONDAY_COL_URGENCY',
+  'MONDAY_COL_DATE',
+  'MONDAY_COL_SOURCE',
+  'MONDAY_COL_ATTACHMENT_STATE',
+  'MONDAY_COL_RUN_ID',
+  'MONDAY_COL_SLACK_THREAD_ID',
+  'MONDAY_COL_TEAM',
+  'MONDAY_COL_FILE',
+  'MONDAY_COL_PDF_URL',
+  // Slack
+  'SLACK_BOT_TOKEN',
+  'SLACK_CHANNEL_ID',
+  'SLACK_ESCALATION_USER_ID',
+  'SLACK_ON_CALL_USER_ID',
+  // External APIs
+  'CONVERTAPI_SECRET',
+  'ANTHROPIC_API_KEY',
+] as const;
+
+/**
+ * Check all required env vars upfront and fail fast with a complete list
+ */
+function checkRequiredEnvVars(): void {
+  const missing = REQUIRED_ENV_VARS.filter(name => !process.env[name]);
+
+  if (missing.length > 0) {
+    console.error('\n❌ STARTUP FAILED: Missing required environment variables\n');
+    console.error('The following environment variables must be set:\n');
+    missing.forEach(name => console.error(`  • ${name}`));
+    console.error('\nPlease set these in your Railway environment and redeploy.\n');
+    process.exit(1);
+  }
+}
+
+// Run the check immediately on module load
+checkRequiredEnvVars();
 
 function getEnvVar(name: string, defaultValue?: string): string {
   const value = process.env[name] ?? defaultValue;
   if (value === undefined) {
+    // This should never happen for required vars (checked above)
+    // but kept for vars with defaults that might be explicitly set to empty
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
