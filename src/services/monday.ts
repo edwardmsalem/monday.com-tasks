@@ -1,6 +1,7 @@
 import { config } from '../config/environment.js';
 import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
 import FormData from 'form-data';
+import { mondayCircuit } from './circuitBreaker.js';
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_FILE_URL = 'https://api.monday.com/v2/file';
@@ -14,46 +15,49 @@ interface MondayGraphQLResponse<T> {
 /**
  * Execute a GraphQL query against the Monday.com API
  * Includes timeout to prevent hanging requests (QW-03)
+ * Wrapped in circuit breaker to prevent cascading failures (TD-05)
  */
 async function executeQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  return mondayCircuit.execute(async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
-  try {
-    const response = await fetch(MONDAY_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': config.monday.apiToken,
-        'API-Version': '2024-01',
-      },
-      body: JSON.stringify({ query, variables }),
-      signal: controller.signal,
-    });
+    try {
+      const response = await fetch(MONDAY_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': config.monday.apiToken,
+          'API-Version': '2024-01',
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
+      }
+
+      const result = (await response.json()) as MondayGraphQLResponse<T>;
+
+      if (result.errors && result.errors.length > 0) {
+        throw new Error(`Monday GraphQL error: ${result.errors.map(e => e.message).join(', ')}`);
+      }
+
+      if (!result.data) {
+        throw new Error('Monday API returned no data');
+      }
+
+      return result.data;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Monday API timeout after ${API_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const result = (await response.json()) as MondayGraphQLResponse<T>;
-
-    if (result.errors && result.errors.length > 0) {
-      throw new Error(`Monday GraphQL error: ${result.errors.map(e => e.message).join(', ')}`);
-    }
-
-    if (!result.data) {
-      throw new Error('Monday API returned no data');
-    }
-
-    return result.data;
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`Monday API timeout after ${API_TIMEOUT_MS}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  });
 }
 
 interface CreateItemInput {
@@ -186,39 +190,42 @@ export async function uploadFileToItem(
   form.append('file', fileData, { filename, contentType: 'application/pdf' });
 
   // Merge FormData headers (includes correct Content-Type with boundary)
-  const response = await fetch(MONDAY_FILE_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: config.monday.apiToken,
-      ...form.getHeaders(),
-    },
-    body: form as unknown as BodyInit,
+  // Wrapped in circuit breaker to prevent cascading failures (TD-05)
+  await mondayCircuit.execute(async () => {
+    const response = await fetch(MONDAY_FILE_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: config.monday.apiToken,
+        ...form.getHeaders(),
+      },
+      body: form as unknown as BodyInit,
+    });
+
+    const responseText = await response.text();
+    console.log('Monday file upload response:', response.status, responseText);
+
+    if (!response.ok) {
+      throw new Error(`Monday file upload error: ${response.status} - ${responseText}`);
+    }
+
+    // Check for GraphQL errors in successful response
+    try {
+      const result = JSON.parse(responseText);
+      if (result.errors && result.errors.length > 0) {
+        throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
+      }
+      if (!result.data?.add_file_to_column?.id) {
+        throw new Error('Monday file upload returned no file ID');
+      }
+      console.log('Monday file uploaded successfully, file ID:', result.data.add_file_to_column.id);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('Monday file upload')) {
+        throw e;
+      }
+      // If JSON parse fails but response was 200, that's unusual but not fatal
+      console.warn('Could not parse Monday file upload response:', e);
+    }
   });
-
-  const responseText = await response.text();
-  console.log('Monday file upload response:', response.status, responseText);
-
-  if (!response.ok) {
-    throw new Error(`Monday file upload error: ${response.status} - ${responseText}`);
-  }
-
-  // Check for GraphQL errors in successful response
-  try {
-    const result = JSON.parse(responseText);
-    if (result.errors && result.errors.length > 0) {
-      throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
-    }
-    if (!result.data?.add_file_to_column?.id) {
-      throw new Error('Monday file upload returned no file ID');
-    }
-    console.log('Monday file uploaded successfully, file ID:', result.data.add_file_to_column.id);
-  } catch (e) {
-    if (e instanceof Error && e.message.includes('Monday file upload')) {
-      throw e;
-    }
-    // If JSON parse fails but response was 200, that's unusual but not fatal
-    console.warn('Could not parse Monday file upload response:', e);
-  }
 }
 
 /**

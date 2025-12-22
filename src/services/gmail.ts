@@ -10,6 +10,7 @@
 import { google } from 'googleapis';
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config/environment.js';
+import { gmailCircuit, claudeCircuit } from './circuitBreaker.js';
 
 let gmailClient: ReturnType<typeof google.gmail> | null = null;
 let anthropicClient: Anthropic | null = null;
@@ -155,12 +156,14 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
   console.log(`Gmail search query: ${query}`);
 
   try {
-    // Search for messages
-    const searchResponse = await gmail.users.messages.list({
-      userId: 'me',
-      q: query,
-      maxResults: 50,
-    });
+    // Search for messages (wrapped in circuit breaker TD-05)
+    const searchResponse = await gmailCircuit.execute(() =>
+      gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        maxResults: 50,
+      })
+    );
 
     const messages = searchResponse.data.messages ?? [];
     console.log(`Found ${messages.length} related emails`);
@@ -177,15 +180,18 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
     const startTime = Date.now();
 
     // Batch fetch all messages with concurrency control (5 concurrent requests)
+    // Each fetch wrapped in circuit breaker (TD-05)
     console.log(`[Gmail] Fetching ${validMessages.length} messages with concurrency=5...`);
     const fetchResults = await batchWithConcurrency(
       validMessages,
       async (message) => {
-        const msgResponse = await gmail.users.messages.get({
-          userId: 'me',
-          id: message.id!,
-          format: 'full',
-        });
+        const msgResponse = await gmailCircuit.execute(() =>
+          gmail.users.messages.get({
+            userId: 'me',
+            id: message.id!,
+            format: 'full',
+          })
+        );
         return msgResponse.data;
       },
       5 // concurrency limit to avoid Gmail rate limits
@@ -349,10 +355,12 @@ async function extractAppointmentTime(emailBody: string): Promise<{
   try {
     const client = getAnthropicClient();
 
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 256,
-      system: `Extract appointment/event date and time from emails. Look for:
+    // Wrapped in circuit breaker (TD-05)
+    const response = await claudeCircuit.execute(() =>
+      client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 256,
+        system: `Extract appointment/event date and time from emails. Look for:
 - Presale appointments
 - Relocation meetings
 - Selection appointments
@@ -364,13 +372,14 @@ Return ONLY a JSON object with:
 - rawDateTime: ISO 8601 format like "2025-12-20T14:00:00" or null if not found
 
 If no appointment is mentioned, return null for all fields.`,
-      messages: [
-        {
-          role: 'user',
-          content: `Extract the appointment date/time from this email:\n\n${emailBody.slice(0, 2000)}`,
-        },
-      ],
-    });
+        messages: [
+          {
+            role: 'user',
+            content: `Extract the appointment date/time from this email:\n\n${emailBody.slice(0, 2000)}`,
+          },
+        ],
+      })
+    );
 
     const textContent = response.content.find(c => c.type === 'text');
     if (!textContent || textContent.type !== 'text') {
@@ -507,11 +516,14 @@ export async function searchEmailsBySubject(
   console.log(`Gmail search query: ${query} (matchMode: ${matchMode})`);
 
   try {
-    const searchResponse = await gmail.users.messages.list({
-      userId: 'me',
-      q: query,
-      maxResults: 50,
-    });
+    // Wrapped in circuit breaker (TD-05)
+    const searchResponse = await gmailCircuit.execute(() =>
+      gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        maxResults: 50,
+      })
+    );
 
     const messages = searchResponse.data.messages ?? [];
     console.log(`Gmail returned ${messages.length} messages`);
@@ -525,15 +537,18 @@ export async function searchEmailsBySubject(
     const startTime = Date.now();
 
     // Batch fetch all messages with concurrency control (5 concurrent requests)
+    // Each fetch wrapped in circuit breaker (TD-05)
     console.log(`[Gmail] Fetching ${validMessages.length} messages with concurrency=5...`);
     const fetchResults = await batchWithConcurrency(
       validMessages,
       async (message) => {
-        const msgResponse = await gmail.users.messages.get({
-          userId: 'me',
-          id: message.id!,
-          format: 'full',
-        });
+        const msgResponse = await gmailCircuit.execute(() =>
+          gmail.users.messages.get({
+            userId: 'me',
+            id: message.id!,
+            format: 'full',
+          })
+        );
         return { id: message.id!, data: msgResponse.data };
       },
       5 // concurrency limit to avoid Gmail rate limits
