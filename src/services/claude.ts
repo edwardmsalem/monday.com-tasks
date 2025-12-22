@@ -41,11 +41,18 @@ Available task types:
 
 When analyzing an email, extract:
 1. **Owner**: Who should this task be assigned to? Match to one of the available team members by first name or full name.
-2. **Due Date**: When is this due? Can be:
+2. **Supporters**: Additional team members who should help with this task (NOT the owner). Look for:
+   - "X for support" or "X as support"
+   - "with X's help" or "have X help"
+   - "CC X" or "copy X"
+   - "X to assist" or "X for backup"
+   - Return an empty array if no supporters mentioned
+3. **Due Date**: When is this due? Can be:
    - Relative: "tomorrow", "next week", "in 3 days" → convert to "+N" format (e.g., "+1", "+7", "+3")
    - Absolute: Any date format → convert to "MM/DD/YY" format
+   - "today" or "due today" → "+0" (NOT null, NOT ASAP)
    - If no date mentioned, default to "+1" (tomorrow)
-3. **Task Type**: What kind of task is this? Match to one of the available types.
+4. **Task Type**: What kind of task is this? Match to one of the available types.
    - Payment Plan: payment plans, payment arrangements, installments
    - Refund: refund requests, money back
    - Decline: declined payments, card issues
@@ -55,11 +62,11 @@ When analyzing an email, extract:
    - Opportunity: sales opportunities, upsells
    - Issue Call: customer complaints, issues requiring a call
    - General: anything else
-4. **Priority**: Detect urgency level:
+5. **Priority**: Detect urgency level:
    - high: Contains "ASAP", "urgent", "immediately", "critical", "emergency", angry customer, escalation
    - medium: Standard task with a deadline, customer waiting
    - low: FYI, informational, no rush, when you get a chance
-5. **Notes**: Clean up the forwarding notes for grammar and clarity ONLY. Rules:
+6. **Notes**: Clean up the forwarding notes for grammar and clarity ONLY. Rules:
    - Only use words and concepts the forwarder actually wrote
    - Fix spelling, grammar, punctuation
    - Do NOT add context from the email being forwarded
@@ -67,11 +74,11 @@ When analyzing an email, extract:
    - Do NOT infer or add details like product names, ticket types, etc.
    - If they wrote "opt in for all 3" keep it as "opt in for all 3" - don't specify what the 3 are
    - If there are no notes beyond assignment info, leave notes empty.
-6. **Meeting Request**: Detect if the email contains a meeting/appointment request:
+7. **Meeting Request**: Detect if the email contains a meeting/appointment request:
    - Look for phrases like "let's meet", "can we schedule", "are you available", "let's set up a call"
    - Extract proposed date(s) and time(s) if mentioned
    - Note the timezone if specified (default to EST/America/New_York)
-7. **Team**: ONLY extract a sports team if explicitly mentioned in the email. Rules:
+8. **Team**: ONLY extract a sports team if explicitly mentioned in the email. Rules:
    - Only recognize: MLB, NFL, NBA, NHL, MLS teams, and NCAA Division 1 teams
    - Examples: Yankees, Mets, Knicks, Nets, Rangers, Islanders, Giants, Jets, Devils, etc.
    - Return null if no team is clearly mentioned - NEVER guess
@@ -82,7 +89,9 @@ IMPORTANT: For notes, ONLY use words the forwarder wrote. Do NOT pull in context
 Be smart about inferring the owner, date, and task type. For example:
 - "Send this to Dayna for next Friday" → owner: dayna, due date: calculate days until Friday
 - "Refund request - handle ASAP" → task type: Refund, due date: +1, priority: high
-- "FYI - customer feedback" → priority: low`;
+- "FYI - customer feedback" → priority: low
+- "Jamie for support" → supporters: ["jamie"]
+- "Dayna with help from Jamie and John" → owner: dayna, supporters: ["jamie", "john"]`;
 }
 
 /**
@@ -98,6 +107,11 @@ function buildExtractTaskTool(userNames: string): Anthropic.Tool {
         owner: {
           type: 'string',
           description: `The team member to assign this task to. Should match one of: ${userNames}. Use first name or full name.`,
+        },
+        supporters: {
+          type: 'array',
+          items: { type: 'string' },
+          description: `Additional team members to help with this task (NOT the owner). Look for "X for support", "with X's help", "CC X". Match to: ${userNames}. Return empty array if none.`,
         },
         dueDate: {
           type: 'string',
@@ -156,6 +170,7 @@ export interface AnalysisResult extends TaskDetails {
   confidence: number;
   meeting: MeetingInfo;
   team: string | null;
+  supporters: string[];  // Team member names who should help (not the owner)
 }
 
 /**
@@ -223,6 +238,7 @@ export async function analyzeEmail(
 
   const input = toolUse.input as {
     owner: string;
+    supporters?: string[];
     dueDate: string;
     taskType: string;
     priority: Priority;
@@ -235,6 +251,9 @@ export async function analyzeEmail(
   };
 
   console.log('Claude analysis result:', input);
+
+  // Normalize supporters to lowercase
+  const supporters = (input.supporters ?? []).map(s => s.toLowerCase().trim()).filter(s => s.length > 0);
 
   return {
     owner: input.owner.toLowerCase(),
@@ -249,6 +268,7 @@ export async function analyzeEmail(
       meetingDateTimeAlt: input.meetingDateTimeAlt ?? null,
     },
     team: input.team ?? null,
+    supporters,
   };
 }
 
@@ -400,6 +420,7 @@ export async function analyzeEmailSafe(
         meetingDateTimeAlt: null,
       },
       team: null,
+      supporters: [],  // No supporter detection in fallback
     };
   }
 }
