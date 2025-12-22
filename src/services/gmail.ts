@@ -136,16 +136,17 @@ export interface RecipientWithAppointment {
 
 /**
  * Search for emails with the same subject within the last 48 hours
- * Returns recipients with their appointment times extracted from email bodies
+ * Returns recipients with optional appointment times extracted from email bodies
+ *
+ * @param subject - Email subject to search for
+ * @param extractAppointments - If true, use Claude to extract appointment times (default: false)
  */
-export async function findRelatedRecipients(subject: string): Promise<RecipientWithAppointment[]> {
+export async function findRelatedRecipients(subject: string, extractAppointments: boolean = false): Promise<RecipientWithAppointment[]> {
   const gmail = await getGmailClient();
 
   const normalizedSubject = normalizeSubject(subject);
 
-  // Check if subject contains appointment-related keywords
-  const shouldExtractAppointments = hasAppointmentKeywords(normalizedSubject);
-  console.log(`Subject "${normalizedSubject}" - extract appointments: ${shouldExtractAppointments}`);
+  console.log(`Subject "${normalizedSubject}" - extract appointments: ${extractAppointments}`);
 
   // Build search query - last 48 hours
   const twoDaysAgo = new Date();
@@ -226,13 +227,13 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
       if (!toHeader?.value) continue;
 
       const recipientEmails = extractEmailAddresses(toHeader.value);
-      const bodyText = shouldExtractAppointments ? extractEmailBody(msgData.payload) : '';
+      const bodyText = extractAppointments ? extractEmailBody(msgData.payload) : '';
 
       messagesToProcess.push({ toEmails: recipientEmails, bodyText });
     }
 
     // If we need appointments, batch extract them with Claude (3 concurrent to avoid API limits)
-    if (shouldExtractAppointments && messagesToProcess.length > 0) {
+    if (extractAppointments && messagesToProcess.length > 0) {
       const appointmentStartTime = Date.now();
       console.log(`[Gmail] Extracting appointments from ${messagesToProcess.length} emails with concurrency=3...`);
 
@@ -426,10 +427,18 @@ function extractEmailAddresses(headerValue: string): string[] {
 }
 
 /**
- * Check if /scan command is in the email body
+ * Check if /scan command is in the email body (just emails, no appointment extraction)
  */
 export function shouldScanForRecipients(emailBody: string): boolean {
-  return /\/scan\b/i.test(emailBody);
+  // Match /scan but NOT /scantimes
+  return /\/scan\b(?!times)/i.test(emailBody);
+}
+
+/**
+ * Check if /scantimes command is in the email body (emails WITH appointment extraction)
+ */
+export function shouldExtractAppointmentTimes(emailBody: string): boolean {
+  return /\/scantimes\b/i.test(emailBody);
 }
 
 /**
