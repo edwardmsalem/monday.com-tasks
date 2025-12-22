@@ -41,6 +41,7 @@ import {
   emailWebhookRouter,
   slackEventsRouter,
   mondayWebhookRouter,
+  relayEventsRouter,
   slackUrlEncodedWithRawBody,
   verifySlackSignature,
   type SlackRequest,
@@ -73,6 +74,9 @@ app.use(slackEventsRouter);
 
 // Monday.com webhooks (/webhook/monday)
 app.use(mondayWebhookRouter);
+
+// Relay events (Slack events via relay proxy, /relay/events)
+app.use(relayEventsRouter);
 
 // ============================================================================
 // Slack Slash Commands (AI-powered with follow-up questions)
@@ -1097,6 +1101,7 @@ function start() {
     console.log(`  Slack /taskdebug: http://localhost:${config.port}/webhook/slack/taskdebug`);
     console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
+    console.log(`  Relay events:    http://localhost:${config.port}/relay/events`);
     console.log('');
 
     // Start auto follow-up scheduler (checks every hour)
