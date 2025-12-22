@@ -31,6 +31,7 @@ import * as slack from './services/slack.js';
 import { startFollowUpScheduler } from './services/autoFollowUp.js';
 import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
 import { initializeJobQueue } from './services/jobQueue.js';
+import { checkHealth } from './services/healthCheck.js';
 
 const app = express();
 
@@ -124,9 +125,24 @@ function verifySlackSignature(req: Request & { rawBody?: string }): boolean {
   return true;
 }
 
-// Health check endpoint
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Health check endpoint - comprehensive service status
+app.get('/health', async (req: Request, res: Response) => {
+  try {
+    const forceRefresh = req.query.refresh === 'true';
+    const health = await checkHealth(forceRefresh);
+
+    // Return 200 for healthy/degraded, 503 for unhealthy
+    const statusCode = health.status === 'unhealthy' ? 503 : 200;
+
+    res.status(statusCode).json(health);
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date(),
+      error: error instanceof Error ? error.message : 'Health check failed',
+    });
+  }
 });
 
 /**
