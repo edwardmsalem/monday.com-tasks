@@ -1,0 +1,12 @@
+# Nixpacks configuration for Railway
+# See: https://nixpacks.com/docs/configuration/file
+
+[phases.build]
+# No secrets needed at build time - TypeScript compilation only
+# All env vars have defaults or are validated at runtime
+
+[phases.setup]
+# Node.js detected automatically
+
+[start]
+cmd = "node dist/server.js"
