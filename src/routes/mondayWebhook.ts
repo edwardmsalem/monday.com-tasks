@@ -178,8 +178,9 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
 
       // Handle item updates (comments)
       if (event.type === 'create_update' && event.pulseId && event.textBody && event.userId) {
-        // Only sync if not from Slack (avoid loops)
-        if (!event.textBody.startsWith('[From Slack')) {
+        // Only sync if not from Slack (avoid loops) - check both old and new format
+        const isFromSlack = event.textBody.includes('(via Slack)') || event.textBody.startsWith('[From Slack');
+        if (!isFromSlack) {
           console.log('Monday update created, syncing to Slack...');
           await sync.syncMondayToSlack(String(event.pulseId), event.textBody, event.userId);
         }

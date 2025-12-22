@@ -109,8 +109,9 @@ export async function syncSlackToMonday(
   const user = users.find(u => u.slackId === slackUserId);
   const authorName = user?.name ?? 'Slack User';
 
-  // Create update in Monday
-  await monday.createUpdate(mondayItemId, `[From Slack - ${authorName}]\n${translatedText}`);
+  // Create update in Monday with nicer formatting
+  const formattedUpdate = `<p><strong>💬 ${authorName}</strong> <em>(via Slack)</em></p><p>${translatedText}</p>`;
+  await monday.createUpdate(mondayItemId, formattedUpdate);
 
   console.log(`Synced Slack message to Monday item ${mondayItemId}`);
 }
@@ -138,8 +139,8 @@ export async function syncMondayToSlack(
   const mondayUser = await monday.getUser(mondayUserId);
   const authorName = mondayUser?.name ?? 'Monday User';
 
-  // Post to Slack thread
-  await slack.postToThread(slackThreadTs, `*[From Monday - ${authorName}]*\n${translatedText}`);
+  // Post to Slack thread with nicer formatting
+  await slack.postToThread(slackThreadTs, `📋 *${authorName}* _(via Monday)_\n${translatedText}`);
 
   console.log(`Synced Monday update to Slack thread ${slackThreadTs}`);
 }

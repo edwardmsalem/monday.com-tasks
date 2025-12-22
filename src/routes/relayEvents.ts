@@ -149,8 +149,9 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
 
       // Handle thread replies - sync to Monday (main channel) or remind about Monday (supporter channels)
       if (event.type === 'message' && event.thread_ts && event.text && event.user && event.channel) {
-        // Ignore bot messages to prevent loops
-        if (!event.text.startsWith('[From Monday') && !event.text.includes('[supporter-notification:')) {
+        // Ignore bot messages to prevent loops - check both old and new format
+        const isFromMonday = event.text.includes('(via Monday)') || event.text.startsWith('[From Monday');
+        if (!isFromMonday && !event.text.includes('[supporter-notification:')) {
           // Check if this is in a supporter channel
           const supporterChannels = [
             config.slack.supporterPrimaryChannel,
