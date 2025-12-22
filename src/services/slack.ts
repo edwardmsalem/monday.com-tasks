@@ -1348,13 +1348,26 @@ export async function findSupporterNotificationChannel(supporterSlackId: string)
 }
 
 /**
+ * Task details for supporter notification
+ */
+export interface SupporterNotificationDetails {
+  taskSubject: string;
+  taskType: string;
+  ownerName: string;
+  dueDate: string;           // Formatted for display (e.g., "Mon Dec 23")
+  priority: 'high' | 'medium' | 'low';
+  notes?: string;
+}
+
+/**
  * Send a notification to a supporter's channel
- * Links to the Monday task (not Slack thread - they may not have access to that channel)
+ * Includes full task details so supporter has context without leaving Slack
+ * Links to Monday for updates (thread replies sync to Monday automatically)
  */
 export async function notifySupporterInChannel(
   supporterSlackId: string,
   supporterName: string,
-  taskSubject: string,
+  details: SupporterNotificationDetails,
   mainThreadTs: string,
   mondayItemId: string
 ): Promise<boolean> {
@@ -1368,7 +1381,22 @@ export async function notifySupporterInChannel(
   const client = getClient();
   const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
 
-  const message = `🤝 <@${supporterSlackId}> you've been added as a supporter on:\n\n*${taskSubject}*\n\n<${mondayLink}|View Monday task>`;
+  // Priority emoji
+  const priorityEmoji = details.priority === 'high' ? '🔴' : details.priority === 'low' ? '🟢' : '🟡';
+
+  // Build the message with all relevant details
+  let message = `🤝 <@${supporterSlackId}> you've been added as a supporter on:\n\n`;
+  message += `*${details.taskSubject}*\n\n`;
+  message += `📋 *Type:* ${details.taskType}\n`;
+  message += `👤 *Owner:* ${details.ownerName}\n`;
+  message += `📅 *Due:* ${details.dueDate}\n`;
+  message += `${priorityEmoji} *Priority:* ${details.priority.charAt(0).toUpperCase() + details.priority.slice(1)}\n`;
+
+  if (details.notes) {
+    message += `📝 *Notes:* ${details.notes}\n`;
+  }
+
+  message += `\n<${mondayLink}|View Monday task> _(reply there to add updates)_`;
 
   try {
     const response = await slackCircuit.execute(() =>
