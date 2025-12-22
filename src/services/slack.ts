@@ -1396,7 +1396,7 @@ export async function notifySupporterInChannel(
     message += `📝 *Notes:* ${details.notes}\n`;
   }
 
-  message += `\n<${mondayLink}|View Monday task> _(reply there to add updates)_`;
+  message += `\n<${mondayLink}|View Monday task>\n\n💬 _Add any updates or comments on Monday - this channel is not synced._\n\n[supporter-notification:${mondayItemId}]`;
 
   try {
     const response = await slackCircuit.execute(() =>
