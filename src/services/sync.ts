@@ -109,9 +109,9 @@ export async function syncSlackToMonday(
   const user = users.find(u => u.slackId === slackUserId);
   const authorName = user?.name ?? 'Slack User';
 
-  // Create update in Monday with @mention
-  // Monday recognizes @Name as a clickable mention
-  const formattedUpdate = `<p>💬 @${authorName} <em>(via Slack)</em></p><p>${translatedText}</p>`;
+  // Create update in Monday
+  // Author is just a name (not @mention), but message content still has translated @mentions
+  const formattedUpdate = `<p>💬 <strong>${authorName}</strong> <em>(via Slack)</em></p><p>${translatedText}</p>`;
   await monday.createUpdate(mondayItemId, formattedUpdate);
 
   console.log(`Synced Slack message to Monday item ${mondayItemId}`);
@@ -136,17 +136,14 @@ export async function syncMondayToSlack(
   // Translate Monday mentions to Slack format
   const translatedText = await translateMondayMentionsToSlack(updateText);
 
-  // Get the user's Slack ID for the mention
+  // Get the user's name for attribution
   const users = await getAllUsers();
   const user = users.find(u => u.mondayId === mondayUserId);
+  const authorName = user?.name ?? 'Monday User';
 
-  // Use Slack mention if we have their Slack ID, otherwise fall back to name
-  const authorMention = user?.slackId
-    ? `<@${user.slackId}>`
-    : `*${user?.name ?? 'Monday User'}*`;
-
-  // Post to Slack thread with @mention
-  await slack.postToThread(slackThreadTs, `📋 ${authorMention} _(via Monday)_\n${translatedText}`);
+  // Post to Slack thread
+  // Author is just a name (not @mention), but message content still has translated @mentions
+  await slack.postToThread(slackThreadTs, `📋 *${authorName}* _(via Monday)_\n${translatedText}`);
 
   console.log(`Synced Monday update to Slack thread ${slackThreadTs}`);
 }
