@@ -22,8 +22,7 @@ import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { config } from '../config/environment.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
 import { normalizeSubject } from '../services/gmail.js';
-import { mapPriorityToUrgency, createLogger } from './shared.js';
-import { applyIntentDrivenMode } from './intentModes.js';
+import { mapPriorityToUrgency, createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult } from './shared.js';
 
 // ============================================================================
 // Types
@@ -162,15 +161,7 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
   }
 
   // Step 8.5: Apply intent-driven mode behavior (Phase 4/5)
-  try {
-    const intentMode = await applyIntentDrivenMode(mondayItem.id, taskType, taskName, log);
-    if (intentMode.mode !== 'none' && intentMode.actions.length > 0) {
-      const intentUpdate = `🎯 *${intentMode.mode.charAt(0).toUpperCase() + intentMode.mode.slice(1)} Mode*\n${intentMode.actions.map(a => `• ${a}`).join('\n')}`;
-      await monday.createUpdate(mondayItem.id, intentUpdate);
-    }
-  } catch (error) {
-    log.error('Intent-driven mode failed (non-fatal):', error);
-  }
+  await applyIntentModeWithLogging(mondayItem.id, taskType, taskName, log);
 
   // Step 9: Send Slack notification
   log.log('Sending Slack notification...');
@@ -190,10 +181,7 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
   log.log('Slack message sent:', slackMessage.ts);
 
   // Post Run ID to Slack thread
-  await slack.postToThread(
-    slackMessage.ts,
-    `🔗 _Run ID: ${runId.substring(0, 8)}_`
-  );
+  await postRunIdToSlack(slackMessage.ts, runId);
 
   // Step 10: Handle PDF upload (if provided)
   const attachmentsMode = config.safetyValves.attachmentsMode;
@@ -288,13 +276,6 @@ export async function executeEmailTaskWorkflowSafe(input: EmailTaskInput): Promi
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.error('Email task workflow failed:', errorMessage);
-
-    return {
-      mondayItemId: '',
-      slackThreadTs: '',
-      success: false,
-      error: errorMessage,
-      runId,
-    };
+    return createFailedResult(errorMessage, runId);
   }
 }

@@ -15,8 +15,7 @@ import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
-import { createLogger } from './shared.js';
-import { applyIntentDrivenMode } from './intentModes.js';
+import { createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult } from './shared.js';
 
 // ============================================================================
 // Types
@@ -350,15 +349,7 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
 
   // Step 4.5: Apply intent-driven mode behavior (Phase 4/5)
-  try {
-    const intentMode = await applyIntentDrivenMode(mondayItem.id, parsed.taskType, taskName, log);
-    if (intentMode.mode !== 'none' && intentMode.actions.length > 0) {
-      const intentUpdate = `🎯 *${intentMode.mode.charAt(0).toUpperCase() + intentMode.mode.slice(1)} Mode*\n${intentMode.actions.map(a => `• ${a}`).join('\n')}`;
-      await monday.createUpdate(mondayItem.id, intentUpdate);
-    }
-  } catch (error) {
-    log.error('Intent-driven mode failed (non-fatal):', error);
-  }
+  await applyIntentModeWithLogging(mondayItem.id, parsed.taskType, taskName, log);
 
   // Step 5: Send Slack notification (respects quiet-hours)
   // Build assignee mentions (owner + support)
@@ -383,10 +374,7 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   log.log('Slack message sent:', slackMessage.ts);
 
   // Post Run ID to Slack thread
-  await slack.postToThread(
-    slackMessage.ts,
-    `🔗 _Run ID: ${runId.substring(0, 8)}_`
-  );
+  await postRunIdToSlack(slackMessage.ts, runId);
 
   // Step 6: Update Monday with Slack thread ID
   log.log('Updating Monday with Slack thread ID...');
@@ -421,13 +409,6 @@ export async function executeSlackTaskWorkflowSafe(input: SlackTaskWorkflowInput
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.error('Slack task workflow failed:', errorMessage);
-
-    return {
-      mondayItemId: '',
-      slackThreadTs: '',
-      success: false,
-      error: errorMessage,
-      runId,
-    };
+    return createFailedResult(errorMessage, runId);
   }
 }

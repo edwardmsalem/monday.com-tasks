@@ -40,8 +40,7 @@ import { parseDate, formatDateForDisplay } from '../utils/dateParser.js';
 import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from '../services/gmail.js';
 import { createRecipientSheet, shouldCreateSheet } from '../services/sheets.js';
 import * as todoist from '../services/todoist.js';
-import { mapPriorityToUrgency, createLogger } from './shared.js';
-import { applyIntentDrivenMode } from './intentModes.js';
+import { mapPriorityToUrgency, createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult } from './shared.js';
 
 // ============================================================================
 // Types
@@ -178,17 +177,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Step 8.5: Apply intent-driven mode behavior (Phase 4/5)
   // - Relocation: Creates 4 checklist subitems with owners from Slack config
   // - Exclusive Presale: Detection only (uses /scan for recipients)
-  try {
-    const intentMode = await applyIntentDrivenMode(mondayItem.id, taskType, taskName, log);
-    if (intentMode.mode !== 'none' && intentMode.actions.length > 0) {
-      // Post intent mode actions as Monday update
-      const intentUpdate = `🎯 *${intentMode.mode.charAt(0).toUpperCase() + intentMode.mode.slice(1)} Mode*\n${intentMode.actions.map(a => `• ${a}`).join('\n')}`;
-      await monday.createUpdate(mondayItem.id, intentUpdate);
-    }
-  } catch (error) {
-    log.error('Intent-driven mode failed (non-fatal):', error);
-    // Don't fail the whole workflow if intent-driven mode fails
-  }
+  await applyIntentModeWithLogging(mondayItem.id, taskType, taskName, log);
 
   // Step 8.6: Project to Todoist (if enabled)
   if (todoist.isEnabled()) {
@@ -268,10 +257,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   log.log('Slack message sent:', slackMessage.ts);
 
   // Post Run ID to Slack thread for debugging/tracing
-  await slack.postToThread(
-    slackMessage.ts,
-    `🔗 _Run ID: ${runId.substring(0, 8)}_`
-  );
+  await postRunIdToSlack(slackMessage.ts, runId);
 
   // Step 11: Upload PDF - Slack first (human value), then Monday (best effort with retry)
   // Attachment failures do NOT fail the workflow
@@ -412,13 +398,6 @@ export async function executeWorkflowSafe(input: WorkflowInput): Promise<Workflo
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.error('Workflow failed:', errorMessage);
-
-    return {
-      mondayItemId: '',
-      slackThreadTs: '',
-      success: false,
-      error: errorMessage,
-      runId,
-    };
+    return createFailedResult(errorMessage, runId);
   }
 }
