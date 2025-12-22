@@ -121,6 +121,13 @@ export const config = {
       .split(',')
       .map(id => id.trim())
       .filter(id => id.length > 0),
+    // Supporter notification channels (check in order: primary first, then secondaries)
+    // Posts to the first channel where the supporter is a member
+    supporterPrimaryChannel: getEnvVarOptional('SLACK_SUPPORTER_PRIMARY_CHANNEL'),  // e.g., #operations
+    supporterSecondaryChannels: (getEnvVar('SLACK_SUPPORTER_SECONDARY_CHANNELS', '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(id => id.length > 0)),  // e.g., #QuickTix-team, #ticket-associates
   },
 
   // ConvertAPI

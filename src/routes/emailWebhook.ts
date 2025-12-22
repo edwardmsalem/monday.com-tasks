@@ -499,6 +499,7 @@ router.post(
       const { shouldCreateSheet, createRecipientSheet } = await import('../services/sheets.js');
 
       let sheetUrl: string | null = null;
+      let scannedRecipients: Array<{ email: string; appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null }> = [];
       const scanDetected = shouldScanForRecipients(bodyText);
       const scantimesDetected = shouldExtractAppointmentTimes(bodyText);
       console.log('=== /SCAN DETECTION ===');
@@ -510,10 +511,10 @@ router.post(
         const commandUsed = scantimesDetected ? '/scantimes' : '/scan';
         console.log(`${commandUsed} detected - searching for related recipients (extractAppointments: ${scantimesDetected})...`);
         try {
-          const recipients = await findRelatedRecipients(subject, scantimesDetected);
-          if (recipients.length > 0) {
-            console.log(`Found ${recipients.length} related recipients, creating subtasks...`);
-            const subtaskNames = recipients.map(r => formatRecipientSubtaskName(r));
+          scannedRecipients = await findRelatedRecipients(subject, scantimesDetected);
+          if (scannedRecipients.length > 0) {
+            console.log(`Found ${scannedRecipients.length} related recipients, creating subtasks...`);
+            const subtaskNames = scannedRecipients.map(r => formatRecipientSubtaskName(r));
             await monday.createSubitems(mondayItem.id, subtaskNames);
             console.log(`Created ${subtaskNames.length} subtasks`);
 
@@ -521,7 +522,7 @@ router.post(
             if (shouldCreateSheet(subject)) {
               console.log('Creating Google Sheet for recipient tracking...');
               try {
-                const sheetResult = await createRecipientSheet(subject, recipients);
+                const sheetResult = await createRecipientSheet(subject, scannedRecipients);
                 sheetUrl = sheetResult.spreadsheetUrl;
                 console.log('Google Sheet created:', sheetUrl);
                 await monday.createUpdate(
@@ -558,6 +559,20 @@ router.post(
         meeting: analysisResult.meeting,
       });
       console.log('Slack message sent:', slackMessage.ts);
+
+      // Post scanned email list to Slack thread if we found recipients
+      if (scannedRecipients.length > 0) {
+        const teamName = analysisResult.team || 'this team';
+        const emailList = scannedRecipients.map(r => `• ${r.email}`).join('\n');
+        const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
+
+        try {
+          await slack.postToThread(slackMessage.ts, scanMessage);
+          console.log('Posted email list to Slack thread');
+        } catch (threadErr) {
+          console.error('Failed to post email list to Slack thread:', threadErr);
+        }
+      }
 
       if (pdfBuffer) {
         console.log('Uploading PDF to Monday and Slack...');

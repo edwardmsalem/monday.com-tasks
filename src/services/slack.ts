@@ -1276,3 +1276,147 @@ export async function getQuietHoursStatus(threadTs: string): Promise<QuietHoursS
     return { wasDeferred: false, deferredUserId: null, wasReleased: false };
   }
 }
+
+// ============================================================================
+// Supporter Channel Notifications
+// ============================================================================
+
+/**
+ * Check if a user is a member of a specific Slack channel
+ * Wrapped in circuit breaker (TD-05)
+ */
+export async function isUserInChannel(userId: string, channelId: string): Promise<boolean> {
+  const client = getClient();
+
+  try {
+    // Use conversations.members to get channel members
+    // This may need pagination for large channels, but for most teams it's fine
+    const response = await slackCircuit.execute(() =>
+      client.conversations.members({
+        channel: channelId,
+        limit: 1000,  // Should cover most team channels
+      })
+    );
+
+    if (!response.ok || !response.members) {
+      console.warn(`Failed to get members for channel ${channelId}`);
+      return false;
+    }
+
+    return response.members.includes(userId);
+  } catch (error) {
+    console.error(`Error checking channel membership for ${userId} in ${channelId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Find which notification channel a supporter should receive notifications in
+ * Checks primary channel first, then secondaries in order
+ * Returns null if supporter is not in any configured channel
+ */
+export async function findSupporterNotificationChannel(supporterSlackId: string): Promise<string | null> {
+  const { supporterPrimaryChannel, supporterSecondaryChannels } = config.slack;
+
+  // Build ordered list of channels to check
+  const channelsToCheck: string[] = [];
+
+  if (supporterPrimaryChannel) {
+    channelsToCheck.push(supporterPrimaryChannel);
+  }
+
+  channelsToCheck.push(...supporterSecondaryChannels);
+
+  if (channelsToCheck.length === 0) {
+    console.log('No supporter notification channels configured');
+    return null;
+  }
+
+  console.log(`Checking ${channelsToCheck.length} channels for supporter ${supporterSlackId}...`);
+
+  // Check channels in order until we find one the supporter is in
+  for (const channelId of channelsToCheck) {
+    const isMember = await isUserInChannel(supporterSlackId, channelId);
+    if (isMember) {
+      console.log(`Supporter ${supporterSlackId} found in channel ${channelId}`);
+      return channelId;
+    }
+  }
+
+  console.log(`Supporter ${supporterSlackId} not found in any configured channel`);
+  return null;
+}
+
+/**
+ * Task details for supporter notification
+ */
+export interface SupporterNotificationDetails {
+  taskSubject: string;
+  taskType: string;
+  ownerName: string;
+  dueDate: string;           // Formatted for display (e.g., "Mon Dec 23")
+  priority: 'high' | 'medium' | 'low';
+  notes?: string;
+}
+
+/**
+ * Send a notification to a supporter's channel
+ * Includes full task details so supporter has context without leaving Slack
+ * Links to Monday for updates (thread replies sync to Monday automatically)
+ */
+export async function notifySupporterInChannel(
+  supporterSlackId: string,
+  supporterName: string,
+  details: SupporterNotificationDetails,
+  mainThreadTs: string,
+  mondayItemId: string
+): Promise<boolean> {
+  const channelId = await findSupporterNotificationChannel(supporterSlackId);
+
+  if (!channelId) {
+    console.log(`No notification channel found for supporter ${supporterName}`);
+    return false;
+  }
+
+  const client = getClient();
+  const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
+
+  // Priority emoji
+  const priorityEmoji = details.priority === 'high' ? '🔴' : details.priority === 'low' ? '🟢' : '🟡';
+
+  // Build the message with all relevant details
+  let message = `🤝 <@${supporterSlackId}> you've been added as a supporter on:\n\n`;
+  message += `*${details.taskSubject}*\n\n`;
+  message += `📋 *Type:* ${details.taskType}\n`;
+  message += `👤 *Owner:* ${details.ownerName}\n`;
+  message += `📅 *Due:* ${details.dueDate}\n`;
+  message += `${priorityEmoji} *Priority:* ${details.priority.charAt(0).toUpperCase() + details.priority.slice(1)}\n`;
+
+  if (details.notes) {
+    message += `📝 *Notes:* ${details.notes}\n`;
+  }
+
+  message += `\n<${mondayLink}|View Monday task> _(reply there to add updates)_`;
+
+  try {
+    const response = await slackCircuit.execute(() =>
+      client.chat.postMessage({
+        channel: channelId,
+        text: message,
+        unfurl_links: false,
+        unfurl_media: false,
+      })
+    );
+
+    if (response.ok) {
+      console.log(`Sent supporter notification to channel ${channelId} for ${supporterName}`);
+      return true;
+    } else {
+      console.error(`Failed to send supporter notification: ${response.error}`);
+      return false;
+    }
+  } catch (error) {
+    console.error(`Error sending supporter notification:`, error);
+    return false;
+  }
+}

@@ -373,6 +373,34 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   });
   log.log('Slack message sent:', slackMessage.ts);
 
+  // Step 5.5: Notify supporters in their respective channels
+  if (supportUsers.length > 0) {
+    log.log(`Notifying ${supportUsers.length} supporter(s) in their channels...`);
+    const supporterPriority = finalUrgency === 'High' ? 'high' : finalUrgency === 'Low' ? 'low' : 'medium';
+    for (const supporter of supportUsers) {
+      if (supporter.slackId) {
+        try {
+          await slack.notifySupporterInChannel(
+            supporter.slackId,
+            supporter.name,
+            {
+              taskSubject: taskName,
+              taskType: parsed.taskType,
+              ownerName: owner.name,
+              dueDate: formatDateForDisplay(formattedDueDate),
+              priority: supporterPriority,
+              notes: parsed.notes || undefined,
+            },
+            slackMessage.ts,
+            mondayItem.id
+          );
+        } catch (err) {
+          log.warn(`Failed to notify supporter ${supporter.name} in their channel`);
+        }
+      }
+    }
+  }
+
   // Post Run ID to Slack thread
   await postRunIdToSlack(slackMessage.ts, runId);
 
