@@ -25,6 +25,7 @@ interface SlackNotificationInput {
   taskType: string;
   subject: string;
   assigneeSlackId: string;      // Owner (will be pinged)
+  assigneeName: string;         // Owner's display name (for after-hours display)
   supportSlackIds?: string[];   // Support users (optional, will also be pinged)
   dueDate: string;
   priority: Priority;
@@ -210,7 +211,7 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   // During after-hours: show owner name without @ mention (quiet)
   // During working hours: full @ mention (pings OWNER only)
   const ownerDisplay = afterHours
-    ? `<@${input.assigneeSlackId}>`.replace('<@', '').replace('>', '')  // Just the ID, no ping
+    ? `_${input.assigneeName}_`  // Italicized name (no ping during after-hours)
     : `<@${input.assigneeSlackId}>`;  // Full mention, notifies owner
 
   // Support users display (if any) - NEVER ping support users, always show as plain text

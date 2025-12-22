@@ -116,6 +116,11 @@ export const config = {
       .filter(id => id.length > 0),  // Comma-separated Slack user IDs
     // Control channel for pinned config (Owners map, Sheets registry)
     controlChannelId: getEnvVar('SLACK_CONTROL_CHANNEL_ID', 'C0A4TMWDZJA'),
+    // Allowed channels for /seasontask command (QW-06: moved from hardcoded)
+    seasontaskAllowedChannels: getEnvVar('SLACK_SEASONTASK_ALLOWED_CHANNELS', 'C06BSL06WJK,C08QCFC4Y0H')
+      .split(',')
+      .map(id => id.trim())
+      .filter(id => id.length > 0),
   },
 
   // ConvertAPI

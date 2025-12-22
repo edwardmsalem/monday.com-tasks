@@ -277,6 +277,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     taskType,
     subject: taskName,  // Use normalized subject (no FWD:/RE:)
     assigneeSlackId: slackMention,
+    assigneeName: user.name,  // For after-hours display (QW-02)
     dueDate: formatDateForDisplay(formattedDueDate),
     priority: analysisResult.priority,
     notes: analysisResult.notes,
@@ -787,6 +788,7 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
     taskType: parsed.taskType,
     subject: taskName,
     assigneeSlackId: ownerMention,
+    assigneeName: owner.name,  // For after-hours display (QW-02)
     supportSlackIds: supportMentions,
     dueDate: formatDateForDisplay(formattedDueDate),
     priority: finalUrgency === 'High' ? 'high' : finalUrgency === 'Low' ? 'low' : 'medium',
@@ -997,6 +999,7 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
     taskType,
     subject: taskName,
     assigneeSlackId: user.slackId || user.name,
+    assigneeName: user.name,  // For after-hours display (QW-02)
     dueDate: formatDateForDisplay(formattedDueDate),
     priority: analysisResult.priority,
     notes: analysisResult.notes,

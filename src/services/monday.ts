@@ -4,6 +4,7 @@ import FormData from 'form-data';
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_FILE_URL = 'https://api.monday.com/v2/file';
+const API_TIMEOUT_MS = 30000; // 30 second timeout for API calls (QW-03)
 
 interface MondayGraphQLResponse<T> {
   data?: T;
@@ -12,33 +13,47 @@ interface MondayGraphQLResponse<T> {
 
 /**
  * Execute a GraphQL query against the Monday.com API
+ * Includes timeout to prevent hanging requests (QW-03)
  */
 async function executeQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': config.monday.apiToken,
-      'API-Version': '2024-01',
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
-  if (!response.ok) {
-    throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
+  try {
+    const response = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': config.monday.apiToken,
+        'API-Version': '2024-01',
+      },
+      body: JSON.stringify({ query, variables }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = (await response.json()) as MondayGraphQLResponse<T>;
+
+    if (result.errors && result.errors.length > 0) {
+      throw new Error(`Monday GraphQL error: ${result.errors.map(e => e.message).join(', ')}`);
+    }
+
+    if (!result.data) {
+      throw new Error('Monday API returned no data');
+    }
+
+    return result.data;
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Monday API timeout after ${API_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  const result = (await response.json()) as MondayGraphQLResponse<T>;
-
-  if (result.errors && result.errors.length > 0) {
-    throw new Error(`Monday GraphQL error: ${result.errors.map(e => e.message).join(', ')}`);
-  }
-
-  if (!result.data) {
-    throw new Error('Monday API returned no data');
-  }
-
-  return result.data;
 }
 
 interface CreateItemInput {

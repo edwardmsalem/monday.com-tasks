@@ -14,6 +14,7 @@
  * - Slack slash commands (/monday)
  */
 
+import crypto from 'crypto';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { config, validateConfig } from './config/environment.js';
@@ -40,8 +41,87 @@ const upload = multer({
   },
 });
 
-// Raw body parser for Slack signature verification
-app.use('/webhook/slack', express.raw({ type: 'application/json' }));
+// Raw body parser for Slack signature verification (JSON events)
+app.use('/webhook/slack/events', express.raw({ type: 'application/json' }));
+
+// Middleware for slash commands: capture raw body AND parse urlencoded
+// This allows signature verification while still having parsed req.body
+const slackUrlEncodedWithRawBody = (req: Request & { rawBody?: string }, res: Response, next: NextFunction) => {
+  if (!req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+    return next();
+  }
+
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', () => {
+    const rawBody = Buffer.concat(chunks).toString('utf8');
+    req.rawBody = rawBody;
+
+    // Parse urlencoded body manually
+    const parsed: Record<string, string> = {};
+    rawBody.split('&').forEach(pair => {
+      const [key, value] = pair.split('=');
+      if (key) {
+        parsed[decodeURIComponent(key)] = decodeURIComponent(value?.replace(/\+/g, ' ') || '');
+      }
+    });
+    req.body = parsed;
+    next();
+  });
+  req.on('error', (err) => next(err));
+};
+
+/**
+ * Verify Slack request signature (QW-07)
+ * Returns true if signature is valid, false otherwise
+ * @see https://api.slack.com/authentication/verifying-requests-from-slack
+ */
+function verifySlackSignature(req: Request & { rawBody?: string }): boolean {
+  const signingSecret = config.slack.signingSecret;
+  if (!signingSecret) {
+    console.warn('SLACK_SIGNING_SECRET not configured - skipping signature verification');
+    return true; // Skip verification if not configured (dev mode)
+  }
+
+  const timestamp = req.headers['x-slack-request-timestamp'] as string;
+  const slackSignature = req.headers['x-slack-signature'] as string;
+
+  if (!timestamp || !slackSignature) {
+    console.error('Missing Slack signature headers');
+    return false;
+  }
+
+  // Protect against replay attacks (request must be within 5 minutes)
+  const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 60 * 5;
+  if (parseInt(timestamp, 10) < fiveMinutesAgo) {
+    console.error('Slack request timestamp too old (possible replay attack)');
+    return false;
+  }
+
+  // Get raw body - either from Buffer (events) or captured string (slash commands)
+  const bodyString = req.rawBody ?? req.body?.toString() ?? '';
+
+  // Compute expected signature
+  const sigBasestring = `v0:${timestamp}:${bodyString}`;
+  const expectedSignature = 'v0=' + crypto
+    .createHmac('sha256', signingSecret)
+    .update(sigBasestring)
+    .digest('hex');
+
+  // Constant-time comparison to prevent timing attacks
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(slackSignature))) {
+      console.error('Invalid Slack signature');
+      return false;
+    }
+  } catch {
+    // timingSafeEqual throws if buffers are different lengths
+    console.error('Invalid Slack signature (length mismatch)');
+    return false;
+  }
+
+  return true;
+}
 
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
@@ -491,6 +571,7 @@ app.post(
         taskType: taskType,
         subject: taskName,
         assigneeSlackId: user.slackId || user.name,
+        assigneeName: user.name,  // For after-hours display (QW-02)
         dueDate: formatDateForDisplay(formattedDueDate),
         priority: analysisResult.priority,
         notes: analysisResult.notes,
@@ -575,8 +656,24 @@ interface SlackEvent {
  */
 app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<void> => {
   console.log('=== Slack event received ===');
+
+  // Verify Slack signature first (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
+  // Parse JSON with explicit error handling (QW-01)
+  let body: SlackEvent;
   try {
-    const body = JSON.parse(req.body.toString()) as SlackEvent;
+    body = JSON.parse(req.body.toString()) as SlackEvent;
+  } catch (parseError) {
+    console.error('Invalid Slack event JSON:', parseError);
+    res.status(400).send('Invalid JSON');
+    return;
+  }
+
+  try {
     console.log('Slack event type:', body.type, body.event?.type);
 
     // Handle URL verification challenge
@@ -656,8 +753,8 @@ app.post('/webhook/slack/events', async (req: Request, res: Response): Promise<v
 // Slack Slash Commands (AI-powered with follow-up questions)
 // ============================================================================
 
-// Allowed channels for /seasontask command (restrict to season tickets channels)
-const SEASONTASK_ALLOWED_CHANNELS = ['C06BSL06WJK', 'C08QCFC4Y0H'];
+// Allowed channels for /seasontask command (from config - QW-06)
+const SEASONTASK_ALLOWED_CHANNELS = config.slack.seasontaskAllowedChannels;
 
 /**
  * /seasontask slash command handler - Restricted to specific channels
@@ -669,7 +766,13 @@ const SEASONTASK_ALLOWED_CHANNELS = ['C06BSL06WJK', 'C08QCFC4Y0H'];
  *   /seasontask Review the Yankees tickets for John by Friday
  *   /seasontask urgent: follow up on Knicks renewal @sarah
  */
-app.post('/webhook/slack/seasontask', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+app.post('/webhook/slack/seasontask', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
   try {
     const { text, user_id, channel_id, command } = req.body as {
       text: string;
@@ -762,7 +865,13 @@ app.post('/webhook/slack/seasontask', express.urlencoded({ extended: true }), as
  *   /monday Review the contract for John by Friday
  *   /monday urgent: deploy hotfix @sarah
  */
-app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+app.post('/webhook/slack/command', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
   try {
     const { text, user_id, channel_id, command } = req.body as {
       text: string;
@@ -844,7 +953,13 @@ app.post('/webhook/slack/command', express.urlencoded({ extended: true }), async
  * Usage: /taskdebug <monday_item_id>
  * Example: /taskdebug 1234567890
  */
-app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+app.post('/webhook/slack/taskdebug', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
   try {
     const { text, user_id } = req.body as {
       text: string;
@@ -1030,7 +1145,13 @@ app.post('/webhook/slack/taskdebug', express.urlencoded({ extended: true }), asy
  * - Creates Slack thread
  * - Respects quiet-hours routing
  */
-app.post('/webhook/slack/task', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
   try {
     const { text, user_id, response_url } = req.body as {
       text: string;
@@ -1258,7 +1379,13 @@ async function createTaskFromEmail(
  *
  * Defaults: today only (Eastern Time), exact match
  */
-app.post('/webhook/slack/emailtask', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+app.post('/webhook/slack/emailtask', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
   try {
     const { text, user_id, response_url } = req.body as {
       text: string;
@@ -1512,7 +1639,13 @@ interface SlackInteraction {
 /**
  * Handle Slack interactive messages (button clicks)
  */
-app.post('/webhook/slack/interactive', express.urlencoded({ extended: true }), async (req: Request, res: Response): Promise<void> => {
+app.post('/webhook/slack/interactive', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
   try {
     const payload = JSON.parse(req.body.payload) as SlackInteraction;
 
