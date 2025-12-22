@@ -199,6 +199,7 @@ export async function uploadFileToItem(
       method: 'POST',
       headers: {
         Authorization: config.monday.apiToken,
+        'API-Version': '2024-01',
         ...form.getHeaders(),
       },
       body: form as unknown as BodyInit,

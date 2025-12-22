@@ -9,15 +9,14 @@
 
 /**
  * Check if a date string represents ASAP (no real date, just urgency)
+ * Note: 'today' and '+0' are NOT ASAP - they should return today's actual date
  */
 export function isAsapDate(dateStr: string): boolean {
   const trimmed = dateStr.trim().toLowerCase();
   return trimmed === 'asap' ||
          trimmed === 'immediately' ||
          trimmed === 'urgent' ||
-         trimmed === 'now' ||
-         trimmed === 'today' ||
-         trimmed === '+0';
+         trimmed === 'now';
 }
 
 /**
@@ -34,7 +33,13 @@ export function parseDate(dateStr: string): string | null {
     return null;
   }
 
-  // Handle relative dates: "+3" means 3 days from now
+  // Handle "today" - return today's date
+  if (trimmed.toLowerCase() === 'today') {
+    console.log(`"today" detected - setting due date to today`);
+    return formatDate(new Date());
+  }
+
+  // Handle relative dates: "+3" means 3 days from now, "+0" means today
   if (trimmed.startsWith('+')) {
     const days = parseInt(trimmed.slice(1), 10);
     if (!isNaN(days)) {
