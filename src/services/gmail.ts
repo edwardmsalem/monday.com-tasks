@@ -14,6 +14,47 @@ import { config } from '../config/environment.js';
 let gmailClient: ReturnType<typeof google.gmail> | null = null;
 let anthropicClient: Anthropic | null = null;
 
+// ============================================================================
+// Batch Processing Utilities
+// ============================================================================
+
+/**
+ * Execute async functions in batches with concurrency control
+ * Prevents Gmail rate limiting while maximizing throughput
+ *
+ * @param items - Array of items to process
+ * @param fn - Async function to apply to each item
+ * @param concurrency - Max concurrent requests (default: 5)
+ * @returns Array of results (or errors) in same order as input
+ */
+async function batchWithConcurrency<T, R>(
+  items: T[],
+  fn: (item: T) => Promise<R>,
+  concurrency: number = 5
+): Promise<Array<{ success: true; value: R } | { success: false; error: Error }>> {
+  const results: Array<{ success: true; value: R } | { success: false; error: Error }> = [];
+
+  // Process in chunks of `concurrency` size
+  for (let i = 0; i < items.length; i += concurrency) {
+    const chunk = items.slice(i, i + concurrency);
+
+    const chunkResults = await Promise.all(
+      chunk.map(async (item) => {
+        try {
+          const value = await fn(item);
+          return { success: true as const, value };
+        } catch (error) {
+          return { success: false as const, error: error instanceof Error ? error : new Error(String(error)) };
+        }
+      })
+    );
+
+    results.push(...chunkResults);
+  }
+
+  return results;
+}
+
 /**
  * Initialize Gmail API client with OAuth2 refresh token
  */
@@ -131,56 +172,119 @@ export async function findRelatedRecipients(subject: string): Promise<RecipientW
     // Map to track unique recipients (by email) with their appointment info
     const recipientMap = new Map<string, RecipientWithAppointment>();
 
-    for (const message of messages) {
-      if (!message.id) continue;
+    // Filter messages with valid IDs
+    const validMessages = messages.filter(m => m.id);
+    const startTime = Date.now();
 
-      // Get full message with body
-      const msgResponse = await gmail.users.messages.get({
-        userId: 'me',
-        id: message.id,
-        format: 'full',
-      });
+    // Batch fetch all messages with concurrency control (5 concurrent requests)
+    console.log(`[Gmail] Fetching ${validMessages.length} messages with concurrency=5...`);
+    const fetchResults = await batchWithConcurrency(
+      validMessages,
+      async (message) => {
+        const msgResponse = await gmail.users.messages.get({
+          userId: 'me',
+          id: message.id!,
+          format: 'full',
+        });
+        return msgResponse.data;
+      },
+      5 // concurrency limit to avoid Gmail rate limits
+    );
 
-      const headers = msgResponse.data.payload?.headers ?? [];
-      const toHeader = headers.find(h => h.name === 'To');
+    const fetchTime = Date.now() - startTime;
+    const successCount = fetchResults.filter(r => r.success).length;
+    const failCount = fetchResults.filter(r => !r.success).length;
+    console.log(`[Gmail] Fetched ${successCount} messages in ${fetchTime}ms (${failCount} failed)`);
+
+    // Log any failures
+    fetchResults.forEach((result, idx) => {
+      if (!result.success) {
+        console.error(`[Gmail] Failed to fetch message ${validMessages[idx].id}:`, result.error.message);
+      }
+    });
+
+    // Process successful fetches - extract recipients and prepare for appointment extraction
+    interface MessageWithBody {
+      toEmails: string[];
+      bodyText: string;
+    }
+    const messagesToProcess: MessageWithBody[] = [];
+
+    for (const result of fetchResults) {
+      if (!result.success) continue;
+
+      const msgData = result.value;
+      const headers = msgData.payload?.headers ?? [];
+      const toHeader = headers.find((h: any) => h.name === 'To');
 
       if (!toHeader?.value) continue;
 
-      // Get recipient email(s)
       const recipientEmails = extractEmailAddresses(toHeader.value);
+      const bodyText = shouldExtractAppointments ? extractEmailBody(msgData.payload) : '';
 
-      // Only extract appointment times if keywords detected in subject
-      let appointmentInfo = {
-        appointmentDate: null as string | null,
-        appointmentTime: null as string | null,
-        rawDateTime: null as string | null
-      };
+      messagesToProcess.push({ toEmails: recipientEmails, bodyText });
+    }
 
-      if (shouldExtractAppointments) {
-        // Get email body text
-        const bodyText = extractEmailBody(msgResponse.data.payload);
-        // Extract appointment time using Claude
-        appointmentInfo = await extractAppointmentTime(bodyText);
-      }
+    // If we need appointments, batch extract them with Claude (3 concurrent to avoid API limits)
+    if (shouldExtractAppointments && messagesToProcess.length > 0) {
+      const appointmentStartTime = Date.now();
+      console.log(`[Gmail] Extracting appointments from ${messagesToProcess.length} emails with concurrency=3...`);
 
-      // Add each recipient with their appointment info
-      for (const email of recipientEmails) {
-        const normalizedEmail = email.toLowerCase();
+      const appointmentResults = await batchWithConcurrency(
+        messagesToProcess,
+        async (msg) => extractAppointmentTime(msg.bodyText),
+        3 // lower concurrency for Claude API
+      );
 
-        // Skip the forwarding inbox itself
-        if (normalizedEmail === config.google.forwardingEmail?.toLowerCase()) continue;
+      const appointmentTime = Date.now() - appointmentStartTime;
+      const appointmentSuccess = appointmentResults.filter(r => r.success).length;
+      console.log(`[Gmail] Extracted ${appointmentSuccess} appointments in ${appointmentTime}ms`);
 
-        // Only add if we don't have this recipient yet, or if this one has appointment info
-        if (!recipientMap.has(normalizedEmail) || appointmentInfo.appointmentDate) {
-          recipientMap.set(normalizedEmail, {
-            email: normalizedEmail,
-            appointmentDate: appointmentInfo.appointmentDate,
-            appointmentTime: appointmentInfo.appointmentTime,
-            rawDateTime: appointmentInfo.rawDateTime,
-          });
+      // Combine recipients with their appointment info
+      messagesToProcess.forEach((msg, idx) => {
+        const appointmentResult = appointmentResults[idx];
+        const appointmentInfo = appointmentResult.success
+          ? appointmentResult.value
+          : { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+
+        for (const email of msg.toEmails) {
+          const normalizedEmail = email.toLowerCase();
+
+          // Skip the forwarding inbox itself
+          if (normalizedEmail === config.google.forwardingEmail?.toLowerCase()) continue;
+
+          // Only add if we don't have this recipient yet, or if this one has appointment info
+          if (!recipientMap.has(normalizedEmail) || appointmentInfo.appointmentDate) {
+            recipientMap.set(normalizedEmail, {
+              email: normalizedEmail,
+              appointmentDate: appointmentInfo.appointmentDate,
+              appointmentTime: appointmentInfo.appointmentTime,
+              rawDateTime: appointmentInfo.rawDateTime,
+            });
+          }
+        }
+      });
+    } else {
+      // No appointments needed - just add recipients
+      for (const msg of messagesToProcess) {
+        for (const email of msg.toEmails) {
+          const normalizedEmail = email.toLowerCase();
+          if (normalizedEmail === config.google.forwardingEmail?.toLowerCase()) continue;
+
+          if (!recipientMap.has(normalizedEmail)) {
+            recipientMap.set(normalizedEmail, {
+              email: normalizedEmail,
+              appointmentDate: null,
+              appointmentTime: null,
+              rawDateTime: null,
+            });
+          }
         }
       }
     }
+
+    const totalTime = Date.now() - startTime;
+    console.log(`[Gmail] Total findRelatedRecipients: ${totalTime}ms for ${validMessages.length} messages`);
 
     const results = Array.from(recipientMap.values());
 
@@ -416,22 +520,49 @@ export async function searchEmailsBySubject(
       return [];
     }
 
+    // Filter messages with valid IDs
+    const validMessages = messages.filter(m => m.id);
+    const startTime = Date.now();
+
+    // Batch fetch all messages with concurrency control (5 concurrent requests)
+    console.log(`[Gmail] Fetching ${validMessages.length} messages with concurrency=5...`);
+    const fetchResults = await batchWithConcurrency(
+      validMessages,
+      async (message) => {
+        const msgResponse = await gmail.users.messages.get({
+          userId: 'me',
+          id: message.id!,
+          format: 'full',
+        });
+        return { id: message.id!, data: msgResponse.data };
+      },
+      5 // concurrency limit to avoid Gmail rate limits
+    );
+
+    const fetchTime = Date.now() - startTime;
+    const successCount = fetchResults.filter(r => r.success).length;
+    const failCount = fetchResults.filter(r => !r.success).length;
+    console.log(`[Gmail] Fetched ${successCount} messages in ${fetchTime}ms (${failCount} failed)`);
+
+    // Log any failures
+    fetchResults.forEach((result, idx) => {
+      if (!result.success) {
+        console.error(`[Gmail] Failed to fetch message ${validMessages[idx].id}:`, result.error.message);
+      }
+    });
+
+    // Process successful fetches
     const results: GmailEmailResult[] = [];
 
-    for (const message of messages) {
-      if (!message.id) continue;
+    for (const result of fetchResults) {
+      if (!result.success) continue;
 
-      const msgResponse = await gmail.users.messages.get({
-        userId: 'me',
-        id: message.id,
-        format: 'full',
-      });
-
-      const headers = msgResponse.data.payload?.headers ?? [];
-      const subjectHeader = headers.find(h => h.name?.toLowerCase() === 'subject');
-      const fromHeader = headers.find(h => h.name?.toLowerCase() === 'from');
-      const toHeader = headers.find(h => h.name?.toLowerCase() === 'to');
-      const dateHeader = headers.find(h => h.name?.toLowerCase() === 'date');
+      const { id: messageId, data: msgData } = result.value;
+      const headers = msgData.payload?.headers ?? [];
+      const subjectHeader = headers.find((h: any) => h.name?.toLowerCase() === 'subject');
+      const fromHeader = headers.find((h: any) => h.name?.toLowerCase() === 'from');
+      const toHeader = headers.find((h: any) => h.name?.toLowerCase() === 'to');
+      const dateHeader = headers.find((h: any) => h.name?.toLowerCase() === 'date');
 
       const emailSubject = subjectHeader?.value || '';
       const normalizedEmailSubject = normalizeSubject(emailSubject);
@@ -440,8 +571,7 @@ export async function searchEmailsBySubject(
       if (matchMode === 'equals') {
         // Exact match (case-insensitive)
         if (normalizedEmailSubject.toLowerCase() !== normalizedSubject.toLowerCase()) {
-          console.log(`Skipping email - subject mismatch: "${normalizedEmailSubject}" != "${normalizedSubject}"`);
-          continue;
+          continue; // Skip non-matching (log removed to reduce noise in batch mode)
         }
       }
       // 'contains' mode - Gmail already filtered, but double-check
@@ -450,8 +580,8 @@ export async function searchEmailsBySubject(
       }
 
       // Extract body
-      const bodyText = extractEmailBody(msgResponse.data.payload);
-      const bodyHtml = extractEmailBodyHtml(msgResponse.data.payload);
+      const bodyText = extractEmailBody(msgData.payload);
+      const bodyHtml = extractEmailBodyHtml(msgData.payload);
 
       // Parse date
       let date = new Date();
@@ -463,7 +593,7 @@ export async function searchEmailsBySubject(
       }
 
       results.push({
-        messageId: message.id,
+        messageId,
         subject: emailSubject,
         from: fromHeader?.value || null,
         to: toHeader?.value || null,
@@ -476,7 +606,8 @@ export async function searchEmailsBySubject(
     // Sort by date, most recent first
     results.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-    console.log(`Found ${results.length} emails matching "${normalizedSubject}" (${matchMode})`);
+    const totalTime = Date.now() - startTime;
+    console.log(`[Gmail] Found ${results.length} emails matching "${normalizedSubject}" (${matchMode}) in ${totalTime}ms`);
     return results;
 
   } catch (error) {
