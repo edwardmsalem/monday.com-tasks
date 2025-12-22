@@ -29,3 +29,6 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+# Runtime data (scheduler state, etc.)
+data/

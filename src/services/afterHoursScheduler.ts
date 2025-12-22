@@ -7,6 +7,8 @@
  *
  * Uses simple interval-based checking (no external cron library needed).
  * Checks every minute and triggers jobs at the right times.
+ *
+ * State is persisted to disk to survive restarts (see schedulerState.ts).
  */
 
 import { config } from '../config/environment.js';
@@ -15,6 +17,14 @@ import {
   releaseAllDeferredNotifications,
   sendAllAckReminders,
 } from './slack.js';
+import {
+  loadState,
+  getLastReleaseDate,
+  setLastReleaseDate,
+  getLastReminderDate,
+  setLastReminderDate,
+  getFullState,
+} from './schedulerState.js';
 
 // ============================================================================
 // State
@@ -22,10 +32,6 @@ import {
 
 let isRunning = false;
 let checkInterval: NodeJS.Timeout | null = null;
-
-// Track last run dates to avoid duplicate runs
-let lastReleaseDate: string | null = null;
-let lastReminderDate: string | null = null;
 
 // ============================================================================
 // Time Utilities
@@ -119,20 +125,20 @@ async function checkAndRunJobs(): Promise<void> {
   if (
     timeInfo.hour === releaseHour &&
     timeInfo.minute < 5 &&
-    lastReleaseDate !== timeInfo.dateKey
+    getLastReleaseDate() !== timeInfo.dateKey
   ) {
-    lastReleaseDate = timeInfo.dateKey;
     await runReleaseJob();
+    setLastReleaseDate(timeInfo.dateKey);  // Persist after successful run
   }
 
   // Check for reminder job (run at ack deadline hour, minute 0-5)
   if (
     timeInfo.hour === ackDeadlineHour &&
     timeInfo.minute < 5 &&
-    lastReminderDate !== timeInfo.dateKey
+    getLastReminderDate() !== timeInfo.dateKey
   ) {
-    lastReminderDate = timeInfo.dateKey;
     await runReminderJob();
+    setLastReminderDate(timeInfo.dateKey);  // Persist after successful run
   }
 }
 
@@ -153,6 +159,10 @@ export function startScheduler(): void {
     console.log('[AfterHoursScheduler] Quiet hours disabled, scheduler not started');
     return;
   }
+
+  // Load persisted state on startup (prevents duplicate jobs after restart)
+  const state = loadState();
+  console.log(`[AfterHoursScheduler] Loaded persisted state: lastRelease=${state.lastReleaseDate}, lastReminder=${state.lastReminderDate}`);
 
   console.log('[AfterHoursScheduler] Starting scheduler...');
   console.log(`[AfterHoursScheduler] Release hour: ${config.slack.quietHours.releaseHour}:00 ET`);
@@ -199,12 +209,15 @@ export function getSchedulerStatus(): {
   isRunning: boolean;
   lastReleaseDate: string | null;
   lastReminderDate: string | null;
+  lastRunTimestamp: number;
   currentTime: ReturnType<typeof getCurrentTimeInfo>;
 } {
+  const state = getFullState();
   return {
     isRunning,
-    lastReleaseDate,
-    lastReminderDate,
+    lastReleaseDate: state.lastReleaseDate,
+    lastReminderDate: state.lastReminderDate,
+    lastRunTimestamp: state.lastRunTimestamp,
     currentTime: getCurrentTimeInfo(),
   };
 }
