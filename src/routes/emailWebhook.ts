@@ -485,6 +485,45 @@ router.post(
         );
       }
 
+      // Check for /scan command in body text
+      const { shouldScanForRecipients, findRelatedRecipients, formatRecipientSubtaskName } = await import('../services/gmail.js');
+      const { shouldCreateSheet, createRecipientSheet } = await import('../services/sheets.js');
+
+      let sheetUrl: string | null = null;
+      if (shouldScanForRecipients(bodyText)) {
+        console.log('/scan detected - searching for related recipients...');
+        try {
+          const recipients = await findRelatedRecipients(subject);
+          if (recipients.length > 0) {
+            console.log(`Found ${recipients.length} related recipients, creating subtasks...`);
+            const subtaskNames = recipients.map(r => formatRecipientSubtaskName(r));
+            await monday.createSubitems(mondayItem.id, subtaskNames);
+            console.log(`Created ${subtaskNames.length} subtasks`);
+
+            // Create Google Sheet if subject matches presale/relocation/selection
+            if (shouldCreateSheet(subject)) {
+              console.log('Creating Google Sheet for recipient tracking...');
+              try {
+                const sheetResult = await createRecipientSheet(subject, recipients);
+                sheetUrl = sheetResult.spreadsheetUrl;
+                console.log('Google Sheet created:', sheetUrl);
+                await monday.createUpdate(
+                  mondayItem.id,
+                  `📊 Recipient tracking sheet: ${sheetUrl}`
+                );
+              } catch (sheetError) {
+                console.error('Failed to create Google Sheet:', sheetError);
+              }
+            }
+          } else {
+            console.log('No related recipients found in the last 48 hours');
+          }
+        } catch (scanError) {
+          console.error('/scan failed:', scanError);
+          // Don't fail the whole workflow if scan fails
+        }
+      }
+
       console.log('Sending Slack notification...');
       const slackMessage = await slack.sendNotification({
         taskType: taskType,
