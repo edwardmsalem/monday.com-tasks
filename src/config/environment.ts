@@ -128,6 +128,8 @@ export const config = {
       .split(',')
       .map(id => id.trim())
       .filter(id => id.length > 0)),  // e.g., #QuickTix-team, #ticket-associates
+    // Issue Call channel - separate channel for issue call tasks (syncs to Monday)
+    issueCallChannelId: getEnvVarOptional('SLACK_ISSUE_CALL_CHANNEL_ID'),
   },
 
   // Slack Relay (for receiving events via relay proxy)
