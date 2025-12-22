@@ -457,6 +457,25 @@ router.post(
       }
       console.log('Resolved user:', user.name, 'Monday ID:', user.mondayId, 'Slack ID:', user.slackId);
 
+      // Resolve supporters (if any)
+      const supportUsers: Array<{ mondayId: string; slackId: string | null; name: string }> = [];
+      if (analysisResult.supporters && analysisResult.supporters.length > 0) {
+        console.log('Resolving supporters:', analysisResult.supporters);
+        for (const supporterName of analysisResult.supporters) {
+          const supporter = await findUserByName(supporterName);
+          if (supporter) {
+            supportUsers.push({
+              mondayId: String(supporter.mondayId),
+              slackId: supporter.slackId,
+              name: supporter.name,
+            });
+            console.log('Resolved supporter:', supporter.name, 'Monday ID:', supporter.mondayId);
+          } else {
+            console.warn(`Could not resolve supporter: ${supporterName}`);
+          }
+        }
+      }
+
       const taskName = normalizeSubject(subject);
       console.log('Task name:', taskName);
 
@@ -465,6 +484,7 @@ router.post(
         name: taskName,
         dueDate: formattedDueDate,
         ownerIds: [user.mondayId],
+        supportIds: supportUsers.map(u => u.mondayId),
         taskType: taskType,
         source: 'Forwarding Tasks',
         team: analysisResult.team ?? undefined,
@@ -545,11 +565,15 @@ router.post(
       }
 
       console.log('Sending Slack notification...');
+      const supportSlackIds = supportUsers
+        .filter(u => u.slackId)
+        .map(u => u.slackId as string);
       const slackMessage = await slack.sendNotification({
         taskType: taskType,
         subject: taskName,
         assigneeSlackId: user.slackId || user.name,
         assigneeName: user.name,
+        supportSlackIds: supportSlackIds,
         dueDate: formatDateForDisplay(formattedDueDate),
         priority: analysisResult.priority,
         notes: analysisResult.notes,
@@ -559,6 +583,33 @@ router.post(
         meeting: analysisResult.meeting,
       });
       console.log('Slack message sent:', slackMessage.ts);
+
+      // Notify supporters in their respective channels
+      if (supportUsers.length > 0) {
+        console.log(`Notifying ${supportUsers.length} supporter(s) in their channels...`);
+        for (const supporter of supportUsers) {
+          if (supporter.slackId) {
+            try {
+              await slack.notifySupporterInChannel(
+                supporter.slackId,
+                supporter.name,
+                {
+                  taskSubject: taskName,
+                  taskType: taskType,
+                  ownerName: user.name,
+                  dueDate: formatDateForDisplay(formattedDueDate),
+                  priority: analysisResult.priority,
+                  notes: analysisResult.notes || undefined,
+                },
+                slackMessage.ts,
+                mondayItem.id
+              );
+            } catch (err) {
+              console.warn(`Failed to notify supporter ${supporter.name} in their channel`);
+            }
+          }
+        }
+      }
 
       // Post scanned email list to Slack thread if we found recipients
       if (scannedRecipients.length > 0) {
