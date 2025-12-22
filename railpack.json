@@ -1,0 +1,12 @@
+{
+  "secrets": [],
+  "steps": {
+    "build": {
+      "commands": ["npm run build"],
+      "secrets": []
+    }
+  },
+  "deploy": {
+    "startCommand": "npm start"
+  }
+}
