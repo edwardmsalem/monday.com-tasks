@@ -494,20 +494,23 @@ router.post(
         );
       }
 
-      // Check for /scan command in body text
-      const { shouldScanForRecipients, findRelatedRecipients, formatRecipientSubtaskName } = await import('../services/gmail.js');
+      // Check for /scan or /scantimes command in body text
+      const { shouldScanForRecipients, shouldExtractAppointmentTimes, findRelatedRecipients, formatRecipientSubtaskName } = await import('../services/gmail.js');
       const { shouldCreateSheet, createRecipientSheet } = await import('../services/sheets.js');
 
       let sheetUrl: string | null = null;
       const scanDetected = shouldScanForRecipients(bodyText);
+      const scantimesDetected = shouldExtractAppointmentTimes(bodyText);
       console.log('=== /SCAN DETECTION ===');
       console.log('shouldScanForRecipients result:', scanDetected);
+      console.log('shouldExtractAppointmentTimes result:', scantimesDetected);
       console.log('bodyText for scan check:', JSON.stringify(bodyText));
 
-      if (scanDetected) {
-        console.log('/scan detected - searching for related recipients...');
+      if (scanDetected || scantimesDetected) {
+        const commandUsed = scantimesDetected ? '/scantimes' : '/scan';
+        console.log(`${commandUsed} detected - searching for related recipients (extractAppointments: ${scantimesDetected})...`);
         try {
-          const recipients = await findRelatedRecipients(subject);
+          const recipients = await findRelatedRecipients(subject, scantimesDetected);
           if (recipients.length > 0) {
             console.log(`Found ${recipients.length} related recipients, creating subtasks...`);
             const subtaskNames = recipients.map(r => formatRecipientSubtaskName(r));
@@ -537,7 +540,7 @@ router.post(
           // Don't fail the whole workflow if scan fails
         }
       } else {
-        console.log('/scan NOT detected in body text');
+        console.log('/scan and /scantimes NOT detected in body text');
       }
 
       console.log('Sending Slack notification...');
