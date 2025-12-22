@@ -29,7 +29,7 @@ async function executeQuery<T>(query: string, variables?: Record<string, unknown
         headers: {
           'Content-Type': 'application/json',
           'Authorization': config.monday.apiToken,
-          'API-Version': '2024-01',
+          'API-Version': '2024-10',
         },
         body: JSON.stringify({ query, variables }),
         signal: controller.signal,
@@ -163,34 +163,29 @@ export async function updateSlackThreadId(itemId: string, threadTs: string): Pro
  * Upload a file to an item's file column
  * Uses Monday's /v2/file endpoint with proper multipart format
  *
- * Key fixes:
+ * Key requirements (per Monday.com docs):
+ * - item_id and column_id must be inlined in the mutation
+ * - Only $file is passed as a variable
+ * - File data uses variables[file] format
  * - Uses form.getHeaders() to ensure correct Content-Type with boundary
- * - Consistent field naming: "file" instead of "image"
- * - Uses variables for itemId and columnId to avoid interpolation issues
  */
 export async function uploadFileToItem(
   itemId: string,
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  // Use variables for itemId and columnId to avoid GraphQL parsing issues
-  const query = `mutation AddFileToColumn($itemId: ID!, $columnId: String!, $file: File!) {
-    add_file_to_column(item_id: $itemId, column_id: $columnId, file: $file) {
+  // Monday.com file upload requires item_id and column_id inlined in mutation
+  // Only $file is passed as a variable (per Monday docs)
+  const query = `mutation ($file: File!) {
+    add_file_to_column(item_id: ${itemId}, column_id: "${config.monday.fileColumnId}", file: $file) {
       id
     }
   }`;
 
-  const variables = {
-    itemId,
-    columnId: config.monday.fileColumnId,
-  };
-
   const form = new FormData();
   form.append('query', query);
-  form.append('variables', JSON.stringify(variables));
-  // Map "file" field to variables.file (consistent naming)
-  form.append('map', JSON.stringify({ file: 'variables.file' }));
-  form.append('file', fileData, { filename, contentType: 'application/pdf' });
+  // Use variables[file] format as per Monday.com documentation
+  form.append('variables[file]', fileData, { filename, contentType: 'application/pdf' });
 
   // Merge FormData headers (includes correct Content-Type with boundary)
   // Wrapped in circuit breaker to prevent cascading failures (TD-05)
