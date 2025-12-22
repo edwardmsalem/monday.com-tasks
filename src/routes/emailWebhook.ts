@@ -384,6 +384,13 @@ router.post(
       const fromEmail = req.body.fromEmail || req.body.from || null;
       const toEmail = req.body.toEmail || req.body.to || null;
 
+      // Enhanced logging for debugging
+      console.log('=== FULL BODY TEXT START ===');
+      console.log(bodyText);
+      console.log('=== FULL BODY TEXT END ===');
+      console.log('Body text length:', bodyText.length);
+      console.log('Contains /scan?', bodyText.toLowerCase().includes('/scan'));
+
       let pdfBuffer: Buffer | null = null;
       let pdfFilename = 'email.pdf';
 
@@ -429,13 +436,15 @@ router.post(
         toEmail,
         null
       );
-      console.log('Claude analysis:', analysisResult);
+      console.log('Claude analysis:', JSON.stringify(analysisResult, null, 2));
+      console.log('Claude raw dueDate:', analysisResult.dueDate);
+      console.log('Today is:', new Date().toISOString().split('T')[0]);
 
       const taskType = getTaskTypeDisplayName(analysisResult.taskType);
       console.log('Task type:', taskType);
 
       const formattedDueDate = parseDate(analysisResult.dueDate);
-      console.log('Due date:', formattedDueDate);
+      console.log('Parsed due date:', formattedDueDate, '(from raw:', analysisResult.dueDate, ')');
 
       const user = await findUserByName(analysisResult.owner);
       if (!user) {
@@ -490,7 +499,12 @@ router.post(
       const { shouldCreateSheet, createRecipientSheet } = await import('../services/sheets.js');
 
       let sheetUrl: string | null = null;
-      if (shouldScanForRecipients(bodyText)) {
+      const scanDetected = shouldScanForRecipients(bodyText);
+      console.log('=== /SCAN DETECTION ===');
+      console.log('shouldScanForRecipients result:', scanDetected);
+      console.log('bodyText for scan check:', JSON.stringify(bodyText));
+
+      if (scanDetected) {
         console.log('/scan detected - searching for related recipients...');
         try {
           const recipients = await findRelatedRecipients(subject);
@@ -522,6 +536,8 @@ router.post(
           console.error('/scan failed:', scanError);
           // Don't fail the whole workflow if scan fails
         }
+      } else {
+        console.log('/scan NOT detected in body text');
       }
 
       console.log('Sending Slack notification...');
