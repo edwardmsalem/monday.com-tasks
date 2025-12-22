@@ -13,6 +13,7 @@ import express from 'express';
 import * as sync from '../services/sync.js';
 import * as slack from '../services/slack.js';
 import { verifySlackSignature, type SlackRequest } from './middleware.js';
+import { config } from '../config/environment.js';
 
 const router = Router();
 
@@ -46,6 +47,69 @@ interface SlackEvent {
 
 // Raw body parser for Slack signature verification
 router.use('/webhook/slack/events', express.raw({ type: 'application/json' }));
+
+// Track which threads we've already reminded (to avoid spamming)
+const remindedThreads = new Set<string>();
+
+/**
+ * Handle replies in supporter channels
+ * If the parent message is a supporter notification, remind user to post on Monday
+ */
+async function handleSupporterChannelReply(
+  channelId: string,
+  threadTs: string,
+  userId: string
+): Promise<void> {
+  // Only remind once per thread
+  const threadKey = `${channelId}:${threadTs}`;
+  if (remindedThreads.has(threadKey)) {
+    console.log('Already reminded this thread, skipping');
+    return;
+  }
+
+  const client = slack.getClient();
+
+  // Fetch the parent message to check if it's a supporter notification
+  const result = await client.conversations.replies({
+    channel: channelId,
+    ts: threadTs,
+    limit: 1,
+  });
+
+  if (!result.messages || result.messages.length === 0) {
+    console.log('Could not fetch parent message');
+    return;
+  }
+
+  const parentMessage = result.messages[0];
+  const parentText = parentMessage.text || '';
+
+  // Check for supporter notification marker
+  const markerMatch = parentText.match(/\[supporter-notification:(\d+)\]/);
+  if (!markerMatch) {
+    console.log('Parent message is not a supporter notification');
+    return;
+  }
+
+  const mondayItemId = markerMatch[1];
+  const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
+
+  // Send reminder
+  await client.chat.postMessage({
+    channel: channelId,
+    thread_ts: threadTs,
+    text: `👋 <@${userId}> Thanks for your input! Please add your update directly on <${mondayLink}|the Monday task> so it's visible to the whole team. This Slack channel isn't synced.`,
+  });
+
+  // Mark as reminded
+  remindedThreads.add(threadKey);
+  console.log(`Sent Monday reminder for thread ${threadTs}`);
+
+  // Clean up old entries after 24 hours to prevent memory leak
+  setTimeout(() => {
+    remindedThreads.delete(threadKey);
+  }, 24 * 60 * 60 * 1000);
+}
 
 // ============================================================================
 // Route Handler
@@ -92,19 +156,36 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
     if (body.type === 'event_callback' && body.event) {
       const event = body.event;
 
-      // Handle thread replies - sync to Monday
-      if (event.type === 'message' && event.thread_ts && event.text && event.user) {
+      // Handle thread replies - sync to Monday (main channel) or remind about Monday (supporter channels)
+      if (event.type === 'message' && event.thread_ts && event.text && event.user && event.channel) {
         // Ignore bot messages to prevent loops
-        if (!event.text.startsWith('[From Monday')) {
-          console.log('Slack thread reply detected:', {
-            thread_ts: event.thread_ts,
-            user: event.user,
-            text: event.text.substring(0, 50),
-          });
-          try {
-            await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
-          } catch (syncError) {
-            console.error('Failed to sync Slack to Monday:', syncError);
+        if (!event.text.startsWith('[From Monday') && !event.text.includes('[supporter-notification:')) {
+          // Check if this is in a supporter channel
+          const supporterChannels = [
+            config.slack.supporterPrimaryChannel,
+            ...config.slack.supporterSecondaryChannels,
+          ].filter(Boolean) as string[];
+
+          if (supporterChannels.includes(event.channel)) {
+            // This is a reply in a supporter channel - check if parent is a supporter notification
+            console.log('Reply in supporter channel detected, checking parent message...');
+            try {
+              await handleSupporterChannelReply(event.channel, event.thread_ts, event.user);
+            } catch (err) {
+              console.error('Failed to handle supporter channel reply:', err);
+            }
+          } else {
+            // Main channel - sync to Monday
+            console.log('Slack thread reply detected:', {
+              thread_ts: event.thread_ts,
+              user: event.user,
+              text: event.text.substring(0, 50),
+            });
+            try {
+              await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
+            } catch (syncError) {
+              console.error('Failed to sync Slack to Monday:', syncError);
+            }
           }
         }
       }
