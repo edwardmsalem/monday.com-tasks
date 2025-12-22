@@ -1,9 +1,9 @@
 # Railway configuration
-# Force Nixpacks builder instead of Railpack
 # See: https://docs.railway.app/reference/config-as-code
 
 [build]
-builder = "nixpacks"
+# No secrets needed at build time - TypeScript compilation only
+# All env vars are read at runtime, not build time
 
 [deploy]
 startCommand = "node dist/server.js"
