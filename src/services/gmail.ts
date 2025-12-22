@@ -116,6 +116,21 @@ const APPOINTMENT_KEYWORDS = [
   'your slot',
 ];
 
+// Domains to exclude from recipient scanning (automation/internal services)
+const EXCLUDED_RECIPIENT_DOMAINS = [
+  'make.com',
+  'salemseats.com',
+  'slack.com',
+];
+
+/**
+ * Check if an email address should be excluded from recipient list
+ */
+function shouldExcludeRecipient(email: string): boolean {
+  const lowerEmail = email.toLowerCase();
+  return EXCLUDED_RECIPIENT_DOMAINS.some(domain => lowerEmail.endsWith(`@${domain}`));
+}
+
 /**
  * Check if text contains appointment-related keywords
  */
@@ -257,8 +272,9 @@ export async function findRelatedRecipients(subject: string, extractAppointments
         for (const email of msg.toEmails) {
           const normalizedEmail = email.toLowerCase();
 
-          // Skip the forwarding inbox itself
+          // Skip the forwarding inbox itself and excluded domains
           if (normalizedEmail === config.google.forwardingEmail?.toLowerCase()) continue;
+          if (shouldExcludeRecipient(normalizedEmail)) continue;
 
           // Only add if we don't have this recipient yet, or if this one has appointment info
           if (!recipientMap.has(normalizedEmail) || appointmentInfo.appointmentDate) {
@@ -276,7 +292,9 @@ export async function findRelatedRecipients(subject: string, extractAppointments
       for (const msg of messagesToProcess) {
         for (const email of msg.toEmails) {
           const normalizedEmail = email.toLowerCase();
+          // Skip forwarding inbox and excluded domains
           if (normalizedEmail === config.google.forwardingEmail?.toLowerCase()) continue;
+          if (shouldExcludeRecipient(normalizedEmail)) continue;
 
           if (!recipientMap.has(normalizedEmail)) {
             recipientMap.set(normalizedEmail, {
