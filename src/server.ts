@@ -46,7 +46,17 @@ import {
   type SlackRequest,
 } from './routes/index.js';
 
+// Import middleware
+import { requestLogger } from './middleware/index.js';
+
 const app = express();
+
+// ============================================================================
+// Global Middleware
+// ============================================================================
+
+// Request logging - must be first to capture all requests
+app.use(requestLogger);
 
 // ============================================================================
 // Mount Route Modules
