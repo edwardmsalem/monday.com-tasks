@@ -1,4 +1,5 @@
 import { config } from '../config/environment.js';
+import { MONDAY_API_TIMEOUT_MS, RETRY_DELAYS_MS, MAX_RETRY_ATTEMPTS } from '../config/constants.js';
 import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
 import FormData from 'form-data';
 import { mondayCircuit } from './circuitBreaker.js';
@@ -6,7 +7,6 @@ import { addJob, registerProcessor } from './jobQueue.js';
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_FILE_URL = 'https://api.monday.com/v2/file';
-const API_TIMEOUT_MS = 30000; // 30 second timeout for API calls (QW-03)
 
 interface MondayGraphQLResponse<T> {
   data?: T;
@@ -21,7 +21,7 @@ interface MondayGraphQLResponse<T> {
 async function executeQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   return mondayCircuit.execute(async () => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), MONDAY_API_TIMEOUT_MS);
 
     try {
       const response = await fetch(MONDAY_API_URL, {
@@ -52,7 +52,7 @@ async function executeQuery<T>(query: string, variables?: Record<string, unknown
       return result.data;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Monday API timeout after ${API_TIMEOUT_MS}ms`);
+        throw new Error(`Monday API timeout after ${MONDAY_API_TIMEOUT_MS}ms`);
       }
       throw error;
     } finally {
@@ -640,16 +640,7 @@ export async function storePdfUrl(itemId: string, pdfUrl: string): Promise<void>
   }
 }
 
-/**
- * Retry configuration for Monday file uploads
- * Uses job queue for durable, persistent retries (survives server restarts)
- */
-const RETRY_DELAYS_MS = [
-  60 * 1000,        // 1 minute
-  5 * 60 * 1000,    // 5 minutes
-  15 * 60 * 1000,   // 15 minutes
-  60 * 60 * 1000,   // 1 hour
-];
+// Retry configuration imported from constants.ts
 
 /**
  * Job payload for Monday file upload retries
@@ -737,8 +728,8 @@ export async function uploadFileToItemWithRetry(
       slackThreadTs,
     } as unknown as Record<string, unknown>,
     {
-      maxAttempts: 4,
-      retryDelays: RETRY_DELAYS_MS,
+      maxAttempts: MAX_RETRY_ATTEMPTS,
+      retryDelays: [...RETRY_DELAYS_MS],
     }
   );
 

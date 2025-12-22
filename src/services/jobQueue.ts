@@ -12,6 +12,11 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
+import {
+  RETRY_DELAYS_MS,
+  MAX_RETRY_ATTEMPTS,
+  JOB_QUEUE_PROCESS_INTERVAL_MS,
+} from '../config/constants.js';
 
 // ============================================================================
 // Types
@@ -54,17 +59,11 @@ export type JobProcessor = (payload: Record<string, unknown>) => Promise<void>;
 
 const DATA_DIR = './data';
 const QUEUE_FILE = `${DATA_DIR}/job-queue.json`;
-const PROCESS_INTERVAL_MS = 60 * 1000;  // 60 seconds
 
-// Default retry delays: 1 min, 5 min, 15 min, 1 hour
-const DEFAULT_RETRY_DELAYS = [
-  60 * 1000,        // 1 minute
-  5 * 60 * 1000,    // 5 minutes
-  15 * 60 * 1000,   // 15 minutes
-  60 * 60 * 1000,   // 1 hour
-];
-
-const DEFAULT_MAX_ATTEMPTS = 4;
+// Use centralized constants for retry configuration
+const DEFAULT_RETRY_DELAYS = [...RETRY_DELAYS_MS];
+const DEFAULT_MAX_ATTEMPTS = MAX_RETRY_ATTEMPTS;
+const PROCESS_INTERVAL_MS = JOB_QUEUE_PROCESS_INTERVAL_MS;
 
 // ============================================================================
 // State

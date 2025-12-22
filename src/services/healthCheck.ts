@@ -6,6 +6,7 @@
  */
 
 import { config } from '../config/environment.js';
+import { HEALTH_CHECK_CACHE_TTL_MS, HEALTH_CHECK_TIMEOUT_MS } from '../config/constants.js';
 import { getAllCircuitStats } from './circuitBreaker.js';
 import { getQueueStats } from './jobQueue.js';
 
@@ -44,7 +45,6 @@ export interface HealthCheckResult {
 const startTime = Date.now();
 let cachedResult: HealthCheckResult | null = null;
 let cacheTimestamp: number = 0;
-const CACHE_TTL_MS = 30 * 1000; // 30 seconds
 
 // ============================================================================
 // Individual Service Checks
@@ -58,7 +58,7 @@ async function checkMondayHealth(): Promise<ServiceHealth> {
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
 
     const response = await fetch('https://api.monday.com/v2', {
       method: 'POST',
@@ -105,7 +105,7 @@ async function checkSlackHealth(): Promise<ServiceHealth> {
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
 
     const response = await fetch('https://slack.com/api/auth.test', {
       method: 'POST',
@@ -180,7 +180,7 @@ async function checkGmailHealth(): Promise<ServiceHealth> {
 
     // Test Gmail API with labels.list
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
 
     const response = await fetch(
       'https://gmail.googleapis.com/gmail/v1/users/me/labels?maxResults=1',
@@ -230,7 +230,7 @@ async function checkConvertApiHealth(): Promise<ServiceHealth> {
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
 
     // ConvertAPI user endpoint to check API key validity
     const response = await fetch(
@@ -276,7 +276,7 @@ async function checkConvertApiHealth(): Promise<ServiceHealth> {
  */
 export async function checkHealth(forceRefresh: boolean = false): Promise<HealthCheckResult> {
   // Return cached result if valid and not forcing refresh
-  if (!forceRefresh && cachedResult && Date.now() - cacheTimestamp < CACHE_TTL_MS) {
+  if (!forceRefresh && cachedResult && Date.now() - cacheTimestamp < HEALTH_CHECK_CACHE_TTL_MS) {
     return cachedResult;
   }
 

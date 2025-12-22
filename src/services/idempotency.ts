@@ -9,6 +9,10 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
+import {
+  IDEMPOTENCY_KEY_TTL_MS,
+  IDEMPOTENCY_CLEANUP_INTERVAL_MS,
+} from '../config/constants.js';
 
 // ============================================================================
 // Types
@@ -37,8 +41,10 @@ export interface IdempotencyCheckResult {
 
 const DATA_DIR = './data';
 const IDEMPOTENCY_FILE = `${DATA_DIR}/idempotency-keys.json`;
-const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
-const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+
+// Use centralized constants
+const DEFAULT_TTL_MS = IDEMPOTENCY_KEY_TTL_MS;
+const CLEANUP_INTERVAL_MS = IDEMPOTENCY_CLEANUP_INTERVAL_MS;
 
 // ============================================================================
 // State

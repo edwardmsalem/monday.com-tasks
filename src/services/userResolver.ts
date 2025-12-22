@@ -9,6 +9,7 @@
 
 import * as monday from './monday.js';
 import * as slack from './slack.js';
+import { USER_CACHE_TTL_MS } from '../config/constants.js';
 import type { MondayUser } from '../types/index.js';
 import type { SlackUser } from './slack.js';
 
@@ -23,7 +24,6 @@ export interface UnifiedUser {
 // Cache for users - refreshed periodically
 let userCache: UnifiedUser[] = [];
 let lastCacheUpdate = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Load and merge users from Monday.com and Slack
@@ -77,7 +77,7 @@ async function loadUsers(): Promise<UnifiedUser[]> {
 export async function getAllUsers(): Promise<UnifiedUser[]> {
   const now = Date.now();
 
-  if (userCache.length === 0 || now - lastCacheUpdate > CACHE_TTL) {
+  if (userCache.length === 0 || now - lastCacheUpdate > USER_CACHE_TTL_MS) {
     userCache = await loadUsers();
     lastCacheUpdate = now;
   }

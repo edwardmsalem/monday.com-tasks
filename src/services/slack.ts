@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { WebClient, type ChatPostMessageResponse } from '@slack/web-api';
 import { config } from '../config/environment.js';
+import { SLACK_RELEASE_DELAY_MS } from '../config/constants.js';
 import type { SlackMessage } from '../types/index.js';
 import * as monday from './monday.js';
 import { slackCircuit } from './circuitBreaker.js';
@@ -808,7 +809,7 @@ export function verifySlackSignature(
 // Hardening constants
 const DEFERRED_LOOKBACK_HOURS = 48;  // Max 48 hours lookback for deferred notifications
 const RELEASE_BATCH_SIZE = 5;        // Release in batches of 5
-const RELEASE_DELAY_MS = 1000;       // 1 second delay between releases (avoid rate limits)
+// RELEASE_DELAY_MS imported from constants.ts
 
 // Marker patterns for thread tracking
 const DEFERRED_MARKER_PATTERN = /\[after-hours:deferred:([^\]]+)\]/;
@@ -1162,7 +1163,7 @@ export async function releaseAllDeferredNotifications(): Promise<number> {
 
     // Rate limiting: delay between releases
     if (batchCount < deferred.length) {
-      await sleep(RELEASE_DELAY_MS);
+      await sleep(SLACK_RELEASE_DELAY_MS);
     }
 
     // Log progress for batches
@@ -1210,7 +1211,7 @@ export async function sendAllAckReminders(): Promise<number> {
 
     // Rate limiting: delay between reminders
     if (batchCount < unacked.length) {
-      await sleep(RELEASE_DELAY_MS);
+      await sleep(SLACK_RELEASE_DELAY_MS);
     }
   }
 
