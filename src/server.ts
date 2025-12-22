@@ -30,6 +30,7 @@ import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
 import { startFollowUpScheduler } from './services/autoFollowUp.js';
 import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
+import { initializeJobQueue } from './services/jobQueue.js';
 
 const app = express();
 
@@ -1876,6 +1877,11 @@ function start() {
 
   // Initialize pending state persistence (loads from disk, starts cleanup interval)
   initializePendingState();
+
+  // Initialize job queue and register processors
+  initializeJobQueue();
+  monday.registerMondayJobProcessors();
+  console.log('Job queue initialized with processors');
 
   app.listen(config.port, () => {
     console.log(`Server listening on port ${config.port}`);
