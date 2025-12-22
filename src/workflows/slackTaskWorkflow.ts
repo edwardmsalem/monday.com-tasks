@@ -2,7 +2,7 @@
  * Slack Task Workflow
  *
  * Handles /task command workflow:
- * - Parse command text (single-line or multiline)
+ * - AI-powered natural language parsing (same as email workflow)
  * - Resolve owner and support users
  * - Create Monday.com item
  * - Send Slack notification
@@ -15,7 +15,8 @@ import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
-import { createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult } from './shared.js';
+import { createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult, mapPriorityToUrgency } from './shared.js';
+import { analyzeSlackTaskSafe, type SlackTaskAnalysisResult } from '../services/claude.js';
 
 // ============================================================================
 // Types
@@ -437,6 +438,234 @@ export async function executeSlackTaskWorkflowSafe(input: SlackTaskWorkflowInput
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.error('Slack task workflow failed:', errorMessage);
+    return createFailedResult(errorMessage, runId);
+  }
+}
+
+// ============================================================================
+// AI-Powered Workflow (Same as Email Workflow)
+// ============================================================================
+
+export interface AISlackTaskInput {
+  /** Raw text from /task command */
+  text: string;
+  /** Slack user ID of the creator */
+  creatorSlackId: string;
+}
+
+/**
+ * Execute AI-powered Slack task workflow
+ * Works exactly like the email workflow - natural language in, structured task out
+ */
+export async function executeAISlackTaskWorkflow(input: AISlackTaskInput): Promise<WorkflowResult> {
+  const { text, creatorSlackId } = input;
+
+  // Generate unique Run ID for this workflow run
+  const runId = randomUUID();
+  const log = createLogger(runId);
+
+  log.log('Starting AI-powered Slack task workflow:', text);
+
+  // Step 1: Use Claude AI to analyze the task text (just like email workflow)
+  log.log('Analyzing task with Claude AI...');
+  const analysis = await analyzeSlackTaskSafe(text, creatorSlackId);
+  log.log('Claude analysis:', analysis);
+  log.log(`Confidence: ${(analysis.confidence * 100).toFixed(0)}%`);
+
+  // Step 2: Resolve task type
+  const taskType = getTaskTypeDisplayName(analysis.taskType);
+  log.log('Task type:', taskType);
+
+  // Step 3: Parse due date (may be null for ASAP)
+  const formattedDueDate = parseDate(analysis.dueDate);
+  const urgency = mapPriorityToUrgency(analysis.priority);
+  log.log('Due date:', formattedDueDate ?? 'ASAP (no date)');
+  log.log('Urgency:', urgency);
+
+  // If ASAP detected and priority wasn't already high, set to high
+  const finalUrgency = formattedDueDate === null ? 'High' : urgency;
+
+  // Step 4: Resolve owner
+  const { findUserByName, findUserBySlackId, getUserNamesString } = await import('../services/userResolver.js');
+
+  let owner;
+
+  // Check if owner was specified
+  if (analysis.owner) {
+    // Check for slack_mention:U12345 format (from @mention)
+    const slackMentionMatch = analysis.owner.match(/^slack_mention:([A-Z0-9]+)$/i);
+    if (slackMentionMatch) {
+      owner = await findUserBySlackId(slackMentionMatch[1]);
+    } else {
+      // Try to find by name
+      owner = await findUserByName(analysis.owner);
+    }
+  }
+
+  // If no owner found, default to creator
+  if (!owner) {
+    owner = await findUserBySlackId(creatorSlackId);
+    if (analysis.owner) {
+      log.warn(`Could not find owner "${analysis.owner}", defaulting to creator`);
+    } else {
+      log.log('No owner specified, defaulting to creator');
+    }
+  }
+
+  if (!owner) {
+    const availableUsers = await getUserNamesString();
+    throw new Error(`Could not resolve owner. Available users: ${availableUsers}`);
+  }
+  log.log('Resolved owner:', owner.name, 'Monday ID:', owner.mondayId);
+
+  // Step 5: Resolve support users (if any)
+  const supportUsers: Array<{ mondayId: string; slackId: string; name: string }> = [];
+  for (const supporterName of analysis.supporters) {
+    // Check for slack_mention format
+    const slackMentionMatch = supporterName.match(/^slack_mention:([A-Z0-9]+)$/i);
+    let supportUser;
+    if (slackMentionMatch) {
+      supportUser = await findUserBySlackId(slackMentionMatch[1]);
+    } else {
+      supportUser = await findUserByName(supporterName);
+    }
+
+    if (supportUser) {
+      supportUsers.push({
+        mondayId: String(supportUser.mondayId),
+        slackId: supportUser.slackId || '',
+        name: supportUser.name,
+      });
+      log.log('Resolved support user:', supportUser.name);
+    } else {
+      log.warn(`Could not resolve support user "${supporterName}"`);
+    }
+  }
+
+  // Step 6: Create Monday.com item
+  const taskName = analysis.description || 'Slack Task';
+  log.log('Creating Monday.com item...');
+  const mondayItem = await monday.createItem({
+    name: taskName,
+    dueDate: formattedDueDate,
+    ownerIds: [owner.mondayId],
+    supportIds: supportUsers.map(u => u.mondayId),
+    taskType,
+    source: 'Slack Tasks',
+    urgency: finalUrgency,
+    team: analysis.team ?? undefined,
+  });
+  log.log('Monday item created:', mondayItem.id);
+
+  // Store Run ID on Monday item
+  await monday.storeRunId(mondayItem.id, runId);
+
+  // Set initial attachment state to Skipped (no attachments for Slack tasks)
+  await monday.updateAttachmentState(mondayItem.id, 'Skipped');
+
+  // Step 7: Create initial Monday Update
+  const initialUpdateParts: string[] = [];
+
+  // Notes (if present)
+  if (analysis.notes) {
+    initialUpdateParts.push(`📝 ${analysis.notes}`);
+  }
+
+  // Creator provenance
+  initialUpdateParts.push(`✍️ Created via Slack by <@${creatorSlackId}>`);
+
+  // Run ID (always)
+  initialUpdateParts.push(`🔗 Run ID: ${runId.substring(0, 8)}`);
+
+  log.log('Creating initial Monday update...');
+  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
+
+  // Step 8: Apply intent-driven mode behavior
+  await applyIntentModeWithLogging(mondayItem.id, taskType, taskName, log);
+
+  // Step 9: Send Slack notification (respects quiet-hours)
+  const ownerMention = owner.slackId || owner.name;
+  const supportMentions = supportUsers.map(u => u.slackId || u.name);
+
+  log.log('Sending Slack notification...');
+  const slackMessage = await slack.sendNotification({
+    taskType,
+    subject: taskName,
+    assigneeSlackId: ownerMention,
+    assigneeName: owner.name,
+    supportSlackIds: supportMentions,
+    dueDate: formatDateForDisplay(formattedDueDate),
+    priority: analysis.priority,
+    notes: analysis.notes ?? '',
+    fromEmail: null,
+    toEmail: null,
+    mondayItemId: mondayItem.id,
+  });
+  log.log('Slack message sent:', slackMessage.ts);
+
+  // Step 10: Notify supporters in their respective channels
+  if (supportUsers.length > 0) {
+    log.log(`Notifying ${supportUsers.length} supporter(s) in their channels...`);
+    for (const supporter of supportUsers) {
+      if (supporter.slackId) {
+        try {
+          await slack.notifySupporterInChannel(
+            supporter.slackId,
+            supporter.name,
+            {
+              taskSubject: taskName,
+              taskType,
+              ownerName: owner.name,
+              dueDate: formatDateForDisplay(formattedDueDate),
+              priority: analysis.priority,
+              notes: analysis.notes || undefined,
+            },
+            slackMessage.ts,
+            mondayItem.id
+          );
+        } catch (err) {
+          log.warn(`Failed to notify supporter ${supporter.name} in their channel`);
+        }
+      }
+    }
+  }
+
+  // Post Run ID to Slack thread
+  await postRunIdToSlack(slackMessage.ts, runId);
+
+  // Step 11: Update Monday with Slack thread ID
+  log.log('Updating Monday with Slack thread ID...');
+  await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
+
+  log.log('AI Slack task workflow completed successfully!');
+
+  return {
+    mondayItemId: mondayItem.id,
+    slackThreadTs: slackMessage.ts,
+    success: true,
+    runId,
+    attachmentStatus: {
+      slackUploaded: false,
+      mondayUploaded: false,
+      mondayRetryScheduled: false,
+      pdfUrl: undefined,
+      state: 'Skipped',
+    },
+  };
+}
+
+/**
+ * Execute AI Slack task workflow with error handling
+ */
+export async function executeAISlackTaskWorkflowSafe(input: AISlackTaskInput): Promise<WorkflowResult> {
+  const runId = randomUUID();
+  const log = createLogger(runId);
+
+  try {
+    return await executeAISlackTaskWorkflow(input);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log.error('AI Slack task workflow failed:', errorMessage);
     return createFailedResult(errorMessage, runId);
   }
 }
