@@ -15,6 +15,7 @@
  */
 
 import express, { type Request, type Response, type NextFunction } from 'express';
+import { randomUUID } from 'crypto';
 import { config, validateConfig } from './config/environment.js';
 import {
   parseSlackTaskInput,
@@ -24,6 +25,7 @@ import {
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
+import { findUserByName, findUserBySlackId } from './services/userResolver.js';
 import { startFollowUpScheduler } from './services/autoFollowUp.js';
 import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
 import { initializeJobQueue } from './services/jobQueue.js';
@@ -630,6 +632,168 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 });
 
 // ============================================================================
+// Slack /issuecall Command - Issue Call Task Creation
+// ============================================================================
+
+/**
+ * /issuecall slash command handler
+ * Creates an "Issue Call" task with Dayna as owner
+ * Posts to a dedicated issue call channel (not main channel)
+ *
+ * Usage: /issuecall @supporter [optional description]
+ * Example: /issuecall @jamie Customer complaint about order #123
+ */
+app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
+  try {
+    const { text, user_id, response_url } = req.body as {
+      text: string;
+      user_id: string;
+      response_url: string;
+    };
+
+    console.log(`/issuecall command received from ${user_id}: ${text}`);
+
+    // Check if issue call channel is configured
+    const issueCallChannelId = config.slack.issueCallChannelId;
+    if (!issueCallChannelId) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: Issue Call channel not configured. Please set SLACK_ISSUE_CALL_CHANNEL_ID.`,
+      });
+      return;
+    }
+
+    // Handle help or empty input
+    const trimmedText = text.trim();
+    if (!trimmedText || trimmedText.toLowerCase() === 'help') {
+      res.json({
+        response_type: 'ephemeral',
+        text: `*Issue Call Task Creation*\n\n` +
+          `Create an issue call task assigned to Dayna with a supporter.\n\n` +
+          `*Usage:* \`/issuecall @supporter [description]\`\n\n` +
+          `*Examples:*\n` +
+          `• \`/issuecall @jamie\`\n` +
+          `• \`/issuecall @jamie Customer complaint about order #123\`\n\n` +
+          `_The task will be posted to the issue call channel._`,
+      });
+      return;
+    }
+
+    // Parse supporter mention from text
+    const mentionMatch = trimmedText.match(/<@([A-Z0-9]+)>/);
+    if (!mentionMatch) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: Please mention a supporter.\n\nUsage: \`/issuecall @supporter [description]\``,
+      });
+      return;
+    }
+
+    const supporterSlackId = mentionMatch[1];
+    const description = trimmedText.replace(/<@[A-Z0-9]+>/, '').trim();
+
+    // Look up Dayna (fixed owner)
+    const dayna = await findUserByName('Dayna');
+    if (!dayna) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: Could not find Dayna in the user directory. Please contact an admin.`,
+      });
+      return;
+    }
+
+    // Look up supporter
+    const supporter = await findUserBySlackId(supporterSlackId);
+    if (!supporter) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: Could not find the mentioned user in the system.`,
+      });
+      return;
+    }
+
+    // Acknowledge immediately
+    res.json({
+      response_type: 'ephemeral',
+      text: `⏳ Creating issue call task with ${supporter.name}...`,
+    });
+
+    // Generate run ID for tracking
+    const runId = randomUUID();
+
+    // Create Monday item
+    const taskName = description ? `Issue Call: ${description}` : 'Issue Call';
+    const mondayItem = await monday.createItem({
+      name: taskName,
+      dueDate: null, // No due date for issue calls
+      ownerIds: [dayna.mondayId],
+      supportIds: [String(supporter.mondayId)],
+      taskType: 'Issue Call',
+      source: 'Slack Tasks',
+      urgency: 'High',
+    });
+
+    console.log(`Created Monday item ${mondayItem.id} for issue call`);
+
+    // Store run ID
+    await monday.storeRunId(mondayItem.id, runId);
+
+    // Create initial update with context
+    const creator = await findUserBySlackId(user_id);
+    const creatorName = creator?.name ?? 'Unknown';
+    await monday.createUpdate(
+      mondayItem.id,
+      `<p><strong>Issue Call Task</strong></p>` +
+      `<p>Created by: ${creatorName}</p>` +
+      `<p>Supporter: ${supporter.name}</p>` +
+      (description ? `<p>Details: ${description}</p>` : '')
+    );
+
+    // Post to issue call channel (NOT main channel)
+    const mondayUrl = monday.getItemUrl(mondayItem.id);
+    const slackMessage = await slack.getClient().chat.postMessage({
+      channel: issueCallChannelId,
+      text: `📞 *Issue Call*\n\n` +
+        `*Owner:* <@${dayna.slackId}>\n` +
+        `*Supporter:* <@${supporterSlackId}>\n` +
+        (description ? `*Details:* ${description}\n` : '') +
+        `\n<${mondayUrl}|View on Monday.com>`,
+    });
+
+    if (!slackMessage.ts) {
+      throw new Error('Failed to post to issue call channel');
+    }
+
+    // Store Slack thread ID on Monday item for syncing
+    await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
+
+    console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
+
+    // Send confirmation via response_url
+    const slackThreadUrl = `https://slack.com/app_redirect?channel=${issueCallChannelId}&message_ts=${slackMessage.ts}`;
+    await slack.sendResponseUrl(response_url,
+      `✅ *Issue Call Created*\n\n` +
+      `• *Supporter:* ${supporter.name}\n` +
+      `• *Monday:* <${mondayUrl}|View Item>\n` +
+      `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
+      `• *Run ID:* \`${runId.substring(0, 8)}\``
+    );
+  } catch (error) {
+    console.error('/issuecall command error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: `:x: Error creating issue call: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    });
+  }
+});
+
+// ============================================================================
 // Slack /emailtask Command - Gmail Search → Task Creation
 // ============================================================================
 
@@ -1099,6 +1263,7 @@ function start() {
     console.log(`  Slack /task:     http://localhost:${config.port}/webhook/slack/task`);
     console.log(`  Slack /emailtask: http://localhost:${config.port}/webhook/slack/emailtask`);
     console.log(`  Slack /taskdebug: http://localhost:${config.port}/webhook/slack/taskdebug`);
+    console.log(`  Slack /issuecall: http://localhost:${config.port}/webhook/slack/issuecall`);
     console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log(`  Relay events:    http://localhost:${config.port}/relay/events`);
