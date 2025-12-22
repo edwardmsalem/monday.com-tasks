@@ -1,6 +1,9 @@
 import { config } from '../config/environment.js';
+import { MONDAY_API_TIMEOUT_MS, RETRY_DELAYS_MS, MAX_RETRY_ATTEMPTS } from '../config/constants.js';
 import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
 import FormData from 'form-data';
+import { mondayCircuit } from './circuitBreaker.js';
+import { addJob, registerProcessor } from './jobQueue.js';
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_FILE_URL = 'https://api.monday.com/v2/file';
@@ -12,33 +15,50 @@ interface MondayGraphQLResponse<T> {
 
 /**
  * Execute a GraphQL query against the Monday.com API
+ * Includes timeout to prevent hanging requests (QW-03)
+ * Wrapped in circuit breaker to prevent cascading failures (TD-05)
  */
 async function executeQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': config.monday.apiToken,
-      'API-Version': '2024-01',
-    },
-    body: JSON.stringify({ query, variables }),
+  return mondayCircuit.execute(async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), MONDAY_API_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(MONDAY_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': config.monday.apiToken,
+          'API-Version': '2024-01',
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
+      }
+
+      const result = (await response.json()) as MondayGraphQLResponse<T>;
+
+      if (result.errors && result.errors.length > 0) {
+        throw new Error(`Monday GraphQL error: ${result.errors.map(e => e.message).join(', ')}`);
+      }
+
+      if (!result.data) {
+        throw new Error('Monday API returned no data');
+      }
+
+      return result.data;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Monday API timeout after ${MONDAY_API_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   });
-
-  if (!response.ok) {
-    throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
-  }
-
-  const result = (await response.json()) as MondayGraphQLResponse<T>;
-
-  if (result.errors && result.errors.length > 0) {
-    throw new Error(`Monday GraphQL error: ${result.errors.map(e => e.message).join(', ')}`);
-  }
-
-  if (!result.data) {
-    throw new Error('Monday API returned no data');
-  }
-
-  return result.data;
 }
 
 interface CreateItemInput {
@@ -171,39 +191,42 @@ export async function uploadFileToItem(
   form.append('file', fileData, { filename, contentType: 'application/pdf' });
 
   // Merge FormData headers (includes correct Content-Type with boundary)
-  const response = await fetch(MONDAY_FILE_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: config.monday.apiToken,
-      ...form.getHeaders(),
-    },
-    body: form as unknown as BodyInit,
+  // Wrapped in circuit breaker to prevent cascading failures (TD-05)
+  await mondayCircuit.execute(async () => {
+    const response = await fetch(MONDAY_FILE_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: config.monday.apiToken,
+        ...form.getHeaders(),
+      },
+      body: form as unknown as BodyInit,
+    });
+
+    const responseText = await response.text();
+    console.log('Monday file upload response:', response.status, responseText);
+
+    if (!response.ok) {
+      throw new Error(`Monday file upload error: ${response.status} - ${responseText}`);
+    }
+
+    // Check for GraphQL errors in successful response
+    try {
+      const result = JSON.parse(responseText);
+      if (result.errors && result.errors.length > 0) {
+        throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
+      }
+      if (!result.data?.add_file_to_column?.id) {
+        throw new Error('Monday file upload returned no file ID');
+      }
+      console.log('Monday file uploaded successfully, file ID:', result.data.add_file_to_column.id);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('Monday file upload')) {
+        throw e;
+      }
+      // If JSON parse fails but response was 200, that's unusual but not fatal
+      console.warn('Could not parse Monday file upload response:', e);
+    }
   });
-
-  const responseText = await response.text();
-  console.log('Monday file upload response:', response.status, responseText);
-
-  if (!response.ok) {
-    throw new Error(`Monday file upload error: ${response.status} - ${responseText}`);
-  }
-
-  // Check for GraphQL errors in successful response
-  try {
-    const result = JSON.parse(responseText);
-    if (result.errors && result.errors.length > 0) {
-      throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
-    }
-    if (!result.data?.add_file_to_column?.id) {
-      throw new Error('Monday file upload returned no file ID');
-    }
-    console.log('Monday file uploaded successfully, file ID:', result.data.add_file_to_column.id);
-  } catch (e) {
-    if (e instanceof Error && e.message.includes('Monday file upload')) {
-      throw e;
-    }
-    // If JSON parse fails but response was 200, that's unusual but not fatal
-    console.warn('Could not parse Monday file upload response:', e);
-  }
 }
 
 /**
@@ -617,18 +640,56 @@ export async function storePdfUrl(itemId: string, pdfUrl: string): Promise<void>
   }
 }
 
+// Retry configuration imported from constants.ts
+
 /**
- * Retry configuration for Monday file uploads
+ * Job payload for Monday file upload retries
  */
-const RETRY_DELAYS_MS = [
-  2 * 60 * 1000,   // 2 minutes
-  10 * 60 * 1000,  // 10 minutes
-  30 * 60 * 1000,  // 30 minutes
-];
+interface MondayFileUploadPayload {
+  itemId: string;
+  filename: string;
+  fileDataBase64: string;  // Buffer serialized as base64
+  slackThreadTs?: string;
+}
+
+/**
+ * Register the Monday file upload job processor
+ * Called during server startup
+ */
+export function registerMondayJobProcessors(): void {
+  registerProcessor('monday_file_upload', async (payload) => {
+    const data = payload as unknown as MondayFileUploadPayload;
+    const fileData = Buffer.from(data.fileDataBase64, 'base64');
+
+    console.log(`[MondayProcessor] Attempting file upload for item ${data.itemId}: ${data.filename}`);
+
+    // Attempt the upload - let errors propagate for retry
+    await uploadFileToItem(data.itemId, data.filename, fileData);
+
+    console.log(`[MondayProcessor] File upload succeeded for item ${data.itemId}`);
+
+    // On success, notify via Slack if thread info available
+    if (data.slackThreadTs) {
+      try {
+        // Import dynamically to avoid circular dependency
+        const { postToThread } = await import('./slack.js');
+        await postToThread(
+          data.slackThreadTs,
+          '✅ PDF successfully uploaded to Monday (retry succeeded).'
+        );
+      } catch {
+        // Ignore Slack notification failure
+      }
+    }
+  });
+
+  console.log('[Monday] Registered job processor for monday_file_upload');
+}
 
 /**
  * Upload file to Monday with retry logic
  * Returns success status and schedules background retries if initial upload fails
+ * Uses durable job queue for retries (survives server restarts)
  */
 export async function uploadFileToItemWithRetry(
   itemId: string,
@@ -645,85 +706,67 @@ export async function uploadFileToItemWithRetry(
     console.error('Initial Monday file upload failed:', error);
   }
 
-  // Schedule background retries
-  console.log('Scheduling Monday file upload retries...');
+  // Schedule durable retries via job queue
+  console.log('Scheduling Monday file upload retries via job queue...');
 
   // Post notification to Slack thread if available
   if (postToSlack) {
     try {
-      await postToSlack('⚠️ PDF upload to Monday failed. Retrying automatically (2min, 10min, 30min)...');
+      await postToSlack('⚠️ PDF upload to Monday failed. Retrying automatically (1min, 5min, 15min, 1hr)...');
     } catch {
       // Ignore Slack notification failure
     }
   }
 
-  // Schedule retries in background (non-blocking)
-  scheduleRetries(itemId, filename, fileData, slackThreadTs, postToSlack);
+  // Add job to the durable queue
+  const jobId = addJob(
+    'monday_file_upload',
+    {
+      itemId,
+      filename,
+      fileDataBase64: fileData.toString('base64'),
+      slackThreadTs,
+    } as unknown as Record<string, unknown>,
+    {
+      maxAttempts: MAX_RETRY_ATTEMPTS,
+      retryDelays: [...RETRY_DELAYS_MS],
+    }
+  );
+
+  console.log(`Monday file upload job queued: ${jobId} for item ${itemId}`);
 
   return { success: false, retryScheduled: true };
 }
 
 /**
- * Schedule background retries for Monday file upload
+ * Handle permanent failure after all job queue retries exhausted
+ * Called by the job queue when a job fails permanently
  */
-function scheduleRetries(
+export async function handleMondayUploadFailure(
   itemId: string,
-  filename: string,
-  fileData: Buffer,
-  slackThreadTs?: string,
-  postToSlack?: (message: string) => Promise<void>
-): void {
-  let attemptIndex = 0;
+  slackThreadTs?: string
+): Promise<void> {
+  console.error(`Monday file upload failed permanently for item ${itemId}`);
 
-  const attemptRetry = async () => {
-    attemptIndex++;
-    const delayMs = RETRY_DELAYS_MS[attemptIndex - 1];
+  // Set workflow status to indicate failure
+  try {
+    await updateWorkflowStatus(itemId, 'Attachment Failed');
+  } catch {
+    console.error('Could not update workflow status to Attachment Failed');
+  }
 
-    if (!delayMs) {
-      // All retries exhausted
-      console.error(`Monday file upload failed after ${RETRY_DELAYS_MS.length} retries for item ${itemId}`);
-
-      // Set workflow status to indicate failure
-      try {
-        await updateWorkflowStatus(itemId, 'Attachment Failed');
-      } catch {
-        console.error('Could not update workflow status to Attachment Failed');
-      }
-
-      // Notify via Slack
-      if (postToSlack) {
-        try {
-          await postToSlack('❌ PDF upload to Monday failed after all retries. Please upload manually.');
-        } catch {
-          // Ignore
-        }
-      }
-      return;
+  // Notify via Slack if thread info available
+  if (slackThreadTs) {
+    try {
+      const { postToThread } = await import('./slack.js');
+      await postToThread(
+        slackThreadTs,
+        '❌ PDF upload to Monday failed after all retries. Please upload manually.'
+      );
+    } catch {
+      // Ignore
     }
-
-    console.log(`Monday file upload retry ${attemptIndex} scheduled in ${delayMs / 1000}s for item ${itemId}`);
-
-    setTimeout(async () => {
-      try {
-        await uploadFileToItem(itemId, filename, fileData);
-        console.log(`Monday file upload retry ${attemptIndex} succeeded for item ${itemId}`);
-
-        // Notify success via Slack
-        if (postToSlack) {
-          try {
-            await postToSlack('✅ PDF successfully uploaded to Monday (retry succeeded).');
-          } catch {
-            // Ignore
-          }
-        }
-      } catch (error) {
-        console.error(`Monday file upload retry ${attemptIndex} failed for item ${itemId}:`, error);
-        attemptRetry(); // Schedule next retry
-      }
-    }, delayMs);
-  };
-
-  attemptRetry();
+  }
 }
 
 /**

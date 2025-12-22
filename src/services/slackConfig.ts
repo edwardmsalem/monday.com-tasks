@@ -49,6 +49,7 @@
  */
 
 import { config } from '../config/environment.js';
+import { SLACK_CONFIG_CACHE_TTL_MS } from '../config/constants.js';
 import { getClient } from './slack.js';
 import YAML from 'yaml';
 
@@ -89,8 +90,6 @@ interface ParsedConfig<T> {
 // Cache
 // ============================================================================
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
 let ownersCache: ParsedConfig<OwnersMap> = {
   data: null,
   error: null,
@@ -104,7 +103,7 @@ let sheetsCache: ParsedConfig<SheetsRegistry> = {
 };
 
 function isCacheValid(lastFetched: number): boolean {
-  return Date.now() - lastFetched < CACHE_TTL_MS;
+  return Date.now() - lastFetched < SLACK_CONFIG_CACHE_TTL_MS;
 }
 
 // ============================================================================

@@ -1,8 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { WebClient, type ChatPostMessageResponse } from '@slack/web-api';
 import { config } from '../config/environment.js';
+import { SLACK_RELEASE_DELAY_MS } from '../config/constants.js';
 import type { SlackMessage } from '../types/index.js';
 import * as monday from './monday.js';
+import { slackCircuit } from './circuitBreaker.js';
 
 let slackClient: WebClient | null = null;
 
@@ -25,6 +27,7 @@ interface SlackNotificationInput {
   taskType: string;
   subject: string;
   assigneeSlackId: string;      // Owner (will be pinged)
+  assigneeName: string;         // Owner's display name (for after-hours display)
   supportSlackIds?: string[];   // Support users (optional, will also be pinged)
   dueDate: string;
   priority: Priority;
@@ -210,7 +213,7 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   // During after-hours: show owner name without @ mention (quiet)
   // During working hours: full @ mention (pings OWNER only)
   const ownerDisplay = afterHours
-    ? `<@${input.assigneeSlackId}>`.replace('<@', '').replace('>', '')  // Just the ID, no ping
+    ? `_${input.assigneeName}_`  // Italicized name (no ping during after-hours)
     : `<@${input.assigneeSlackId}>`;  // Full mention, notifies owner
 
   // Support users display (if any) - NEVER ping support users, always show as plain text
@@ -354,13 +357,16 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     ? `New ${input.taskType} Email: ${input.subject} - Assigned to ${input.assigneeSlackId} - Due: ${input.dueDate}`
     : `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
 
-  const response: ChatPostMessageResponse = await client.chat.postMessage({
-    channel: config.slack.channelId,
-    text: fallbackText,
-    blocks,
-    unfurl_links: false,
-    unfurl_media: false,
-  });
+  // Wrapped in circuit breaker to prevent cascading failures (TD-05)
+  const response: ChatPostMessageResponse = await slackCircuit.execute(() =>
+    client.chat.postMessage({
+      channel: config.slack.channelId,
+      text: fallbackText,
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    })
+  );
 
   if (!response.ok || !response.ts) {
     throw new Error(`Failed to send Slack message: ${response.error}`);
@@ -418,6 +424,7 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
 
 /**
  * Upload a file to a Slack thread
+ * Wrapped in circuit breaker (TD-05)
  */
 export async function uploadFileToThread(
   threadTs: string,
@@ -427,26 +434,31 @@ export async function uploadFileToThread(
 ): Promise<void> {
   const client = getClient();
 
-  await client.filesUploadV2({
-    channel_id: config.slack.channelId,
-    thread_ts: threadTs,
-    filename,
-    file: fileData,
-    title: title ?? filename,
-  });
+  await slackCircuit.execute(() =>
+    client.filesUploadV2({
+      channel_id: config.slack.channelId,
+      thread_ts: threadTs,
+      filename,
+      file: fileData,
+      title: title ?? filename,
+    })
+  );
 }
 
 /**
  * Find a Slack user by email
+ * Wrapped in circuit breaker (TD-05)
  */
 export async function findUserByEmail(email: string): Promise<string | null> {
   const client = getClient();
 
   try {
-    const response = await client.users.lookupByEmail({ email });
+    const response = await slackCircuit.execute(() =>
+      client.users.lookupByEmail({ email })
+    );
     return response.user?.id ?? null;
   } catch (error) {
-    // User not found
+    // User not found (or circuit open)
     console.warn(`Slack user not found for email: ${email}`);
     return null;
   }
@@ -562,6 +574,7 @@ export async function setReminder(input: ReminderInput): Promise<boolean> {
 
 /**
  * Post a message to an existing thread
+ * Wrapped in circuit breaker (TD-05)
  */
 export async function postToThread(
   threadTs: string,
@@ -570,14 +583,16 @@ export async function postToThread(
 ): Promise<SlackMessage> {
   const client = getClient();
 
-  const response = await client.chat.postMessage({
-    channel: config.slack.channelId,
-    thread_ts: threadTs,
-    text,
-    blocks,
-    unfurl_links: false,
-    unfurl_media: false,
-  });
+  const response = await slackCircuit.execute(() =>
+    client.chat.postMessage({
+      channel: config.slack.channelId,
+      thread_ts: threadTs,
+      text,
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    })
+  );
 
   if (!response.ok || !response.ts) {
     throw new Error(`Failed to post to Slack thread: ${response.error}`);
@@ -591,6 +606,7 @@ export async function postToThread(
 
 /**
  * Add a reaction to a message
+ * Wrapped in circuit breaker (TD-05)
  */
 export async function addReaction(
   messageTs: string,
@@ -599,19 +615,22 @@ export async function addReaction(
   const client = getClient();
 
   try {
-    await client.reactions.add({
-      channel: config.slack.channelId,
-      timestamp: messageTs,
-      name: emoji,
-    });
+    await slackCircuit.execute(() =>
+      client.reactions.add({
+        channel: config.slack.channelId,
+        timestamp: messageTs,
+        name: emoji,
+      })
+    );
   } catch (error) {
-    // Might fail if reaction already exists
+    // Might fail if reaction already exists (or circuit open)
     console.warn('Failed to add reaction:', error);
   }
 }
 
 /**
  * Remove a reaction from a message
+ * Wrapped in circuit breaker (TD-05)
  */
 export async function removeReaction(
   messageTs: string,
@@ -620,19 +639,22 @@ export async function removeReaction(
   const client = getClient();
 
   try {
-    await client.reactions.remove({
-      channel: config.slack.channelId,
-      timestamp: messageTs,
-      name: emoji,
-    });
+    await slackCircuit.execute(() =>
+      client.reactions.remove({
+        channel: config.slack.channelId,
+        timestamp: messageTs,
+        name: emoji,
+      })
+    );
   } catch (error) {
-    // Might fail if reaction doesn't exist
+    // Might fail if reaction doesn't exist (or circuit open)
     console.warn('Failed to remove reaction:', error);
   }
 }
 
 /**
  * Post an ephemeral message (only visible to one user)
+ * Wrapped in circuit breaker (TD-05)
  */
 export async function postEphemeral(
   channelId: string,
@@ -642,12 +664,14 @@ export async function postEphemeral(
 ): Promise<void> {
   const client = getClient();
 
-  await client.chat.postEphemeral({
-    channel: channelId,
-    user: userId,
-    text,
-    blocks,
-  });
+  await slackCircuit.execute(() =>
+    client.chat.postEphemeral({
+      channel: channelId,
+      user: userId,
+      text,
+      blocks,
+    })
+  );
 }
 
 /**
@@ -785,7 +809,7 @@ export function verifySlackSignature(
 // Hardening constants
 const DEFERRED_LOOKBACK_HOURS = 48;  // Max 48 hours lookback for deferred notifications
 const RELEASE_BATCH_SIZE = 5;        // Release in batches of 5
-const RELEASE_DELAY_MS = 1000;       // 1 second delay between releases (avoid rate limits)
+// RELEASE_DELAY_MS imported from constants.ts
 
 // Marker patterns for thread tracking
 const DEFERRED_MARKER_PATTERN = /\[after-hours:deferred:([^\]]+)\]/;
@@ -1139,7 +1163,7 @@ export async function releaseAllDeferredNotifications(): Promise<number> {
 
     // Rate limiting: delay between releases
     if (batchCount < deferred.length) {
-      await sleep(RELEASE_DELAY_MS);
+      await sleep(SLACK_RELEASE_DELAY_MS);
     }
 
     // Log progress for batches
@@ -1187,7 +1211,7 @@ export async function sendAllAckReminders(): Promise<number> {
 
     // Rate limiting: delay between reminders
     if (batchCount < unacked.length) {
-      await sleep(RELEASE_DELAY_MS);
+      await sleep(SLACK_RELEASE_DELAY_MS);
     }
   }
 

@@ -2,6 +2,7 @@
 import ConvertApi from 'convertapi';
 import { config } from '../config/environment.js';
 import type { ConvertedFile } from '../types/index.js';
+import { convertApiCircuit } from './circuitBreaker.js';
 
 // ConvertApi doesn't have proper TypeScript definitions
 let convertApiClient: any = null;
@@ -64,18 +65,21 @@ export async function convertEmlToPdf(
   console.log('Converting EML to PDF:', safeFilename, safeContent.length, 'bytes');
 
   // Convert EML to PDF using the convertapi library
-  const result = await client.convert(
-    'pdf',
-    {
-      File: { name: safeFilename, data: safeContent },
-      PageSize: 'a4',
-      MarginTop: 5,
-      MarginRight: 5,
-      MarginBottom: 5,
-      MarginLeft: 5,
-      PageOrientation: 'portrait',
-    },
-    'eml'
+  // Wrapped in circuit breaker (TD-05)
+  const result = await convertApiCircuit.execute<{ files: any[] }>(() =>
+    client.convert(
+      'pdf',
+      {
+        File: { name: safeFilename, data: safeContent },
+        PageSize: 'a4',
+        MarginTop: 5,
+        MarginRight: 5,
+        MarginBottom: 5,
+        MarginLeft: 5,
+        PageOrientation: 'portrait',
+      },
+      'eml'
+    )
   );
 
   // Get the converted file
@@ -141,18 +145,21 @@ export async function convertHtmlToPdf(
   console.log('Converting HTML to PDF:', htmlFilename, htmlContent.length, 'chars');
 
   // Convert HTML to PDF using the convertapi library
-  const result = await client.convert(
-    'pdf',
-    {
-      File: { name: htmlFilename, data: Buffer.from(htmlContent, 'utf-8') },
-      PageSize: 'a4',
-      MarginTop: 10,
-      MarginRight: 10,
-      MarginBottom: 10,
-      MarginLeft: 10,
-      PageOrientation: 'portrait',
-    },
-    'html'
+  // Wrapped in circuit breaker (TD-05)
+  const result = await convertApiCircuit.execute<{ files: any[] }>(() =>
+    client.convert(
+      'pdf',
+      {
+        File: { name: htmlFilename, data: Buffer.from(htmlContent, 'utf-8') },
+        PageSize: 'a4',
+        MarginTop: 10,
+        MarginRight: 10,
+        MarginBottom: 10,
+        MarginLeft: 10,
+        PageOrientation: 'portrait',
+      },
+      'html'
+    )
   );
 
   // Get the converted file
