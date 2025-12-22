@@ -130,6 +130,11 @@ export const config = {
       .filter(id => id.length > 0)),  // e.g., #QuickTix-team, #ticket-associates
   },
 
+  // Slack Relay (for receiving events via relay proxy)
+  relay: {
+    apiKey: getEnvVarOptional('RELAY_API_KEY'),  // Must match slack-relay's RELAY_API_KEY
+  },
+
   // ConvertAPI
   convertApi: {
     secret: getEnvVar('CONVERTAPI_SECRET', ''),
