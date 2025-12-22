@@ -1349,7 +1349,7 @@ export async function findSupporterNotificationChannel(supporterSlackId: string)
 
 /**
  * Send a notification to a supporter's channel
- * Links to the main task thread
+ * Links to the Monday task (not Slack thread - they may not have access to that channel)
  */
 export async function notifySupporterInChannel(
   supporterSlackId: string,
@@ -1366,11 +1366,9 @@ export async function notifySupporterInChannel(
   }
 
   const client = getClient();
-  const mainChannelId = config.slack.channelId;
-  const threadLink = `https://slack.com/archives/${mainChannelId}/p${mainThreadTs.replace('.', '')}`;
   const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
 
-  const message = `🤝 <@${supporterSlackId}> you've been added as a supporter on:\n\n*${taskSubject}*\n\n<${threadLink}|View Slack thread> • <${mondayLink}|View Monday task>`;
+  const message = `🤝 <@${supporterSlackId}> you've been added as a supporter on:\n\n*${taskSubject}*\n\n<${mondayLink}|View Monday task>`;
 
   try {
     const response = await slackCircuit.execute(() =>
