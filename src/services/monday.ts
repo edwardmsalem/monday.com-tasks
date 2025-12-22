@@ -106,7 +106,8 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
   }
 
   // Set team if provided (dropdown column - auto-create label if missing)
-  if (input.team) {
+  // Guard against string "null" which Claude sometimes returns
+  if (input.team && input.team !== 'null' && input.team.trim() !== '') {
     columnValues[columns.team] = { labels: [input.team] };
   }
 
