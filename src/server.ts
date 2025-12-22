@@ -1286,16 +1286,21 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 import * as gmail from './services/gmail.js';
 import { convertHtmlToPdf, convertTextToPdf } from './services/convertApi.js';
 import { parseEmailTaskInput } from './services/claude.js';
+import {
+  getPendingEmailSelection,
+  setPendingEmailSelection,
+  deletePendingEmailSelection,
+  hasPendingEmailSelection,
+  getDmCooldown,
+  setDmCooldown,
+  initializePendingState,
+  PENDING_EMAIL_TTL,
+  DM_COOLDOWN_TTL,
+  type PendingEmailSelection,
+} from './services/pendingState.js';
 
-// In-memory store for pending email selections (userId → search results)
-interface PendingEmailSelection {
-  emails: gmail.GmailEmailResult[];
-  subject: string;
-  responseUrl: string;
-  expiresAt: number;
-}
-const pendingEmailSelections = new Map<string, PendingEmailSelection>();
-const SELECTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+// TTL constant for expiresAt calculation
+const SELECTION_TIMEOUT_MS = PENDING_EMAIL_TTL;
 
 /**
  * Create task from selected email
@@ -1433,9 +1438,9 @@ app.post('/webhook/slack/emailtask', slackUrlEncodedWithRawBody, async (req: Req
 
     // Check for "confirm" to create task from pending single-match preview
     if (trimmedText.toLowerCase() === 'confirm') {
-      const pending = pendingEmailSelections.get(user_id);
+      const pending = getPendingEmailSelection(user_id);
       if (pending && pending.expiresAt > Date.now() && pending.emails.length === 1) {
-        pendingEmailSelections.delete(user_id);
+        deletePendingEmailSelection(user_id);
         res.json({
           response_type: 'ephemeral',
           text: `⏳ Creating task from confirmed email...`,
@@ -1454,11 +1459,11 @@ app.post('/webhook/slack/emailtask', slackUrlEncodedWithRawBody, async (req: Req
     // Check for pending selection (user replying with 1-5)
     const selectionMatch = trimmedText.match(/^(\d)$/);
     if (selectionMatch) {
-      const pending = pendingEmailSelections.get(user_id);
+      const pending = getPendingEmailSelection(user_id);
       if (pending && pending.expiresAt > Date.now()) {
         const selection = parseInt(selectionMatch[1], 10) - 1;
         if (selection >= 0 && selection < pending.emails.length) {
-          pendingEmailSelections.delete(user_id);
+          deletePendingEmailSelection(user_id);
           res.json({
             response_type: 'ephemeral',
             text: `⏳ Creating task from email #${selection + 1}...`,
@@ -1477,8 +1482,8 @@ app.post('/webhook/slack/emailtask', slackUrlEncodedWithRawBody, async (req: Req
 
     // Check for "cancel" to clear pending selection
     if (trimmedText.toLowerCase() === 'cancel') {
-      if (pendingEmailSelections.has(user_id)) {
-        pendingEmailSelections.delete(user_id);
+      if (hasPendingEmailSelection(user_id)) {
+        deletePendingEmailSelection(user_id);
         res.json({
           response_type: 'ephemeral',
           text: `🚫 Email selection cancelled.`,
@@ -1562,8 +1567,8 @@ app.post('/webhook/slack/emailtask', slackUrlEncodedWithRawBody, async (req: Req
       });
       const from = email.from?.replace(/<[^>]+>/, '').trim() || 'Unknown sender';
 
-      // Store pending confirmation
-      pendingEmailSelections.set(user_id, {
+      // Store pending confirmation (persisted to disk)
+      setPendingEmailSelection(user_id, {
         emails: [email],
         subject: searchParams.subject,
         responseUrl: response_url,
@@ -1600,8 +1605,8 @@ app.post('/webhook/slack/emailtask', slackUrlEncodedWithRawBody, async (req: Req
       return `*${i + 1}.* ${dateStr} ${timeStr} - ${from}`;
     });
 
-    // Store pending selection
-    pendingEmailSelections.set(user_id, {
+    // Store pending selection (persisted to disk)
+    setPendingEmailSelection(user_id, {
       emails: topEmails,
       subject: searchParams.subject,
       responseUrl: response_url,
@@ -1706,25 +1711,23 @@ interface MondayWebhook {
   };
 }
 
-// In-memory cooldown for direct creation guidance DMs (24 hours)
-// Key: Slack user ID, Value: timestamp of last DM
-const directCreationDmCooldown = new Map<string, number>();
-const DM_COOLDOWN_MS = 24 * 60 * 60 * 1000;  // 24 hours
+// DM cooldown persisted to disk via pendingState.ts
+const DM_COOLDOWN_MS = DM_COOLDOWN_TTL;
 
 /**
  * Check if a user is on DM cooldown
  */
 function isOnDmCooldown(slackUserId: string): boolean {
-  const lastDm = directCreationDmCooldown.get(slackUserId);
+  const lastDm = getDmCooldown(slackUserId);
   if (!lastDm) return false;
   return Date.now() - lastDm < DM_COOLDOWN_MS;
 }
 
 /**
- * Record that we sent a DM to a user
+ * Record that we sent a DM to a user (persisted to disk)
  */
 function recordDmSent(slackUserId: string): void {
-  directCreationDmCooldown.set(slackUserId, Date.now());
+  setDmCooldown(slackUserId, Date.now());
 }
 
 /**
@@ -1870,6 +1873,9 @@ app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
 // Start the server
 function start() {
   validateConfig();
+
+  // Initialize pending state persistence (loads from disk, starts cleanup interval)
+  initializePendingState();
 
   app.listen(config.port, () => {
     console.log(`Server listening on port ${config.port}`);

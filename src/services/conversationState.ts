@@ -3,25 +3,24 @@
  *
  * Tracks incomplete task creation flows where we need to ask
  * follow-up questions to gather required information.
+ *
+ * State is persisted to disk via pendingState.ts to survive restarts.
  */
 
 import type { ParsedTask, MissingFields } from './taskParser.js';
+import {
+  getPendingTask as getPendingTaskFromState,
+  setPendingTask,
+  deletePendingTask,
+  PENDING_TASK_TTL,
+  type PendingTask,
+} from './pendingState.js';
 
-export interface PendingTask {
-  parsed: ParsedTask;
-  missing: MissingFields;
-  slackUserId: string;
-  slackChannelId: string;
-  awaitingFields: Array<'name' | 'assignee' | 'dueDate'>; // All missing fields
-  createdAt: number;
-  lastMessageTs?: string;
-}
+// Re-export the PendingTask type
+export type { PendingTask };
 
-// In-memory store for pending tasks (keyed by `${channelId}-${userId}`)
-const pendingTasks = new Map<string, PendingTask>();
-
-// Cleanup old conversations after 10 minutes
-const CONVERSATION_TIMEOUT_MS = 10 * 60 * 1000;
+// TTL for expiry checks
+const CONVERSATION_TIMEOUT_MS = PENDING_TASK_TTL;
 
 function getKey(channelId: string, userId: string): string {
   return `${channelId}-${userId}`;
@@ -36,18 +35,11 @@ export function storePendingTask(
   task: PendingTask
 ): void {
   const key = getKey(channelId, userId);
-  pendingTasks.set(key, {
+  setPendingTask(key, {
     ...task,
     createdAt: Date.now(),
   });
-
-  // Schedule cleanup
-  setTimeout(() => {
-    const stored = pendingTasks.get(key);
-    if (stored && stored.createdAt === task.createdAt) {
-      pendingTasks.delete(key);
-    }
-  }, CONVERSATION_TIMEOUT_MS);
+  // Note: cleanup now handled by pendingState.ts cleanup interval
 }
 
 /**
@@ -55,13 +47,13 @@ export function storePendingTask(
  */
 export function getPendingTask(channelId: string, userId: string): PendingTask | null {
   const key = getKey(channelId, userId);
-  const task = pendingTasks.get(key);
+  const task = getPendingTaskFromState(key);
 
   if (!task) return null;
 
   // Check if expired
   if (Date.now() - task.createdAt > CONVERSATION_TIMEOUT_MS) {
-    pendingTasks.delete(key);
+    deletePendingTask(key);
     return null;
   }
 
@@ -77,10 +69,10 @@ export function updatePendingTask(
   updates: Partial<PendingTask>
 ): void {
   const key = getKey(channelId, userId);
-  const existing = pendingTasks.get(key);
+  const existing = getPendingTaskFromState(key);
 
   if (existing) {
-    pendingTasks.set(key, { ...existing, ...updates });
+    setPendingTask(key, { ...existing, ...updates });
   }
 }
 
@@ -89,7 +81,7 @@ export function updatePendingTask(
  */
 export function clearPendingTask(channelId: string, userId: string): void {
   const key = getKey(channelId, userId);
-  pendingTasks.delete(key);
+  deletePendingTask(key);
 }
 
 /**
