@@ -101,13 +101,6 @@ async function handleSupporterChannelReply(
 }
 
 // ============================================================================
-// Middleware
-// ============================================================================
-
-// JSON body parser for relay events
-router.use('/relay/events', express.json());
-
-// ============================================================================
 // Route Handler
 // ============================================================================
 
@@ -117,7 +110,7 @@ router.use('/relay/events', express.json());
  * Receives Slack events forwarded from slack-relay hub
  * Authenticates via X-Relay-Secret header
  */
-router.post('/relay/events', async (req: Request, res: Response): Promise<void> => {
+router.post('/relay/events', express.json(), async (req: Request, res: Response): Promise<void> => {
   console.log('=== Relay event received ===');
 
   // Verify relay secret
