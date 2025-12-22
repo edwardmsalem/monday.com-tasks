@@ -107,7 +107,7 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
 
   // Set team if provided (dropdown column - auto-create label if missing)
   if (input.team) {
-    columnValues[columns.team] = { labels: [input.team], create_labels_if_missing: true };
+    columnValues[columns.team] = { labels: [input.team] };
   }
 
   const query = `
@@ -116,6 +116,7 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
         board_id: $boardId
         item_name: $itemName
         column_values: $columnValues
+        create_labels_if_missing: true
       ) {
         id
         name
