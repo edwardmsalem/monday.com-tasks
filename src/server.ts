@@ -32,6 +32,14 @@ import { startFollowUpScheduler } from './services/autoFollowUp.js';
 import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
 import { initializeJobQueue } from './services/jobQueue.js';
 import { checkHealth } from './services/healthCheck.js';
+import {
+  checkIdempotency,
+  setIdempotencyKey,
+  generateEmailIdempotencyKey,
+  generateTaskIdempotencyKey,
+  generateEmailTaskIdempotencyKey,
+  startCleanupInterval as startIdempotencyCleanup,
+} from './services/idempotency.js';
 
 const app = express();
 
@@ -218,8 +226,32 @@ app.post(
       const email = await parseIncomingEmail(rawEmail);
       console.log('Email parsed:', email.subject);
 
+      // Check idempotency to prevent duplicate processing
+      // Use current date rounded to nearest 5 minutes to catch rapid duplicates
+      const dateKey = new Date(Math.floor(Date.now() / (5 * 60 * 1000)) * (5 * 60 * 1000)).toISOString();
+      const idempotencyKey = generateEmailIdempotencyKey(
+        email.subject,
+        email.fromEmail ?? 'unknown',
+        dateKey
+      );
+      const { isDuplicate, cachedResult } = checkIdempotency(idempotencyKey);
+      if (isDuplicate) {
+        console.log(`[Idempotency] Duplicate email request detected: ${idempotencyKey}`);
+        res.json(cachedResult || { success: true, duplicate: true, message: 'Already processed' });
+        return;
+      }
+
       // Execute the workflow
       const result = await executeWorkflowSafe({ email });
+
+      // Store result for idempotency
+      if (result.success) {
+        setIdempotencyKey(idempotencyKey, {
+          success: true,
+          mondayItemId: result.mondayItemId,
+          slackThreadTs: result.slackThreadTs,
+        });
+      }
 
       if (result.success) {
         res.json({
@@ -1247,6 +1279,20 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
       parsed.ownerSlackId = user_id;
     }
 
+    // Check idempotency to prevent duplicate tasks
+    const idempotencyKey = generateTaskIdempotencyKey(user_id, parsed.description ?? text);
+    const { isDuplicate, cachedResult } = checkIdempotency(idempotencyKey);
+    if (isDuplicate) {
+      console.log(`[Idempotency] Duplicate /task request detected: ${idempotencyKey}`);
+      res.json({
+        response_type: 'ephemeral',
+        text: cachedResult
+          ? `✅ Task already created (duplicate request ignored)`
+          : `⚠️ Duplicate request detected. Please wait for the previous task to be created.`,
+      });
+      return;
+    }
+
     // Acknowledge immediately (Slack requires response within 3 seconds)
     const ackMessage = ownerOverridden
       ? `⏳ Creating task...\n\n_Note: The \`owner:\` prefix is restricted. Task owner set to you._`
@@ -1264,6 +1310,13 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 
     // Send confirmation or error via response_url
     if (result.success) {
+      // Store result for idempotency
+      setIdempotencyKey(idempotencyKey, {
+        success: true,
+        mondayItemId: result.mondayItemId,
+        slackThreadTs: result.slackThreadTs,
+      });
+
       const mondayUrl = monday.getItemUrl(result.mondayItemId);
       const slackThreadUrl = `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${result.slackThreadTs}`;
 
@@ -1327,6 +1380,19 @@ async function createTaskFromEmail(
   userId: string,
   responseUrl: string
 ): Promise<void> {
+  // Check idempotency to prevent duplicate task creation from same email
+  const idempotencyKey = generateEmailTaskIdempotencyKey(userId, selectedEmail.messageId);
+  const { isDuplicate, cachedResult } = checkIdempotency(idempotencyKey);
+  if (isDuplicate) {
+    console.log(`[Idempotency] Duplicate /emailtask request detected: ${idempotencyKey}`);
+    await slack.sendResponseUrl(responseUrl,
+      cachedResult
+        ? `✅ Task already created from this email (duplicate request ignored)`
+        : `⚠️ This email is already being processed. Please wait.`
+    );
+    return;
+  }
+
   // Generate PDF from email
   let pdfBuffer: Buffer | null = null;
   let pdfFilename = 'email.pdf';
@@ -1366,6 +1432,13 @@ async function createTaskFromEmail(
   });
 
   if (result.success) {
+    // Store result for idempotency
+    setIdempotencyKey(idempotencyKey, {
+      success: true,
+      mondayItemId: result.mondayItemId,
+      slackThreadTs: result.slackThreadTs,
+    });
+
     const mondayUrl = monday.getItemUrl(result.mondayItemId);
     const slackThreadUrl = `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${result.slackThreadTs}`;
 
@@ -1898,6 +1971,9 @@ function start() {
   initializeJobQueue();
   monday.registerMondayJobProcessors();
   console.log('Job queue initialized with processors');
+
+  // Start idempotency key cleanup interval (cleans expired keys every 15 minutes)
+  startIdempotencyCleanup();
 
   app.listen(config.port, () => {
     console.log(`Server listening on port ${config.port}`);
