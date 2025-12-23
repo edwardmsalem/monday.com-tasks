@@ -528,6 +528,73 @@ export async function getSlackThreadId(itemId: string): Promise<string | null> {
 }
 
 /**
+ * Monday update (comment) with author info
+ */
+export interface MondayUpdate {
+  id: string;
+  body: string;
+  textBody: string;
+  createdAt: string;
+  creatorId: number;
+  creatorName: string | null;
+}
+
+/**
+ * Get all updates (comments) from a Monday item
+ * Returns updates in chronological order (oldest first)
+ */
+export async function getItemUpdates(itemId: string): Promise<MondayUpdate[]> {
+  const query = `
+    query GetItemUpdates($itemId: ID!) {
+      items(ids: [$itemId]) {
+        updates {
+          id
+          body
+          text_body
+          created_at
+          creator_id
+          creator {
+            name
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{
+        updates: Array<{
+          id: string;
+          body: string;
+          text_body: string;
+          created_at: string;
+          creator_id: number;
+          creator: { name: string } | null;
+        }>;
+      }>;
+    }>(query, { itemId });
+
+    const updates = result.items[0]?.updates ?? [];
+
+    // Map to our interface and reverse to get chronological order (oldest first)
+    return updates
+      .map(u => ({
+        id: u.id,
+        body: u.body,
+        textBody: u.text_body,
+        createdAt: u.created_at,
+        creatorId: u.creator_id,
+        creatorName: u.creator?.name ?? null,
+      }))
+      .reverse();
+  } catch (error) {
+    console.error('Error fetching item updates:', error);
+    return [];
+  }
+}
+
+/**
  * Create an update (comment) on a Monday item
  */
 export async function createUpdate(itemId: string, body: string): Promise<string> {
