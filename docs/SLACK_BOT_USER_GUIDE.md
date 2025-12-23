@@ -9,7 +9,6 @@ This guide explains all slash commands, reactions, and automated messages from t
 1. [Slash Commands](#slash-commands)
    - [/task](#task)
    - [/issuecall](#issuecall)
-   - [/emailtask](#emailtask)
 2. [Reactions](#reactions)
 3. [Automated Messages](#automated-messages)
    - [Task Creation](#task-creation)
@@ -102,30 +101,6 @@ Create an issue call task with automatic account lookup from Google Sheets.
 | After 1 hour | Every 20 min | @dayna + @ruzzell + @edward |
 
 *Note: If no suggested supporter was mentioned, all pings go to @dayna + @ruzzell from the start.*
-
----
-
-### /emailtask
-
-Search Gmail for an email and create a task from it.
-
-**Usage:**
-```
-/emailtask [search query]
-```
-
-**Examples:**
-```
-/emailtask from:john@example.com subject:invoice
-/emailtask astros presale newer_than:1d
-```
-
-**What happens:**
-1. Searches Gmail using your query
-2. If multiple results, shows you options to choose from
-3. AI analyzes the email content
-4. Creates task with email attached as PDF
-5. Posts to Slack with task details
 
 ---
 
@@ -280,7 +255,6 @@ Tasks created after business hours (after 8 PM or on weekends):
 |---------|---------|
 | `/task [description]` | Create task from natural language |
 | `/issuecall [team] [email] [@supporter]` | Issue call with account lookup |
-| `/emailtask [search]` | Create task from Gmail email |
 
 ### Reactions
 | Emoji | Action |

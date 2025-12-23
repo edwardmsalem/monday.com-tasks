@@ -60,9 +60,8 @@ The `/issuecall` command was significantly enhanced:
 |---------|----------|----------|
 | `/task` | `/webhook/slack/task` | AI-powered natural language parsing |
 | `/issuecall` | `/webhook/slack/issuecall` | Account lookup, claim tracking, escalation |
-| `/emailtask` | `/webhook/slack/emailtask` | Gmail search, email-to-PDF |
-| `/monday` | `/webhook/slack/command` | Multi-step AI with follow-up questions |
-| `/seasontask` | `/webhook/slack/seasontask` | Channel-restricted task creation |
+
+**Removed commands:** `/emailtask`, `/monday`, `/seasontask` (deleted per user request)
 
 ### Key Services
 
