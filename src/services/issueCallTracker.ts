@@ -151,14 +151,22 @@ export async function claimIssueCall(
   issueCall.claimedBy = claimerSlackId;
   saveToDisk();
 
-  // Post confirmation to thread
-  await slack.postToThread(
-    issueCall.slackThreadTs,
-    `✅ <@${claimerSlackId}> claimed this issue call and has been assigned as supporter.`,
-    issueCall.channelId
-  );
+  // Post confirmation to thread - this documents the claim permanently
+  // Even if the user removes their 👀 reaction, this message stays
+  console.log(`[IssueCallTracker] Posting claim confirmation for ${claimer.name} to thread ${issueCall.slackThreadTs}`);
+  try {
+    await slack.postToThread(
+      issueCall.slackThreadTs,
+      `✅ <@${claimerSlackId}> (${claimer.name}) claimed this issue call and has been assigned as supporter.`,
+      issueCall.channelId
+    );
+    console.log(`[IssueCallTracker] Claim confirmation posted successfully`);
+  } catch (postError) {
+    console.error(`[IssueCallTracker] Failed to post claim confirmation:`, postError);
+    // Don't fail the claim - it's already recorded in Monday and our tracker
+  }
 
-  console.log(`Issue call ${threadTs} claimed by ${claimer.name}`);
+  console.log(`[IssueCallTracker] Issue call ${threadTs} claimed by ${claimer.name} (${claimerSlackId})`);
   return { success: true };
 }
 
@@ -192,14 +200,16 @@ function isBusinessHours(): boolean {
  * - Second ping onward: @dayna + @ruzzell
  * - After 1 hour: Also include @edward
  */
-export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number }> {
+export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number; removed: number }> {
   // Only ping during business hours (M-F 10am-6pm ET)
   if (!isBusinessHours()) {
-    return { pinged: 0 };
+    return { pinged: 0, removed: 0 };
   }
 
   const now = Date.now();
   let pingedCount = 0;
+  let removedCount = 0;
+  const toRemove: string[] = [];
 
   for (const [threadTs, issueCall] of pendingIssueCalls.entries()) {
     // Skip if already claimed
@@ -246,15 +256,44 @@ export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number }> {
       pingedCount++;
       console.log(`Pinged for unclaimed issue call ${threadTs} (ping #${issueCall.pingCount}, escalated: ${shouldEscalateToEdward})`);
     } catch (error) {
-      console.error(`Failed to ping for issue call ${threadTs}:`, error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStr = JSON.stringify(error);
+
+      // Check if this is a "thread deleted" or "channel not found" error
+      const isDeletedError =
+        errorMessage.includes('channel_not_found') ||
+        errorMessage.includes('message_not_found') ||
+        errorMessage.includes('thread_not_found') ||
+        errorMessage.includes('not_in_channel') ||
+        errorMessage.includes('is_archived') ||
+        errorStr.includes('channel_not_found') ||
+        errorStr.includes('message_not_found') ||
+        errorStr.includes('thread_not_found');
+
+      if (isDeletedError) {
+        console.log(`[IssueCallTracker] Thread ${threadTs} appears deleted, removing from tracking`);
+        toRemove.push(threadTs);
+        removedCount++;
+      } else {
+        console.error(`Failed to ping for issue call ${threadTs}:`, error);
+      }
     }
   }
 
-  if (pingedCount > 0) {
+  // Remove deleted issue calls
+  for (const threadTs of toRemove) {
+    pendingIssueCalls.delete(threadTs);
+  }
+
+  if (pingedCount > 0 || removedCount > 0) {
     saveToDisk();
   }
 
-  return { pinged: pingedCount };
+  if (removedCount > 0) {
+    console.log(`[IssueCallTracker] Removed ${removedCount} issue calls with deleted threads`);
+  }
+
+  return { pinged: pingedCount, removed: removedCount };
 }
 
 /**
@@ -276,6 +315,39 @@ export function cleanupOldIssueCalls(): void {
     saveToDisk();
     console.log(`Cleaned up ${cleaned} old issue calls`);
   }
+}
+
+/**
+ * Remove an issue call from tracking by thread timestamp
+ * Use this to manually clean up deleted/orphaned issue calls
+ */
+export function removeIssueCall(threadTs: string): boolean {
+  if (pendingIssueCalls.has(threadTs)) {
+    pendingIssueCalls.delete(threadTs);
+    saveToDisk();
+    console.log(`[IssueCallTracker] Manually removed issue call ${threadTs}`);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Clear all pending (unclaimed) issue calls
+ * Use this to reset the tracker after cleanup
+ */
+export function clearAllPendingIssueCalls(): number {
+  let cleared = 0;
+  for (const [key, issueCall] of pendingIssueCalls.entries()) {
+    if (!issueCall.claimed) {
+      pendingIssueCalls.delete(key);
+      cleared++;
+    }
+  }
+  if (cleared > 0) {
+    saveToDisk();
+    console.log(`[IssueCallTracker] Cleared ${cleared} pending issue calls`);
+  }
+  return cleared;
 }
 
 /**
