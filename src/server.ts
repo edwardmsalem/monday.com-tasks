@@ -969,95 +969,58 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     // Acknowledge immediately
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Finding completed items with Slack threads to clean up...`,
+      text: `⏳ Finding orphaned backfill messages to delete...`,
     });
 
-    // Fetch completed items with Slack threads
-    const items = await monday.getCompletedItemsWithSlackThread();
-
-    if (items.length === 0) {
-      await slack.sendResponseUrl(response_url,
-        `✅ No completed items with Slack threads found. Nothing to clean up.`
-      );
-      return;
-    }
-
-    // Delete Slack messages and clear Monday thread IDs
+    // Fetch recent messages from the channel and find orphaned backfill replies
     let deleted = 0;
-    let repliesDeleted = 0;
     let failed = 0;
     const errors: string[] = [];
 
-    for (const item of items) {
-      try {
-        // Parse the slack thread info to get channel and threadTs
-        const threadInfo = monday.parseSlackThreadValue(item.slackThreadId);
+    try {
+      // Get recent messages from the main channel
+      const history = await slack.getClient().conversations.history({
+        channel: config.slack.channelId,
+        limit: 200,
+      });
 
-        if (threadInfo) {
-          // First, fetch all replies in the thread
-          try {
-            const replies = await slack.getClient().conversations.replies({
-              channel: threadInfo.channelId,
-              ts: threadInfo.threadTs,
-            });
+      if (history.messages) {
+        for (const msg of history.messages) {
+          // Check if this is a backfill-related message (via Monday or Backfilled thread)
+          const text = msg.text || '';
+          const isBackfillMessage = text.includes('via Monday') ||
+                                    text.includes('Backfilled thread') ||
+                                    text.includes('_via Monday)_');
 
-            // Delete all messages in the thread (replies first, then parent)
-            if (replies.messages && replies.messages.length > 0) {
-              // Sort by ts descending so we delete replies before parent
-              const sortedMessages = [...replies.messages].sort((a, b) =>
-                parseFloat(b.ts || '0') - parseFloat(a.ts || '0')
-              );
-
-              for (const msg of sortedMessages) {
-                if (msg.ts) {
-                  try {
-                    await slack.getClient().chat.delete({
-                      channel: threadInfo.channelId,
-                      ts: msg.ts,
-                    });
-                    if (msg.ts !== threadInfo.threadTs) {
-                      repliesDeleted++;
-                    }
-                    // Small delay between deletions
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                  } catch (deleteErr) {
-                    console.warn(`Could not delete message ${msg.ts}:`, deleteErr);
-                  }
-                }
-              }
+          if (isBackfillMessage && msg.ts) {
+            try {
+              await slack.getClient().chat.delete({
+                channel: config.slack.channelId,
+                ts: msg.ts,
+              });
+              deleted++;
+              console.log(`Deleted orphaned backfill message: ${msg.ts}`);
+              // Small delay between deletions
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } catch (deleteErr) {
+              failed++;
+              console.warn(`Could not delete message ${msg.ts}:`, deleteErr);
             }
-            console.log(`Deleted Slack thread and replies for item ${item.id}`);
-          } catch (slackError) {
-            // Thread might already be deleted, continue anyway
-            console.warn(`Could not fetch/delete Slack thread for item ${item.id}:`, slackError);
           }
         }
-
-        // Clear the Slack thread ID from Monday
-        await monday.clearSlackThreadId(item.id);
-        deleted++;
-        console.log(`Cleared Slack thread ID for completed item ${item.id}`);
-
-        // Small delay to avoid rate limits
-        await new Promise(resolve => setTimeout(resolve, 300));
-      } catch (error) {
-        failed++;
-        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-        errors.push(`Item ${item.id}: ${errorMsg}`);
-        console.error(`Failed to cleanup item ${item.id}:`, error);
       }
+    } catch (historyErr) {
+      console.error('Error fetching channel history:', historyErr);
+      errors.push(`Channel history error: ${historyErr instanceof Error ? historyErr.message : 'Unknown'}`);
     }
 
     // Send summary
     let summaryText = `✅ *Cleanup Complete*\n\n` +
-      `• Deleted: ${deleted} Slack threads\n` +
-      `• Replies deleted: ${repliesDeleted}\n` +
+      `• Deleted: ${deleted} orphaned backfill messages\n` +
       `• Failed: ${failed}`;
 
-    if (errors.length > 0 && errors.length <= 5) {
+    if (errors.length > 0) {
       summaryText += `\n\n*Errors:*\n${errors.map(e => `• ${e}`).join('\n')}`;
-    } else if (errors.length > 5) {
-      summaryText += `\n\n*First 5 errors:*\n${errors.slice(0, 5).map(e => `• ${e}`).join('\n')}\n_...and ${errors.length - 5} more_`;
     }
 
     await slack.sendResponseUrl(response_url, summaryText);
