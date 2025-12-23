@@ -13,29 +13,31 @@ let sheetsClient: ReturnType<typeof google.sheets> | null = null;
 let driveClient: ReturnType<typeof google.drive> | null = null;
 
 /**
- * Initialize Google Sheets API client with service account
+ * Initialize Google Sheets API client with OAuth (same credentials as Gmail)
  */
 async function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
 
-  const serviceAccountKey = config.google.serviceAccountKey;
-  if (!serviceAccountKey) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY not configured');
+  const clientId = config.google.clientId;
+  const clientSecret = config.google.clientSecret;
+  const refreshToken = config.google.refreshToken;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('Google OAuth credentials not configured (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)');
   }
 
-  const credentials = JSON.parse(serviceAccountKey);
+  const oauth2Client = new google.auth.OAuth2(
+    clientId,
+    clientSecret,
+    'https://developers.google.com/oauthplayground'
+  );
 
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive.file',
-    ],
+  oauth2Client.setCredentials({
+    refresh_token: refreshToken,
   });
 
-  const authClient = await auth.getClient();
-  sheetsClient = google.sheets({ version: 'v4', auth: authClient as any });
-  driveClient = google.drive({ version: 'v3', auth: authClient as any });
+  sheetsClient = google.sheets({ version: 'v4', auth: oauth2Client });
+  driveClient = google.drive({ version: 'v3', auth: oauth2Client });
 
   return sheetsClient;
 }

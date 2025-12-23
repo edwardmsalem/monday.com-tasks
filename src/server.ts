@@ -416,6 +416,216 @@ import {
 } from './services/issueCallTracker.js';
 
 /**
+ * Expand short team names to full official names for Monday.com
+ */
+const TEAM_NAME_EXPANSIONS: Record<string, string> = {
+  // NBA
+  'knicks': 'New York Knicks',
+  'nets': 'Brooklyn Nets',
+  'lakers': 'Los Angeles Lakers',
+  'celtics': 'Boston Celtics',
+  'bulls': 'Chicago Bulls',
+  'heat': 'Miami Heat',
+  'warriors': 'Golden State Warriors',
+  'rockets': 'Houston Rockets',
+  'mavericks': 'Dallas Mavericks',
+  'mavs': 'Dallas Mavericks',
+  'spurs': 'San Antonio Spurs',
+  'thunder': 'Oklahoma City Thunder',
+  'suns': 'Phoenix Suns',
+  'bucks': 'Milwaukee Bucks',
+  'sixers': 'Philadelphia 76ers',
+  '76ers': 'Philadelphia 76ers',
+  'raptors': 'Toronto Raptors',
+  'hawks': 'Atlanta Hawks',
+  'hornets': 'Charlotte Hornets',
+  'cavaliers': 'Cleveland Cavaliers',
+  'cavs': 'Cleveland Cavaliers',
+  'pistons': 'Detroit Pistons',
+  'pacers': 'Indiana Pacers',
+  'magic': 'Orlando Magic',
+  'wizards': 'Washington Wizards',
+  'nuggets': 'Denver Nuggets',
+  'timberwolves': 'Minnesota Timberwolves',
+  'wolves': 'Minnesota Timberwolves',
+  'pelicans': 'New Orleans Pelicans',
+  'blazers': 'Portland Trail Blazers',
+  'trail blazers': 'Portland Trail Blazers',
+  'sacramento kings': 'Sacramento Kings',
+  'nba kings': 'Sacramento Kings',
+  'jazz': 'Utah Jazz',
+  'clippers': 'Los Angeles Clippers',
+  'grizzlies': 'Memphis Grizzlies',
+  // NFL
+  'ny giants': 'New York Giants',
+  'nfl giants': 'New York Giants',
+  'jets': 'New York Jets',  // Default jets → NFL (use 'winnipeg jets' for NHL)
+  'ny jets': 'New York Jets',
+  'nfl jets': 'New York Jets',
+  'cowboys': 'Dallas Cowboys',
+  'eagles': 'Philadelphia Eagles',
+  'patriots': 'New England Patriots',
+  'texans': 'Houston Texans',
+  'titans': 'Tennessee Titans',
+  'colts': 'Indianapolis Colts',
+  'jaguars': 'Jacksonville Jaguars',
+  'chiefs': 'Kansas City Chiefs',
+  'broncos': 'Denver Broncos',
+  'raiders': 'Las Vegas Raiders',
+  'chargers': 'Los Angeles Chargers',
+  'ravens': 'Baltimore Ravens',
+  'bengals': 'Cincinnati Bengals',
+  'browns': 'Cleveland Browns',
+  'steelers': 'Pittsburgh Steelers',
+  'bills': 'Buffalo Bills',
+  'dolphins': 'Miami Dolphins',
+  'bears': 'Chicago Bears',
+  'lions': 'Detroit Lions',
+  'packers': 'Green Bay Packers',
+  'vikings': 'Minnesota Vikings',
+  'falcons': 'Atlanta Falcons',
+  'panthers': 'Carolina Panthers',  // Default panthers → NFL (use 'florida panthers' for NHL)
+  'carolina panthers': 'Carolina Panthers',
+  'nfl panthers': 'Carolina Panthers',
+  'saints': 'New Orleans Saints',
+  'buccaneers': 'Tampa Bay Buccaneers',
+  'bucs': 'Tampa Bay Buccaneers',
+  'arizona cardinals': 'Arizona Cardinals',
+  'nfl cardinals': 'Arizona Cardinals',
+  'rams': 'Los Angeles Rams',
+  '49ers': 'San Francisco 49ers',
+  'niners': 'San Francisco 49ers',
+  'seahawks': 'Seattle Seahawks',
+  'commanders': 'Washington Commanders',
+  'redskins': 'Washington Commanders',
+  // MLB
+  'yankees': 'New York Yankees',
+  'mets': 'New York Mets',
+  'astros': 'Houston Astros',
+  'rangers': 'Texas Rangers',  // Default rangers → MLB Texas (use 'ny rangers' or 'nyr' for NHL)
+  'texas rangers': 'Texas Rangers',
+  'dodgers': 'Los Angeles Dodgers',
+  'red sox': 'Boston Red Sox',
+  'cubs': 'Chicago Cubs',
+  'white sox': 'Chicago White Sox',
+  'braves': 'Atlanta Braves',
+  'phillies': 'Philadelphia Phillies',
+  'marlins': 'Miami Marlins',
+  'nationals': 'Washington Nationals',
+  'reds': 'Cincinnati Reds',
+  'pirates': 'Pittsburgh Pirates',
+  'brewers': 'Milwaukee Brewers',
+  'padres': 'San Diego Padres',
+  'rockies': 'Colorado Rockies',
+  'd-backs': 'Arizona Diamondbacks',
+  'diamondbacks': 'Arizona Diamondbacks',
+  'mariners': 'Seattle Mariners',
+  'athletics': 'Oakland Athletics',
+  'angels': 'Los Angeles Angels',
+  'twins': 'Minnesota Twins',
+  'royals': 'Kansas City Royals',
+  'tigers': 'Detroit Tigers',
+  'guardians': 'Cleveland Guardians',
+  'orioles': 'Baltimore Orioles',
+  'blue jays': 'Toronto Blue Jays',
+  'rays': 'Tampa Bay Rays',
+  'cardinals': 'St. Louis Cardinals',  // Default cardinals → MLB (use 'arizona cardinals' for NFL)
+  'stl cardinals': 'St. Louis Cardinals',
+  'st louis cardinals': 'St. Louis Cardinals',
+  'mlb cardinals': 'St. Louis Cardinals',
+  'giants': 'San Francisco Giants',  // Default giants → MLB (use 'ny giants' for NFL)
+  'sf giants': 'San Francisco Giants',
+  'san francisco giants': 'San Francisco Giants',
+  'mlb giants': 'San Francisco Giants',
+  // NHL
+  'ny rangers': 'New York Rangers',
+  'nyr': 'New York Rangers',
+  'islanders': 'New York Islanders',
+  'devils': 'New Jersey Devils',
+  'bruins': 'Boston Bruins',
+  'stars': 'Dallas Stars',
+  'blackhawks': 'Chicago Blackhawks',
+  'red wings': 'Detroit Red Wings',
+  'penguins': 'Pittsburgh Penguins',
+  'flyers': 'Philadelphia Flyers',
+  'capitals': 'Washington Capitals',
+  'caps': 'Washington Capitals',
+  'lightning': 'Tampa Bay Lightning',
+  'avalanche': 'Colorado Avalanche',
+  'avs': 'Colorado Avalanche',
+  'blues': 'St. Louis Blues',
+  'wild': 'Minnesota Wild',
+  'predators': 'Nashville Predators',
+  'preds': 'Nashville Predators',
+  'winnipeg jets': 'Winnipeg Jets',
+  'nhl jets': 'Winnipeg Jets',
+  'flames': 'Calgary Flames',
+  'oilers': 'Edmonton Oilers',
+  'canucks': 'Vancouver Canucks',
+  'kraken': 'Seattle Kraken',
+  'golden knights': 'Vegas Golden Knights',
+  'ducks': 'Anaheim Ducks',
+  'sharks': 'San Jose Sharks',
+  'kings': 'Los Angeles Kings',  // Default kings → NHL (use 'sacramento kings' for NBA)
+  'la kings': 'Los Angeles Kings',
+  'nhl kings': 'Los Angeles Kings',
+  'coyotes': 'Arizona Coyotes',
+  'hurricanes': 'Carolina Hurricanes',
+  'canes': 'Carolina Hurricanes',
+  'blue jackets': 'Columbus Blue Jackets',
+  'sabres': 'Buffalo Sabres',
+  'senators': 'Ottawa Senators',
+  'sens': 'Ottawa Senators',
+  'canadiens': 'Montreal Canadiens',
+  'habs': 'Montreal Canadiens',
+  'maple leafs': 'Toronto Maple Leafs',
+  'leafs': 'Toronto Maple Leafs',
+  'florida panthers': 'Florida Panthers',
+  'nhl panthers': 'Florida Panthers',
+};
+
+// Teams with ambiguous names that could refer to multiple sports leagues
+const AMBIGUOUS_TEAMS: Record<string, { options: string[]; hint: string }> = {
+  'jets': {
+    options: ['New York Jets (NFL)', 'Winnipeg Jets (NHL)'],
+    hint: 'Try: `ny jets` or `nfl jets` for NFL, `winnipeg jets` or `nhl jets` for NHL',
+  },
+  'panthers': {
+    options: ['Carolina Panthers (NFL)', 'Florida Panthers (NHL)'],
+    hint: 'Try: `carolina panthers` or `nfl panthers` for NFL, `florida panthers` or `nhl panthers` for NHL',
+  },
+  'rangers': {
+    options: ['Texas Rangers (MLB)', 'New York Rangers (NHL)'],
+    hint: 'Try: `texas rangers` for MLB, `ny rangers` or `nyr` for NHL',
+  },
+  'giants': {
+    options: ['New York Giants (NFL)', 'San Francisco Giants (MLB)'],
+    hint: 'Try: `ny giants` for NFL, `sf giants` or `san francisco giants` for MLB',
+  },
+  'cardinals': {
+    options: ['Arizona Cardinals (NFL)', 'St. Louis Cardinals (MLB)'],
+    hint: 'Try: `arizona cardinals` for NFL, `st louis cardinals` or `stl cardinals` for MLB',
+  },
+  'kings': {
+    options: ['Sacramento Kings (NBA)', 'Los Angeles Kings (NHL)'],
+    hint: 'Try: `sacramento kings` for NBA, `la kings` for NHL',
+  },
+};
+
+/**
+ * Check if a team name is ambiguous and needs clarification
+ */
+function isAmbiguousTeam(teamName: string): { options: string[]; hint: string } | null {
+  const lower = teamName.toLowerCase().trim();
+  return AMBIGUOUS_TEAMS[lower] || null;
+}
+
+function expandTeamName(shortName: string): string {
+  const lower = shortName.toLowerCase().trim();
+  return TEAM_NAME_EXPANSIONS[lower] || shortName;
+}
+
+/**
  * Calculate due date for issue call:
  * - If before 4 PM EST → today
  * - If 4 PM EST or later → tomorrow
@@ -525,21 +735,33 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const email = parseResult.email;
     const teamName = parseResult.team;
 
-    // Check for @mention in the original text (Slack IDs)
-    let suggestedSupporterSlackId: string | undefined;
+    // Check if team name is ambiguous (could refer to multiple leagues)
+    const ambiguity = isAmbiguousTeam(teamName);
+    if (ambiguity) {
+      await slack.sendResponseUrl(response_url,
+        `:question: *Which team did you mean?*\n\n` +
+        `"${teamName}" could refer to:\n` +
+        ambiguity.options.map(opt => `• ${opt}`).join('\n') + '\n\n' +
+        `${ambiguity.hint}`
+      );
+      return;
+    }
+
+    // Expand team name to full official name
+    const fullTeamName = expandTeamName(teamName);
+
+    // Check for @mention in the original text (Slack IDs) and resolve to user
+    let supporterUser: Awaited<ReturnType<typeof findUserBySlackId>> | null = null;
     const mentionPattern = /<@([A-Z0-9]+)>/;
     const mentionMatch = trimmedText.match(mentionPattern);
     if (mentionMatch) {
-      suggestedSupporterSlackId = mentionMatch[1];
+      supporterUser = await findUserBySlackId(mentionMatch[1]);
     } else if (parseResult.suggestedSupporter) {
-      // AI found a supporter name, try to resolve to Slack ID
-      const supporter = await findUserByName(parseResult.suggestedSupporter);
-      if (supporter?.slackId) {
-        suggestedSupporterSlackId = supporter.slackId;
-      }
+      // AI found a supporter name, try to resolve
+      supporterUser = await findUserByName(parseResult.suggestedSupporter);
     }
 
-    console.log(`Issue call parsed: team=${teamName}, email=${email}, supporter=${suggestedSupporterSlackId || 'none'}`);
+    console.log(`Issue call parsed: team=${fullTeamName}, email=${email}, supporter=${supporterUser?.name || 'none'}`);
 
     // Look up the account
     const accountResult = await lookupAccountForIssueCall(teamName, email);
@@ -569,16 +791,21 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const runId = randomUUID();
 
     // Create Monday item
-    const taskName = `Issue Call: ${accountResult.success ? accountResult.name || email : email} (${accountResult.team || teamName})`;
+    const displayTeam = accountResult.team ? expandTeamName(accountResult.team) : fullTeamName;
+    const taskName = `Issue Call: ${accountResult.success ? accountResult.name || email : email} (${displayTeam})`;
+
+    // If supporter was mentioned, assign them directly
+    const supportIds = supporterUser ? [String(supporterUser.mondayId)] : [];
+
     const mondayItem = await monday.createItem({
       name: taskName,
       dueDate,
       ownerIds: [dayna.mondayId, ruzzell.mondayId],
-      supportIds: [], // Will be assigned when someone claims
+      supportIds,
       taskType: 'Issue Call',
       source: 'Slack Tasks',
       urgency: 'High',
-      team: accountResult.team || teamName,
+      team: displayTeam,
     });
 
     console.log(`Created Monday item ${mondayItem.id} for issue call`);
@@ -613,10 +840,15 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       ? formatIssueCallAccount(accountResult)
       : `⚠️ Account lookup failed: ${accountResult.error}`;
 
-    // Include suggested supporter mention if provided
-    const supporterLine = suggestedSupporterSlackId
-      ? `*Suggested Supporter:* <@${suggestedSupporterSlackId}> - please confirm by reacting 👀\n`
+    // Include supporter line if assigned
+    const supporterLine = supporterUser?.slackId
+      ? `*Supporter:* <@${supporterUser.slackId}>\n`
       : '';
+
+    // Show "waiting for supporter" message only if no supporter assigned
+    const waitingLine = supporterUser
+      ? ''
+      : `⏳ *Waiting for supporter* - React with 👀 or reply to claim this issue.\n`;
 
     const slackMessage = await slack.getClient().chat.postMessage({
       channel: issueCallChannelId,
@@ -624,8 +856,8 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
         `${accountInfo}\n\n` +
         `*Due:* ${dueDate}\n` +
         `*Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>\n` +
-        `${supporterLine}\n` +
-        `⏳ *Waiting for supporter* - React with 👀 or reply to claim this issue.\n\n` +
+        `${supporterLine}` +
+        `${waitingLine}\n` +
         `<${mondayUrl}|View on Monday.com>`,
     });
 
@@ -637,13 +869,17 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
 
     // Register this issue call for monitoring (20-min pings until claimed)
+    // If supporter already assigned, mark as claimed so no pings are sent
+    const supporterSlackId = supporterUser?.slackId ?? undefined;  // Convert null to undefined
     registerIssueCall({
       mondayItemId: mondayItem.id,
       slackThreadTs: slackMessage.ts,
       channelId: issueCallChannelId,
       createdAt: Date.now(),
       ownerSlackIds: [dayna.slackId, ruzzell.slackId].filter((id): id is string => !!id),
-      suggestedSupporterSlackId,
+      suggestedSupporterSlackId: supporterSlackId,
+      // If supporter already assigned, mark as pre-claimed
+      ...(supporterSlackId ? { claimed: true, claimedBy: supporterSlackId } : {}),
     });
 
     console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
@@ -652,9 +888,10 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const slackThreadUrl = `https://slack.com/app_redirect?channel=${issueCallChannelId}&message_ts=${slackMessage.ts}`;
     await slack.sendResponseUrl(response_url,
       `✅ *Issue Call Created*\n\n` +
-      `• *Team:* ${accountResult.team || teamName}\n` +
+      `• *Team:* ${displayTeam}\n` +
       `• *Email:* ${email}\n` +
       `• *Due:* ${dueDate}\n` +
+      `${supporterUser ? `• *Supporter:* ${supporterUser.name}\n` : ''}` +
       `• *Monday:* <${mondayUrl}|View Item>\n` +
       `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
       `• *Run ID:* \`${runId.substring(0, 8)}\``
