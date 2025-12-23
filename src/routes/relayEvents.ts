@@ -10,7 +10,7 @@ import express from 'express';
 import * as sync from '../services/sync.js';
 import * as slack from '../services/slack.js';
 import { config } from '../config/environment.js';
-import { isPendingIssueCall, claimIssueCall } from '../services/issueCallTracker.js';
+import { isPendingIssueCall, claimIssueCall, isIssueCall, completeIssueCall } from '../services/issueCallTracker.js';
 
 const router = Router();
 
@@ -231,6 +231,16 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
             console.log(`After-hours done tracked for thread ${threadTs}`);
           } catch (doneError) {
             console.log('After-hours done tracking skipped (not a deferred task or already done)');
+          }
+
+          // Handle issue call completion
+          if (isIssueCall(threadTs)) {
+            console.log('Checkmark on issue call thread, marking complete:', event.user);
+            try {
+              await completeIssueCall(threadTs, event.user);
+            } catch (err) {
+              console.error('Failed to complete issue call:', err);
+            }
           }
         }
       }

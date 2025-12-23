@@ -90,6 +90,10 @@ Create an issue call task with automatic account lookup from Google Sheets.
 - React with 👀 or reply to the thread
 - First person to react/reply becomes the Supporter on Monday
 
+**Completing an Issue Call:**
+- React with ✅ to mark the issue call complete
+- This updates Monday.com and posts a confirmation to the thread
+
 **Escalation (if unclaimed):**
 | Ping # | Timing | Who gets pinged |
 |--------|--------|-----------------|
@@ -131,8 +135,8 @@ Use emoji reactions on task messages to update status:
 
 | Reaction | What it does |
 |----------|--------------|
-| 👀 (eyes) | **Acknowledge** - Marks you've seen the task. Sets status to "Acknowledged" on Monday. |
-| ✅ (white_check_mark) | **Complete** - Marks the task as done. Sets status to "Complete" on Monday. |
+| 👀 (eyes) | **Acknowledge** - Marks you've seen the task. Sets status to "Acknowledged" on Monday. For issue calls: claims the issue call and assigns you as supporter. |
+| ✅ (white_check_mark) | **Complete** - Marks the task as done. Sets status to "Complete" on Monday. For issue calls: also marks the issue call complete. |
 | ☑️ (ballot_box_with_check) | **Complete** - Same as ✅ |
 | ✔️ (heavy_check_mark) | **Complete** - Same as ✅ |
 
@@ -233,6 +237,9 @@ Priority: High
 ```
 
 **What to do:** React with 👀 or reply to claim the issue call and be assigned as Supporter.
+
+**Due Today & Overdue Reminders:**
+Issue calls also receive the same due today (10 AM) and overdue reminders as regular tasks. These are sent to the issue call channel.
 
 ---
 

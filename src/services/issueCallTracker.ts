@@ -287,3 +287,63 @@ export function initializeIssueCallTracker(): void {
 export function getAllPendingIssueCalls(): PendingIssueCall[] {
   return Array.from(pendingIssueCalls.values()).filter(ic => !ic.claimed);
 }
+
+/**
+ * Check if a thread is an issue call (claimed or not)
+ */
+export function isIssueCall(threadTs: string): boolean {
+  return pendingIssueCalls.has(threadTs);
+}
+
+/**
+ * Get an issue call by thread timestamp (claimed or not)
+ */
+export function getIssueCall(threadTs: string): PendingIssueCall | undefined {
+  return pendingIssueCalls.get(threadTs);
+}
+
+/**
+ * Mark an issue call as complete via ✅ reaction
+ * This also claims it if not already claimed
+ */
+export async function completeIssueCall(
+  threadTs: string,
+  completerSlackId: string
+): Promise<{ success: boolean; error?: string }> {
+  const issueCall = pendingIssueCalls.get(threadTs);
+
+  if (!issueCall) {
+    return { success: false, error: 'Issue call not found' };
+  }
+
+  // If not claimed yet, claim it first
+  if (!issueCall.claimed) {
+    const claimer = await findUserBySlackId(completerSlackId);
+    if (claimer) {
+      try {
+        await monday.addSupporter(issueCall.mondayItemId, claimer.mondayId);
+        console.log(`Added ${claimer.name} as supporter on Monday item ${issueCall.mondayItemId}`);
+      } catch (error) {
+        console.error('Failed to add supporter on Monday:', error);
+      }
+    }
+    issueCall.claimed = true;
+    issueCall.claimedBy = completerSlackId;
+  }
+
+  saveToDisk();
+
+  // Post completion confirmation to thread
+  const completer = issueCall.claimedBy === completerSlackId
+    ? `<@${completerSlackId}>`
+    : `<@${completerSlackId}> (claimed by <@${issueCall.claimedBy}>)`;
+
+  await slack.postToThread(
+    issueCall.slackThreadTs,
+    `✅ Issue call marked complete by ${completer}.`,
+    issueCall.channelId
+  );
+
+  console.log(`Issue call ${threadTs} marked complete by ${completerSlackId}`);
+  return { success: true };
+}

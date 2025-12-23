@@ -107,6 +107,7 @@ interface TaskForFollowUp {
   slackThreadTs: string | null;
   workflowStatus: string; // "Acknowledged", "Working on it", "Complete", or ""
   createdAt: string;
+  taskType: string; // "Issue Call", "General", etc.
 }
 
 /**
@@ -334,8 +335,20 @@ async function getOpenTasks(): Promise<TaskForFollowUp[]> {
       slackThreadTs: getValue(config.monday.columns.slackThreadId) || null,
       workflowStatus: getValue(config.monday.columns.workflowStatus),
       createdAt: item.created_at,
+      taskType: getValue(config.monday.columns.type) || '',
     };
   });
+}
+
+/**
+ * Get the correct Slack channel for a task
+ * Issue Calls go to the issue call channel, everything else goes to main channel
+ */
+function getChannelForTask(task: TaskForFollowUp): string | undefined {
+  if (task.taskType.toLowerCase() === 'issue call') {
+    return config.slack.issueCallChannelId || undefined;
+  }
+  return undefined; // Use default channel
 }
 
 /**
@@ -414,11 +427,12 @@ async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<boolean> 
 
   const mentions = formatOwnerMentions(task.owners);
   const message = pickRandom(ACKNOWLEDGE_REMINDERS)(task, mentions);
+  const channel = getChannelForTask(task);
 
-  await slack.postToThread(task.slackThreadTs, message);
+  await slack.postToThread(task.slackThreadTs, message, channel);
 
   markFollowUpSent(followUpKey);
-  console.log(`Sent acknowledge reminder for task ${task.id}`);
+  console.log(`Sent acknowledge reminder for task ${task.id} (type: ${task.taskType || 'General'})`);
   return true;
 }
 
@@ -446,11 +460,12 @@ async function sendDueTodayReminder(task: TaskForFollowUp): Promise<boolean> {
 
   const mentions = formatOwnerMentions(task.owners);
   const message = pickRandom(DUE_TODAY_REMINDERS)(task, mentions);
+  const channel = getChannelForTask(task);
 
-  await slack.postToThread(task.slackThreadTs, message);
+  await slack.postToThread(task.slackThreadTs, message, channel);
 
   markFollowUpSent(followUpKey);
-  console.log(`Sent due-today reminder for task ${task.id}`);
+  console.log(`Sent due-today reminder for task ${task.id} (type: ${task.taskType || 'General'})`);
   return true;
 }
 
@@ -474,11 +489,12 @@ async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): 
   const message = daysOverdue >= 2
     ? pickRandom(ESCALATION_REMINDERS)(task, daysOverdue, mentions)
     : pickRandom(OVERDUE_REMINDERS)(task, daysOverdue, mentions);
+  const channel = getChannelForTask(task);
 
-  await slack.postToThread(task.slackThreadTs, message);
+  await slack.postToThread(task.slackThreadTs, message, channel);
 
   markFollowUpSent(followUpKey);
-  console.log(`Sent ${daysOverdue >= 2 ? 'escalated ' : ''}overdue reminder for task ${task.id} (${daysOverdue} days)`);
+  console.log(`Sent ${daysOverdue >= 2 ? 'escalated ' : ''}overdue reminder for task ${task.id} (${daysOverdue} days, type: ${task.taskType || 'General'})`);
   return true;
 }
 
