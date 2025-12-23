@@ -1058,12 +1058,12 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     }
 
     // Default mode: Create Slack threads for items without them
-    // Reset mode: Recreate threads for ALL non-done items
-    const mode = isReset ? 'all' : 'missing';
+    // Reset mode: Recreate threads for items stamped today (after cleanup)
+    const mode = isReset ? 'today' : 'missing';
     res.json({
       response_type: 'ephemeral',
       text: isReset
-        ? `⏳ Fetching ALL non-done Monday.com items...`
+        ? `⏳ Fetching items with thread IDs from today...`
         : `⏳ Fetching Monday.com items without Slack threads...`,
     });
 
