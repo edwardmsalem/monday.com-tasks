@@ -725,7 +725,9 @@ export async function lookupAccountForIssueCall(
     }
   }
 
-  const seatsFormatted = seatStrings.join(', ');
+  const seatsFormatted = seatStrings.length > 1
+    ? '\n  • ' + seatStrings.join('\n  • ')
+    : seatStrings[0] || '';
 
   console.log(`Found ${matchingAccounts.length} seat location(s) for ${email} (${teamResult.sheetName})`);
 
