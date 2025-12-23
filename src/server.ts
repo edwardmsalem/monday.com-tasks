@@ -409,6 +409,7 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 // ============================================================================
 
 import { lookupAccountForIssueCall, formatIssueCallAccount } from './services/sheets.js';
+import { parseIssueCallInputSafe } from './services/claude.js';
 import {
   registerIssueCall,
   CLOSERS_GROUP_ID,
@@ -482,62 +483,63 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     if (!trimmedText || trimmedText.toLowerCase() === 'help') {
       res.json({
         response_type: 'ephemeral',
-        text: `*Issue Call - Create Task with Account Lookup*\n\n` +
-          `Create an issue call task and look up account information.\n\n` +
-          `*Usage:* \`/issuecall [team] [email] [@supporter]\`\n\n` +
+        text: `*Issue Call - AI-Powered Task with Account Lookup*\n\n` +
+          `Describe the issue call naturally. I'll extract the team and email.\n\n` +
           `*Examples:*\n` +
           `• \`/issuecall astros john@example.com\`\n` +
-          `• \`/issuecall astros john@example.com @jamie\`\n` +
-          `• \`/issuecall houston astros john@example.com\`\n\n` +
-          `_Mention someone to suggest them as supporter. They'll be pinged first to confirm._`,
+          `• \`/issuecall issue call for houston astros customer jane@gmail.com\`\n` +
+          `• \`/issuecall rockets account holder bob@email.com @jamie\`\n` +
+          `• \`/issuecall texans fan@gmail.com with Sarah's help\`\n\n` +
+          `_Mention someone to suggest them as supporter. They'll be pinged first._`,
       });
       return;
     }
-
-    // Parse team, email, and optional @mention from input
-    const parts = trimmedText.split(/\s+/);
-    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const mentionPattern = /^<@([A-Z0-9]+)>$/;
-
-    // Find the email in the parts
-    const emailIndex = parts.findIndex(p => emailPattern.test(p));
-    if (emailIndex === -1) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `:x: Please provide a valid email address.\n\nUsage: \`/issuecall [team] [email]\`\n\nExample: \`/issuecall astros john@example.com\``,
-      });
-      return;
-    }
-
-    const email = parts[emailIndex];
-    const teamParts = parts.slice(0, emailIndex);
-
-    // Check for @mention after email (suggested supporter)
-    let suggestedSupporterSlackId: string | undefined;
-    const afterEmail = parts.slice(emailIndex + 1);
-    for (const part of afterEmail) {
-      const mentionMatch = part.match(mentionPattern);
-      if (mentionMatch) {
-        suggestedSupporterSlackId = mentionMatch[1];
-        break;
-      }
-    }
-
-    if (teamParts.length === 0) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `:x: Please provide a team name.\n\nUsage: \`/issuecall [team] [email]\`\n\nExample: \`/issuecall astros john@example.com\``,
-      });
-      return;
-    }
-
-    const teamName = teamParts.join(' ');
 
     // Acknowledge immediately
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Creating issue call for ${email} (${teamName})...`,
+      text: `⏳ Analyzing issue call request...`,
     });
+
+    // Use AI to parse the input
+    const parseResult = await parseIssueCallInputSafe(trimmedText);
+
+    if (!parseResult || !parseResult.email) {
+      await slack.sendResponseUrl(response_url,
+        `:x: Could not find an email address in your request.\n\n` +
+        `Please include the account holder's email.\n\n` +
+        `Example: \`/issuecall astros john@example.com\``
+      );
+      return;
+    }
+
+    if (!parseResult.team) {
+      await slack.sendResponseUrl(response_url,
+        `:x: Could not identify the team.\n\n` +
+        `Please include the team name (e.g., Astros, Rockets, Texans).\n\n` +
+        `Example: \`/issuecall astros john@example.com\``
+      );
+      return;
+    }
+
+    const email = parseResult.email;
+    const teamName = parseResult.team;
+
+    // Check for @mention in the original text (Slack IDs)
+    let suggestedSupporterSlackId: string | undefined;
+    const mentionPattern = /<@([A-Z0-9]+)>/;
+    const mentionMatch = trimmedText.match(mentionPattern);
+    if (mentionMatch) {
+      suggestedSupporterSlackId = mentionMatch[1];
+    } else if (parseResult.suggestedSupporter) {
+      // AI found a supporter name, try to resolve to Slack ID
+      const supporter = await findUserByName(parseResult.suggestedSupporter);
+      if (supporter?.slackId) {
+        suggestedSupporterSlackId = supporter.slackId;
+      }
+    }
+
+    console.log(`Issue call parsed: team=${teamName}, email=${email}, supporter=${suggestedSupporterSlackId || 'none'}`);
 
     // Look up the account
     const accountResult = await lookupAccountForIssueCall(teamName, email);

@@ -668,3 +668,128 @@ export async function analyzeSlackTaskSafe(
     };
   }
 }
+
+// ============================================================================
+// Issue Call Parsing
+// ============================================================================
+
+export interface IssueCallParseResult {
+  team: string;
+  email: string;
+  suggestedSupporter: string | null;
+  confidence: number;
+}
+
+/**
+ * Parse natural language issue call input to extract team, email, and optional supporter
+ *
+ * Examples:
+ * - "astros john@example.com" → team: astros, email: john@example.com
+ * - "issue call for houston astros customer jane@gmail.com" → team: houston astros, email: jane@gmail.com
+ * - "texans account holder bob@email.com @jamie" → team: texans, email: bob@email.com, supporter: jamie
+ * - "rockets fan@gmail.com with Sarah's help" → team: rockets, email: fan@gmail.com, supporter: Sarah
+ */
+export async function parseIssueCallInput(input: string): Promise<IssueCallParseResult> {
+  const client = getClient();
+
+  const systemPrompt = `You are an issue call parser. Extract the team name, email address, and optional suggested supporter from natural language input.
+
+Sports teams to recognize:
+- MLB: Astros, Rangers, Mariners, Athletics, Angels, Yankees, Mets, Red Sox, Cubs, Dodgers, etc.
+- NFL: Texans, Cowboys, Eagles, Giants, Jets, Patriots, etc.
+- NBA: Rockets, Mavericks, Spurs, Lakers, Knicks, Nets, Bulls, etc.
+- NHL: Stars, Bruins, Rangers, Islanders, Devils, etc.
+- MLS and other sports teams
+
+Rules:
+1. Team name: Required. Extract the sports team mentioned. Can be partial (e.g., "astros") or full (e.g., "houston astros").
+2. Email: Required. Extract the email address from the input.
+3. Suggested supporter: Optional. Look for:
+   - @mentions like "@jamie" or "<@U12345>"
+   - "with X's help" or "have X help"
+   - "X for support" or "assign to X"
+   - Return just the name (not the @), or null if none mentioned
+
+Be flexible with input formats. Users might say:
+- "astros john@example.com"
+- "issue call for houston astros john@example.com"
+- "astros customer john@example.com @jamie"
+- "rockets account holder jane@gmail.com with Sarah's help"`;
+
+  const tool: Anthropic.Tool = {
+    name: 'parse_issue_call',
+    description: 'Parse issue call input to extract team, email, and supporter',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        team: {
+          type: 'string',
+          description: 'The sports team name (e.g., "astros", "houston astros", "rockets")',
+        },
+        email: {
+          type: 'string',
+          description: 'The email address of the account holder',
+        },
+        suggestedSupporter: {
+          type: 'string',
+          nullable: true,
+          description: 'Name of suggested supporter if mentioned, null otherwise',
+        },
+        confidence: {
+          type: 'number',
+          description: 'Confidence score 0-1 for the extraction',
+        },
+      },
+      required: ['team', 'email', 'confidence'],
+    },
+  };
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 500,
+    system: systemPrompt,
+    tools: [tool],
+    tool_choice: { type: 'tool', name: 'parse_issue_call' },
+    messages: [
+      {
+        role: 'user',
+        content: `Parse this issue call input: "${input}"`,
+      },
+    ],
+  });
+
+  // Extract the tool use response
+  const toolUse = response.content.find(
+    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+  );
+
+  if (!toolUse) {
+    throw new Error('No tool response from Claude');
+  }
+
+  const result = toolUse.input as {
+    team: string;
+    email: string;
+    suggestedSupporter?: string | null;
+    confidence: number;
+  };
+
+  return {
+    team: result.team,
+    email: result.email,
+    suggestedSupporter: result.suggestedSupporter || null,
+    confidence: result.confidence,
+  };
+}
+
+/**
+ * Safe wrapper for parseIssueCallInput with fallback
+ */
+export async function parseIssueCallInputSafe(input: string): Promise<IssueCallParseResult | null> {
+  try {
+    return await parseIssueCallInput(input);
+  } catch (error) {
+    console.error('Claude issue call parsing failed:', error);
+    return null;
+  }
+}

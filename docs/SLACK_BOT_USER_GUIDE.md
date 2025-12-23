@@ -54,19 +54,19 @@ Create a task using natural language. The AI will parse your request and extract
 
 ### /issuecall
 
-Create an issue call task with automatic account lookup from Google Sheets.
+Create an issue call task with automatic account lookup from Google Sheets. AI-powered - describe naturally!
 
 **Usage:**
 ```
-/issuecall [team] [email] [@suggested_supporter]
+/issuecall [natural language description with team and email]
 ```
 
 **Examples:**
 ```
 /issuecall astros john@example.com
-/issuecall houston astros jane.doe@email.com
-/issuecall texans customer@gmail.com @jamie
-/issuecall rockets fan@gmail.com @sarah
+/issuecall issue call for houston astros customer jane@gmail.com
+/issuecall rockets account holder bob@email.com @jamie
+/issuecall texans fan fan@gmail.com with Sarah's help
 ```
 
 **What happens:**
@@ -253,8 +253,8 @@ Tasks created after business hours (after 8 PM or on weekends):
 ### Commands
 | Command | Purpose |
 |---------|---------|
-| `/task [description]` | Create task from natural language |
-| `/issuecall [team] [email] [@supporter]` | Issue call with account lookup |
+| `/task [description]` | Create task from natural language (AI-powered) |
+| `/issuecall [description]` | Issue call with account lookup (AI-powered) |
 
 ### Reactions
 | Emoji | Action |
