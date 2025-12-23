@@ -931,11 +931,12 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 
 /**
  * /backfill slash command handler
- * Creates Slack threads for existing Monday.com items that don't have one
+ * Deletes Slack threads for completed Monday.com items (cleanup mode)
  *
- * Usage: /backfill [preview]
- * - /backfill preview - Show items that would be backfilled (dry run)
- * - /backfill - Actually create threads for items without one
+ * Usage: /backfill
+ * - Finds all items with status "Complete" that have Slack threads
+ * - Deletes those Slack messages
+ * - Clears the Slack thread ID from Monday
  *
  * Only allowed for users in the taskCommandWhitelist
  */
@@ -947,13 +948,13 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
   }
 
   try {
-    const { text, user_id, response_url } = req.body as {
+    const { user_id, response_url } = req.body as {
       text: string;
       user_id: string;
       response_url: string;
     };
 
-    console.log(`/backfill command received from ${user_id}: ${text}`);
+    console.log(`/backfill command received from ${user_id} - cleanup mode`);
 
     // Check permissions - only allow whitelisted users
     const whitelist = config.slack.taskCommandWhitelist;
@@ -965,137 +966,64 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
       return;
     }
 
-    const trimmedText = text.trim().toLowerCase();
-
-    // Handle help
-    if (trimmedText === 'help') {
-      res.json({
-        response_type: 'ephemeral',
-        text: `*Backfill - Create Slack threads for existing Monday items*\n\n` +
-          `*Usage:*\n` +
-          `• \`/backfill preview\` - Show items that need Slack threads (dry run)\n` +
-          `• \`/backfill\` - Actually create threads for all items\n\n` +
-          `_Only creates threads for items without an existing Slack Thread ID._`,
-      });
-      return;
-    }
-
-    const isPreview = trimmedText === 'preview';
-
     // Acknowledge immediately
     res.json({
       response_type: 'ephemeral',
-      text: isPreview
-        ? `⏳ Fetching items without Slack threads...`
-        : `⏳ Starting backfill - creating Slack threads for existing items...`,
+      text: `⏳ Finding completed items with Slack threads to clean up...`,
     });
 
-    // Fetch items without Slack thread
-    const items = await monday.getItemsWithoutSlackThread();
+    // Fetch completed items with Slack threads
+    const items = await monday.getCompletedItemsWithSlackThread();
 
     if (items.length === 0) {
       await slack.sendResponseUrl(response_url,
-        `✅ All items already have Slack threads. Nothing to backfill.`
+        `✅ No completed items with Slack threads found. Nothing to clean up.`
       );
       return;
     }
 
-    // Preview mode - just show what would be done
-    if (isPreview) {
-      const itemList = items.slice(0, 20).map(item =>
-        `• *${item.name}* (ID: ${item.id}) - Owner: ${item.owner || 'None'}, Type: ${item.taskType || 'None'}`
-      ).join('\n');
-
-      const moreText = items.length > 20 ? `\n\n_...and ${items.length - 20} more items_` : '';
-
-      await slack.sendResponseUrl(response_url,
-        `*📋 Items Without Slack Threads (${items.length} total)*\n\n` +
-        `${itemList}${moreText}\n\n` +
-        `_Run \`/backfill\` (without preview) to create threads for these items._`
-      );
-      return;
-    }
-
-    // Actually create threads
-    let created = 0;
+    // Delete Slack messages and clear Monday thread IDs
+    let deleted = 0;
     let failed = 0;
-    let updatesPosted = 0;
     const errors: string[] = [];
 
     for (const item of items) {
       try {
-        // Create Slack thread for this item
-        const mondayUrl = monday.getItemUrl(item.id);
+        // Parse the slack thread info to get channel and threadTs
+        const threadInfo = monday.parseSlackThreadValue(item.slackThreadId);
 
-        const slackMessage = await slack.getClient().chat.postMessage({
-          channel: config.slack.channelId,
-          text: `📋 *${item.name}*\n\n` +
-            `*Type:* ${item.taskType || 'Not set'}\n` +
-            `*Owner:* ${item.owner || 'Unassigned'}\n` +
-            `*Team:* ${item.team || 'N/A'}\n` +
-            `*Due:* ${item.dueDate || 'Not set'}\n` +
-            `*Status:* ${item.workflowStatus || 'Not set'}\n\n` +
-            `<${mondayUrl}|View on Monday.com>\n\n` +
-            `_Backfilled thread - created from existing Monday item._`,
-        });
-
-        if (slackMessage.ts) {
-          // Update Monday item with the Slack thread ID
-          await monday.updateSlackThreadId(item.id, slackMessage.ts);
-          created++;
-          console.log(`Backfilled Slack thread for item ${item.id}: ${slackMessage.ts}`);
-
-          // Fetch and post existing updates from Monday
-          const updates = await monday.getItemUpdates(item.id);
-          if (updates.length > 0) {
-            for (const update of updates) {
-              try {
-                // Skip updates that were originally from Slack (avoid duplicates)
-                if (update.textBody.includes('(via Slack)') || update.body.includes('(via Slack)')) {
-                  continue;
-                }
-
-                const authorName = update.creatorName || 'Monday User';
-                const timestamp = new Date(update.createdAt).toLocaleString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: 'numeric',
-                  minute: '2-digit',
-                });
-
-                await slack.postToThread(
-                  slackMessage.ts,
-                  `📋 *${authorName}* _(${timestamp} via Monday)_\n${update.textBody}`,
-                  config.slack.channelId
-                );
-                updatesPosted++;
-
-                // Small delay between updates
-                await new Promise(resolve => setTimeout(resolve, 300));
-              } catch (updateError) {
-                console.error(`Failed to post update for item ${item.id}:`, updateError);
-              }
-            }
+        if (threadInfo) {
+          // Delete the Slack message
+          try {
+            await slack.getClient().chat.delete({
+              channel: threadInfo.channelId,
+              ts: threadInfo.threadTs,
+            });
+            console.log(`Deleted Slack message for item ${item.id}: ${threadInfo.threadTs}`);
+          } catch (slackError) {
+            // Message might already be deleted, continue anyway
+            console.warn(`Could not delete Slack message for item ${item.id}:`, slackError);
           }
-        } else {
-          failed++;
-          errors.push(`Item ${item.id}: No thread timestamp returned`);
         }
 
+        // Clear the Slack thread ID from Monday
+        await monday.clearSlackThreadId(item.id);
+        deleted++;
+        console.log(`Cleared Slack thread ID for completed item ${item.id}`);
+
         // Small delay to avoid rate limits
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 300));
       } catch (error) {
         failed++;
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         errors.push(`Item ${item.id}: ${errorMsg}`);
-        console.error(`Failed to backfill item ${item.id}:`, error);
+        console.error(`Failed to cleanup item ${item.id}:`, error);
       }
     }
 
     // Send summary
-    let summaryText = `✅ *Backfill Complete*\n\n` +
-      `• Created: ${created} Slack threads\n` +
-      `• Updates posted: ${updatesPosted}\n` +
+    let summaryText = `✅ *Cleanup Complete*\n\n` +
+      `• Deleted: ${deleted} Slack threads for completed items\n` +
       `• Failed: ${failed}`;
 
     if (errors.length > 0 && errors.length <= 5) {
@@ -1109,7 +1037,7 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     console.error('/backfill command error:', error);
     res.json({
       response_type: 'ephemeral',
-      text: `:x: Error running backfill: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      text: `:x: Error running cleanup: ${error instanceof Error ? error.message : 'Unknown error'}`,
     });
   }
 });
