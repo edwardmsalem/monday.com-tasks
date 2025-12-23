@@ -616,14 +616,16 @@ export async function postToThread(
  */
 export async function addReaction(
   messageTs: string,
-  emoji: string
+  emoji: string,
+  channelId?: string
 ): Promise<void> {
   const client = getClient();
+  const channel = channelId || config.slack.channelId;
 
   try {
     await slackCircuit.execute(() =>
       client.reactions.add({
-        channel: config.slack.channelId,
+        channel,
         timestamp: messageTs,
         name: emoji,
       })

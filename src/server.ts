@@ -885,7 +885,8 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     }
 
     // Store Slack thread ID on Monday item for syncing
-    await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
+    // Pass the issue call channel ID so syncs go to the right channel
+    await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts, issueCallChannelId);
 
     // Register this issue call for monitoring (20-min pings until claimed)
     // If supporter already assigned, mark as claimed so no pings are sent
@@ -1018,6 +1019,7 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     // Actually create threads
     let created = 0;
     let failed = 0;
+    let updatesPosted = 0;
     const errors: string[] = [];
 
     for (const item of items) {
@@ -1042,6 +1044,39 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
           await monday.updateSlackThreadId(item.id, slackMessage.ts);
           created++;
           console.log(`Backfilled Slack thread for item ${item.id}: ${slackMessage.ts}`);
+
+          // Fetch and post existing updates from Monday
+          const updates = await monday.getItemUpdates(item.id);
+          if (updates.length > 0) {
+            for (const update of updates) {
+              try {
+                // Skip updates that were originally from Slack (avoid duplicates)
+                if (update.textBody.includes('(via Slack)') || update.body.includes('(via Slack)')) {
+                  continue;
+                }
+
+                const authorName = update.creatorName || 'Monday User';
+                const timestamp = new Date(update.createdAt).toLocaleString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                });
+
+                await slack.postToThread(
+                  slackMessage.ts,
+                  `📋 *${authorName}* _(${timestamp} via Monday)_\n${update.textBody}`,
+                  config.slack.channelId
+                );
+                updatesPosted++;
+
+                // Small delay between updates
+                await new Promise(resolve => setTimeout(resolve, 300));
+              } catch (updateError) {
+                console.error(`Failed to post update for item ${item.id}:`, updateError);
+              }
+            }
+          }
         } else {
           failed++;
           errors.push(`Item ${item.id}: No thread timestamp returned`);
@@ -1060,6 +1095,7 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     // Send summary
     let summaryText = `✅ *Backfill Complete*\n\n` +
       `• Created: ${created} Slack threads\n` +
+      `• Updates posted: ${updatesPosted}\n` +
       `• Failed: ${failed}`;
 
     if (errors.length > 0 && errors.length <= 5) {
