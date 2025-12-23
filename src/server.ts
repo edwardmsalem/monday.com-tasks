@@ -790,9 +790,17 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Generate run ID for tracking
     const runId = randomUUID();
 
+    // Get issue description from parsed input
+    const issueDescription = parseResult.issueDescription;
+
     // Create Monday item
     const displayTeam = accountResult.team ? expandTeamName(accountResult.team) : fullTeamName;
-    const taskName = `Issue Call: ${accountResult.success ? accountResult.name || email : email} (${displayTeam})`;
+    const accountName = accountResult.success ? accountResult.name || email : email;
+
+    // Include issue description in title if provided
+    const taskName = issueDescription
+      ? `Issue Call: ${accountName} (${displayTeam}) - ${issueDescription}`
+      : `Issue Call: ${accountName} (${displayTeam})`;
 
     // If supporter was mentioned, assign them directly
     const supportIds = supporterUser ? [String(supporterUser.mondayId)] : [];
@@ -820,6 +828,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     let updateHtml = `<p><strong>Issue Call Task</strong></p>` +
       `<p>Created by: ${creatorName}</p>`;
 
+    // Add issue description if provided
+    if (issueDescription) {
+      updateHtml += `<p><strong>Issue:</strong> ${issueDescription}</p>`;
+    }
+
     if (accountResult.success) {
       updateHtml += `<p><strong>Account Info:</strong></p>` +
         `<p>Name: ${accountResult.name || 'N/A'}</p>` +
@@ -840,6 +853,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       ? formatIssueCallAccount(accountResult)
       : `⚠️ Account lookup failed: ${accountResult.error}`;
 
+    // Include issue description line if provided
+    const issueLine = issueDescription
+      ? `*Issue:* ${issueDescription}\n\n`
+      : '';
+
     // Include supporter line if assigned
     const supporterLine = supporterUser?.slackId
       ? `*Supporter:* <@${supporterUser.slackId}>\n`
@@ -852,7 +870,8 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 
     const slackMessage = await slack.getClient().chat.postMessage({
       channel: issueCallChannelId,
-      text: `📞 *Issue Call*\n\n` +
+      text: `📞 *Issue Call*${issueDescription ? `: ${issueDescription}` : ''}\n\n` +
+        `${issueLine}` +
         `${accountInfo}\n\n` +
         `*Due:* ${dueDate}\n` +
         `*Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>\n` +
