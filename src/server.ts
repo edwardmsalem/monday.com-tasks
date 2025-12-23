@@ -957,8 +957,9 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
 
     const trimmedText = text?.trim().toLowerCase() || '';
     const isCleanup = trimmedText === 'cleanup';
+    const isReset = trimmedText === 'reset';
 
-    console.log(`/backfill command received from ${user_id}${isCleanup ? ' - cleanup mode' : ''}`);
+    console.log(`/backfill command received from ${user_id}${isCleanup ? ' - cleanup mode' : isReset ? ' - reset mode' : ''}`);
 
     // Check permissions - only allow whitelisted users
     const whitelist = config.slack.taskCommandWhitelist;
@@ -1057,13 +1058,17 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     }
 
     // Default mode: Create Slack threads for items without them
+    // Reset mode: Recreate threads for ALL non-done items
+    const mode = isReset ? 'all' : 'missing';
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Fetching Monday.com items without Slack threads...`,
+      text: isReset
+        ? `⏳ Fetching ALL non-done Monday.com items...`
+        : `⏳ Fetching Monday.com items without Slack threads...`,
     });
 
-    // Get items that need backfill (no Slack thread, status != done)
-    const items = await monday.getItemsForBackfill();
+    // Get items that need backfill
+    const items = await monday.getItemsForBackfill(mode);
 
     if (items.length === 0) {
       await slack.sendResponseUrl(response_url,
