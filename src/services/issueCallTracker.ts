@@ -153,7 +153,7 @@ export async function claimIssueCall(
 
 /**
  * Check if current time is within business hours
- * Business hours: Monday-Friday, 8am-8pm Eastern Time
+ * Business hours: Monday-Friday, 10am-6pm Eastern Time
  */
 function isBusinessHours(): boolean {
   const now = new Date();
@@ -167,8 +167,8 @@ function isBusinessHours(): boolean {
     return false;
   }
 
-  // Skip outside 8am-8pm
-  if (hour < 8 || hour >= 20) {
+  // Skip outside 10am-6pm
+  if (hour < 10 || hour >= 18) {
     return false;
   }
 

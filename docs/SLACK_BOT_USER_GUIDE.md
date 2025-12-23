@@ -210,7 +210,7 @@ Priority: High
 
 ### Issue Call Reminders
 
-**When:** Every 20 minutes while unclaimed (business hours only: M-F 8am-8pm ET)
+**When:** Every 20 minutes while unclaimed (business hours only: M-F 10am-6pm ET)
 
 **Standard ping (first hour):**
 ```
@@ -277,7 +277,7 @@ Tasks created after business hours (after 8 PM or on weekends):
 | Ack reminder | 4 hours after creation (business hours) |
 | Due today reminder | 10 AM on due date |
 | Overdue reminder | Daily until complete (business hours) |
-| Issue call ping | Every 20 min, M-F 8am-8pm ET |
+| Issue call ping | Every 20 min, M-F 10am-6pm ET |
 | Issue call escalation | After 1 hour |
 
 ---
