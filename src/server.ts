@@ -504,7 +504,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     if (emailIndex === -1) {
       res.json({
         response_type: 'ephemeral',
-        text: `:x: Please provide a valid email address.\n\nUsage: \`/issuecall [team] [email] [@supporter]\`\n\nExample: \`/issuecall astros john@example.com @jamie\``,
+        text: `:x: Please provide a valid email address.\n\nUsage: \`/issuecall [team] [email]\`\n\nExample: \`/issuecall astros john@example.com\``,
       });
       return;
     }
@@ -526,7 +526,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     if (teamParts.length === 0) {
       res.json({
         response_type: 'ephemeral',
-        text: `:x: Please provide a team name.\n\nUsage: \`/issuecall [team] [email] [@supporter]\`\n\nExample: \`/issuecall astros john@example.com @jamie\``,
+        text: `:x: Please provide a team name.\n\nUsage: \`/issuecall [team] [email]\`\n\nExample: \`/issuecall astros john@example.com\``,
       });
       return;
     }
