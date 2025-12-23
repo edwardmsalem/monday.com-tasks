@@ -30,9 +30,11 @@ export interface PendingIssueCall {
   channelId: string;
   createdAt: number;
   lastPingAt?: number;
+  pingCount: number;  // Track how many pings sent
   claimed: boolean;
   claimedBy?: string;  // Slack user ID
   ownerSlackIds?: string[];  // Dayna + Ruzzell Slack IDs for pinging
+  suggestedSupporterSlackId?: string;  // Mentioned user to ping first
 }
 
 // In-memory store of pending issue calls
@@ -76,11 +78,12 @@ function saveToDisk(): void {
 /**
  * Register a new issue call for tracking
  */
-export function registerIssueCall(issueCall: Omit<PendingIssueCall, 'claimed'>): void {
+export function registerIssueCall(issueCall: Omit<PendingIssueCall, 'claimed' | 'pingCount'>): void {
   const key = issueCall.slackThreadTs;
   pendingIssueCalls.set(key, {
     ...issueCall,
     claimed: false,
+    pingCount: 0,
   });
   saveToDisk();
   console.log(`Registered issue call for tracking: ${key}`);
@@ -177,11 +180,12 @@ function isBusinessHours(): boolean {
 
 /**
  * Ping for all unclaimed issue calls
- * - Every 20 minutes during business hours: @closers + Dayna + Ruzzell
- * - After 1 hour: Also include Edward
+ * - First ping: @suggested_supporter only (if mentioned in command)
+ * - Second ping onward: @dayna + @ruzzell
+ * - After 1 hour: Also include @edward
  */
 export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number }> {
-  // Only ping during business hours (M-F 8am-8pm ET)
+  // Only ping during business hours (M-F 10am-6pm ET)
   if (!isBusinessHours()) {
     return { pinged: 0 };
   }
@@ -201,19 +205,25 @@ export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number }> {
     const timeSinceCreation = now - issueCall.createdAt;
     const shouldEscalateToEdward = timeSinceCreation >= ESCALATION_THRESHOLD_MS;
 
-    // Build ping message
-    const ownerMentions = (issueCall.ownerSlackIds || [])
-      .map(id => `<@${id}>`)
-      .join(' ');
+    // Build ping message based on ping count
+    let mentions: string;
 
-    let message = `<!subteam^${CLOSERS_GROUP_ID}>`;
-    if (ownerMentions) {
-      message += ` ${ownerMentions}`;
+    if (issueCall.pingCount === 0 && issueCall.suggestedSupporterSlackId) {
+      // First ping: just the suggested supporter
+      mentions = `<@${issueCall.suggestedSupporterSlackId}>`;
+    } else {
+      // Second ping onward: Dayna + Ruzzell
+      mentions = (issueCall.ownerSlackIds || [])
+        .map(id => `<@${id}>`)
+        .join(' ');
     }
+
+    // Add Edward after 1 hour
     if (shouldEscalateToEdward) {
-      message += ` <@${EDWARD_SLACK_ID}>`;
+      mentions += ` <@${EDWARD_SLACK_ID}>`;
     }
-    message += ` This issue call is still waiting for someone to claim it. React with 👀 or reply to this thread to be assigned.`;
+
+    const message = `${mentions} This issue call is still waiting for someone to claim it. React with 👀 or reply to this thread to be assigned.`;
 
     // Send ping to thread
     try {
@@ -224,8 +234,9 @@ export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number }> {
       );
 
       issueCall.lastPingAt = now;
+      issueCall.pingCount = (issueCall.pingCount || 0) + 1;
       pingedCount++;
-      console.log(`Pinged for unclaimed issue call ${threadTs} (escalated: ${shouldEscalateToEdward})`);
+      console.log(`Pinged for unclaimed issue call ${threadTs} (ping #${issueCall.pingCount}, escalated: ${shouldEscalateToEdward})`);
     } catch (error) {
       console.error(`Failed to ping for issue call ${threadTs}:`, error);
     }

@@ -59,14 +59,15 @@ Create an issue call task with automatic account lookup from Google Sheets.
 
 **Usage:**
 ```
-/issuecall [team] [email]
+/issuecall [team] [email] [@suggested_supporter]
 ```
 
 **Examples:**
 ```
 /issuecall astros john@example.com
 /issuecall houston astros jane.doe@email.com
-/issuecall texans customer@gmail.com
+/issuecall texans customer@gmail.com @jamie
+/issuecall rockets fan@gmail.com @sarah
 ```
 
 **What happens:**
@@ -82,17 +83,21 @@ Create an issue call task with automatic account lookup from Google Sheets.
    - Priority: High
    - Due: Today (or tomorrow if after 4 PM EST)
 3. Posts to the Issue Call channel with full account info
-4. Waits for someone to claim it
+4. If @mentioned, shows "Suggested Supporter" in the message
+5. Waits for someone to claim it
 
 **Claiming an Issue Call:**
 - React with 👀 or reply to the thread
 - First person to react/reply becomes the Supporter on Monday
 
 **Escalation (if unclaimed):**
-| Time | Who gets pinged |
-|------|-----------------|
-| Every 20 min | @closers + Dayna + Ruzzell |
-| After 1 hour | @closers + Dayna + Ruzzell + Edward |
+| Ping # | Timing | Who gets pinged |
+|--------|--------|-----------------|
+| 1st | 20 min | @suggested_supporter only (if provided) |
+| 2nd+ | Every 20 min | @dayna + @ruzzell |
+| After 1 hour | Every 20 min | @dayna + @ruzzell + @edward |
+
+*Note: If no suggested supporter was mentioned, all pings go to @dayna + @ruzzell from the start.*
 
 ---
 
@@ -212,14 +217,19 @@ Priority: High
 
 **When:** Every 20 minutes while unclaimed (business hours only: M-F 10am-6pm ET)
 
-**Standard ping (first hour):**
+**First ping (if suggested supporter was mentioned):**
 ```
-@closers @dayna @ruzzell This issue call is still waiting for someone to claim it. React with 👀 or reply to this thread to be assigned.
+@jamie This issue call is still waiting for someone to claim it. React with 👀 or reply to this thread to be assigned.
+```
+
+**Second ping onward (or first ping if no one was mentioned):**
+```
+@dayna @ruzzell This issue call is still waiting for someone to claim it. React with 👀 or reply to this thread to be assigned.
 ```
 
 **Escalated ping (after 1 hour):**
 ```
-@closers @dayna @ruzzell @edward This issue call is still waiting for someone to claim it. React with 👀 or reply to this thread to be assigned.
+@dayna @ruzzell @edward This issue call is still waiting for someone to claim it. React with 👀 or reply to this thread to be assigned.
 ```
 
 **What to do:** React with 👀 or reply to claim the issue call and be assigned as Supporter.
@@ -262,7 +272,7 @@ Tasks created after business hours (after 8 PM or on weekends):
 | Command | Purpose |
 |---------|---------|
 | `/task [description]` | Create task from natural language |
-| `/issuecall [team] [email]` | Issue call with account lookup |
+| `/issuecall [team] [email] [@supporter]` | Issue call with account lookup |
 | `/emailtask [search]` | Create task from Gmail email |
 
 ### Reactions

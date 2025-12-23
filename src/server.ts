@@ -682,26 +682,27 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
         response_type: 'ephemeral',
         text: `*Issue Call - Create Task with Account Lookup*\n\n` +
           `Create an issue call task and look up account information.\n\n` +
-          `*Usage:* \`/issuecall [team] [email]\`\n\n` +
+          `*Usage:* \`/issuecall [team] [email] [@supporter]\`\n\n` +
           `*Examples:*\n` +
           `• \`/issuecall astros john@example.com\`\n` +
-          `• \`/issuecall houston astros john@example.com\`\n` +
-          `• \`/issuecall texans jane@example.com\`\n\n` +
-          `_Creates task with account info. First person to react 👀 or reply becomes supporter._`,
+          `• \`/issuecall astros john@example.com @jamie\`\n` +
+          `• \`/issuecall houston astros john@example.com\`\n\n` +
+          `_Mention someone to suggest them as supporter. They'll be pinged first to confirm._`,
       });
       return;
     }
 
-    // Parse team and email from input
+    // Parse team, email, and optional @mention from input
     const parts = trimmedText.split(/\s+/);
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const mentionPattern = /^<@([A-Z0-9]+)>$/;
 
     // Find the email in the parts
     const emailIndex = parts.findIndex(p => emailPattern.test(p));
     if (emailIndex === -1) {
       res.json({
         response_type: 'ephemeral',
-        text: `:x: Please provide a valid email address.\n\nUsage: \`/issuecall [team] [email]\`\n\nExample: \`/issuecall astros john@example.com\``,
+        text: `:x: Please provide a valid email address.\n\nUsage: \`/issuecall [team] [email] [@supporter]\`\n\nExample: \`/issuecall astros john@example.com @jamie\``,
       });
       return;
     }
@@ -709,10 +710,21 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const email = parts[emailIndex];
     const teamParts = parts.slice(0, emailIndex);
 
+    // Check for @mention after email (suggested supporter)
+    let suggestedSupporterSlackId: string | undefined;
+    const afterEmail = parts.slice(emailIndex + 1);
+    for (const part of afterEmail) {
+      const mentionMatch = part.match(mentionPattern);
+      if (mentionMatch) {
+        suggestedSupporterSlackId = mentionMatch[1];
+        break;
+      }
+    }
+
     if (teamParts.length === 0) {
       res.json({
         response_type: 'ephemeral',
-        text: `:x: Please provide a team name.\n\nUsage: \`/issuecall [team] [email]\`\n\nExample: \`/issuecall astros john@example.com\``,
+        text: `:x: Please provide a team name.\n\nUsage: \`/issuecall [team] [email] [@supporter]\`\n\nExample: \`/issuecall astros john@example.com @jamie\``,
       });
       return;
     }
@@ -797,12 +809,18 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       ? formatIssueCallAccount(accountResult)
       : `⚠️ Account lookup failed: ${accountResult.error}`;
 
+    // Include suggested supporter mention if provided
+    const supporterLine = suggestedSupporterSlackId
+      ? `*Suggested Supporter:* <@${suggestedSupporterSlackId}> - please confirm by reacting 👀\n`
+      : '';
+
     const slackMessage = await slack.getClient().chat.postMessage({
       channel: issueCallChannelId,
       text: `📞 *Issue Call*\n\n` +
         `${accountInfo}\n\n` +
         `*Due:* ${dueDate}\n` +
-        `*Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>\n\n` +
+        `*Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>\n` +
+        `${supporterLine}\n` +
         `⏳ *Waiting for supporter* - React with 👀 or reply to claim this issue.\n\n` +
         `<${mondayUrl}|View on Monday.com>`,
     });
@@ -814,13 +832,14 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Store Slack thread ID on Monday item for syncing
     await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
 
-    // Register this issue call for monitoring (20-min @closers ping until claimed)
+    // Register this issue call for monitoring (20-min pings until claimed)
     registerIssueCall({
       mondayItemId: mondayItem.id,
       slackThreadTs: slackMessage.ts,
       channelId: issueCallChannelId,
       createdAt: Date.now(),
       ownerSlackIds: [dayna.slackId, ruzzell.slackId].filter((id): id is string => !!id),
+      suggestedSupporterSlackId,
     });
 
     console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
