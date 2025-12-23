@@ -984,6 +984,7 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
 
     // Delete Slack messages and clear Monday thread IDs
     let deleted = 0;
+    let repliesDeleted = 0;
     let failed = 0;
     const errors: string[] = [];
 
@@ -993,16 +994,42 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
         const threadInfo = monday.parseSlackThreadValue(item.slackThreadId);
 
         if (threadInfo) {
-          // Delete the Slack message
+          // First, fetch all replies in the thread
           try {
-            await slack.getClient().chat.delete({
+            const replies = await slack.getClient().conversations.replies({
               channel: threadInfo.channelId,
               ts: threadInfo.threadTs,
             });
-            console.log(`Deleted Slack message for item ${item.id}: ${threadInfo.threadTs}`);
+
+            // Delete all messages in the thread (replies first, then parent)
+            if (replies.messages && replies.messages.length > 0) {
+              // Sort by ts descending so we delete replies before parent
+              const sortedMessages = [...replies.messages].sort((a, b) =>
+                parseFloat(b.ts || '0') - parseFloat(a.ts || '0')
+              );
+
+              for (const msg of sortedMessages) {
+                if (msg.ts) {
+                  try {
+                    await slack.getClient().chat.delete({
+                      channel: threadInfo.channelId,
+                      ts: msg.ts,
+                    });
+                    if (msg.ts !== threadInfo.threadTs) {
+                      repliesDeleted++;
+                    }
+                    // Small delay between deletions
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                  } catch (deleteErr) {
+                    console.warn(`Could not delete message ${msg.ts}:`, deleteErr);
+                  }
+                }
+              }
+            }
+            console.log(`Deleted Slack thread and replies for item ${item.id}`);
           } catch (slackError) {
-            // Message might already be deleted, continue anyway
-            console.warn(`Could not delete Slack message for item ${item.id}:`, slackError);
+            // Thread might already be deleted, continue anyway
+            console.warn(`Could not fetch/delete Slack thread for item ${item.id}:`, slackError);
           }
         }
 
@@ -1023,7 +1050,8 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
 
     // Send summary
     let summaryText = `✅ *Cleanup Complete*\n\n` +
-      `• Deleted: ${deleted} Slack threads for completed items\n` +
+      `• Deleted: ${deleted} Slack threads\n` +
+      `• Replies deleted: ${repliesDeleted}\n` +
       `• Failed: ${failed}`;
 
     if (errors.length > 0 && errors.length <= 5) {
