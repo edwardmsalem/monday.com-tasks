@@ -603,17 +603,51 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 });
 
 // ============================================================================
-// Slack /issuecall Command - Account Lookup for Issue Calls
+// Slack /issuecall Command - Issue Call Task with Account Lookup
 // ============================================================================
 
 import { lookupAccountForIssueCall, formatIssueCallAccount } from './services/sheets.js';
+import {
+  registerIssueCall,
+  CLOSERS_GROUP_ID,
+} from './services/issueCallTracker.js';
+
+/**
+ * Calculate due date for issue call:
+ * - If before 4 PM EST → today
+ * - If 4 PM EST or later → tomorrow
+ */
+function getIssueCallDueDate(): string {
+  const now = new Date();
+  const estFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    hour12: false,
+  });
+  const estHour = parseInt(estFormatter.format(now), 10);
+
+  const dueDate = new Date(now);
+  if (estHour >= 16) {
+    // 4 PM or later → tomorrow
+    dueDate.setDate(dueDate.getDate() + 1);
+  }
+
+  // Format as YYYY-MM-DD
+  return dueDate.toISOString().split('T')[0];
+}
 
 /**
  * /issuecall slash command handler
- * Looks up account info from Google Sheets by team + email
+ * Creates an Issue Call task with account lookup from Google Sheets
  *
  * Usage: /issuecall [team] [email]
  * Example: /issuecall astros john@example.com
+ *
+ * - Owners: Dayna + Ruzzell Garcia
+ * - Due: Today (or tomorrow if after 4 PM EST)
+ * - Posts to issue call channel with account info
+ * - Monitors thread for first 👀 or reply → assigns as supporter
+ * - Pings @closers hourly until claimed
  */
 app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
   // Verify Slack signature (QW-07)
@@ -631,25 +665,34 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 
     console.log(`/issuecall command received from ${user_id}: ${text}`);
 
+    // Check if issue call channel is configured
+    const issueCallChannelId = config.slack.issueCallChannelId;
+    if (!issueCallChannelId) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: Issue Call channel not configured. Please set SLACK_ISSUE_CALL_CHANNEL_ID.`,
+      });
+      return;
+    }
+
     // Handle help or empty input
     const trimmedText = text.trim();
     if (!trimmedText || trimmedText.toLowerCase() === 'help') {
       res.json({
         response_type: 'ephemeral',
-        text: `*Issue Call - Account Lookup*\n\n` +
-          `Look up account information by team and email.\n\n` +
+        text: `*Issue Call - Create Task with Account Lookup*\n\n` +
+          `Create an issue call task and look up account information.\n\n` +
           `*Usage:* \`/issuecall [team] [email]\`\n\n` +
           `*Examples:*\n` +
           `• \`/issuecall astros john@example.com\`\n` +
           `• \`/issuecall houston astros john@example.com\`\n` +
           `• \`/issuecall texans jane@example.com\`\n\n` +
-          `_Returns: Name, Phone, Seats, Address, Card Info_`,
+          `_Creates task with account info. First person to react 👀 or reply becomes supporter._`,
       });
       return;
     }
 
     // Parse team and email from input
-    // Email is the last word, everything before it is the team name
     const parts = trimmedText.split(/\s+/);
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -679,27 +722,125 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Acknowledge immediately
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Looking up account for ${email} (${teamName})...`,
+      text: `⏳ Creating issue call for ${email} (${teamName})...`,
     });
 
     // Look up the account
-    const result = await lookupAccountForIssueCall(teamName, email);
+    const accountResult = await lookupAccountForIssueCall(teamName, email);
 
-    // Format and send the response
-    const formattedResult = formatIssueCallAccount(result);
+    // Look up owners: Dayna + Ruzzell Garcia
+    const dayna = await findUserByName('Dayna');
+    const ruzzell = await findUserByName('Ruzzell Garcia');
 
-    if (result.success) {
+    if (!dayna) {
       await slack.sendResponseUrl(response_url,
-        `📞 *Issue Call Account Info*\n\n${formattedResult}`
+        `:x: Could not find Dayna in the user directory. Please contact an admin.`
       );
-    } else {
-      await slack.sendResponseUrl(response_url, formattedResult);
+      return;
     }
+
+    if (!ruzzell) {
+      await slack.sendResponseUrl(response_url,
+        `:x: Could not find Ruzzell Garcia in the user directory. Please contact an admin.`
+      );
+      return;
+    }
+
+    // Calculate due date
+    const dueDate = getIssueCallDueDate();
+
+    // Generate run ID for tracking
+    const runId = randomUUID();
+
+    // Create Monday item
+    const taskName = `Issue Call: ${accountResult.success ? accountResult.name || email : email} (${accountResult.team || teamName})`;
+    const mondayItem = await monday.createItem({
+      name: taskName,
+      dueDate,
+      ownerIds: [dayna.mondayId, ruzzell.mondayId],
+      supportIds: [], // Will be assigned when someone claims
+      taskType: 'Issue Call',
+      source: 'Slack Tasks',
+      urgency: 'High',
+      team: accountResult.team || teamName,
+    });
+
+    console.log(`Created Monday item ${mondayItem.id} for issue call`);
+
+    // Store run ID
+    await monday.storeRunId(mondayItem.id, runId);
+
+    // Create initial update with account info
+    const creator = await findUserBySlackId(user_id);
+    const creatorName = creator?.name ?? 'Unknown';
+
+    let updateHtml = `<p><strong>Issue Call Task</strong></p>` +
+      `<p>Created by: ${creatorName}</p>`;
+
+    if (accountResult.success) {
+      updateHtml += `<p><strong>Account Info:</strong></p>` +
+        `<p>Name: ${accountResult.name || 'N/A'}</p>` +
+        `<p>Email: ${accountResult.email}</p>` +
+        `<p>Phone: ${accountResult.phone || 'N/A'}</p>` +
+        `<p>Seats: ${accountResult.seats || 'N/A'}</p>` +
+        `<p>Address: ${accountResult.address || 'N/A'}</p>` +
+        `<p>Card: ${accountResult.cardInfo || 'N/A'}</p>`;
+    } else {
+      updateHtml += `<p><em>Account lookup failed: ${accountResult.error}</em></p>`;
+    }
+
+    await monday.createUpdate(mondayItem.id, updateHtml);
+
+    // Build Slack message
+    const mondayUrl = monday.getItemUrl(mondayItem.id);
+    const accountInfo = accountResult.success
+      ? formatIssueCallAccount(accountResult)
+      : `⚠️ Account lookup failed: ${accountResult.error}`;
+
+    const slackMessage = await slack.getClient().chat.postMessage({
+      channel: issueCallChannelId,
+      text: `📞 *Issue Call*\n\n` +
+        `${accountInfo}\n\n` +
+        `*Due:* ${dueDate}\n` +
+        `*Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>\n\n` +
+        `⏳ *Waiting for supporter* - React with 👀 or reply to claim this issue.\n\n` +
+        `<${mondayUrl}|View on Monday.com>`,
+    });
+
+    if (!slackMessage.ts) {
+      throw new Error('Failed to post to issue call channel');
+    }
+
+    // Store Slack thread ID on Monday item for syncing
+    await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
+
+    // Register this issue call for monitoring (20-min @closers ping until claimed)
+    registerIssueCall({
+      mondayItemId: mondayItem.id,
+      slackThreadTs: slackMessage.ts,
+      channelId: issueCallChannelId,
+      createdAt: Date.now(),
+      ownerSlackIds: [dayna.slackId, ruzzell.slackId].filter((id): id is string => !!id),
+    });
+
+    console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
+
+    // Send confirmation via response_url
+    const slackThreadUrl = `https://slack.com/app_redirect?channel=${issueCallChannelId}&message_ts=${slackMessage.ts}`;
+    await slack.sendResponseUrl(response_url,
+      `✅ *Issue Call Created*\n\n` +
+      `• *Team:* ${accountResult.team || teamName}\n` +
+      `• *Email:* ${email}\n` +
+      `• *Due:* ${dueDate}\n` +
+      `• *Monday:* <${mondayUrl}|View Item>\n` +
+      `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
+      `• *Run ID:* \`${runId.substring(0, 8)}\``
+    );
   } catch (error) {
     console.error('/issuecall command error:', error);
     res.json({
       response_type: 'ephemeral',
-      text: `:x: Error looking up account: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      text: `:x: Error creating issue call: ${error instanceof Error ? error.message : 'Unknown error'}`,
     });
   }
 });

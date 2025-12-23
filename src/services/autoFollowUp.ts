@@ -13,6 +13,7 @@ import { config } from '../config/environment.js';
 import * as slack from './slack.js';
 import * as monday from './monday.js';
 import { getAllUsers, type UnifiedUser } from './userResolver.js';
+import { pingUnclaimedIssueCalls, initializeIssueCallTracker } from './issueCallTracker.js';
 
 // US Federal Holidays (fixed dates and observed dates for 2024-2025)
 const US_HOLIDAYS: string[] = [
@@ -150,14 +151,19 @@ export async function checkAndSendFollowUps(force: boolean = false): Promise<{ s
         if (sent) sentCount++;
       }
 
-      // 2. Past due and not complete → remind to add ✅
+      // 2. Due date handling
       if (task.dueDate) {
         const dueDate = new Date(task.dueDate);
         dueDate.setHours(0, 0, 0, 0);
         const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
 
         if (daysOverdue > 0) {
+          // Past due → remind with urgency
           const sent = await sendOverdueReminder(task, daysOverdue);
+          if (sent) sentCount++;
+        } else if (daysOverdue === 0) {
+          // Due today → remind at 10 AM
+          const sent = await sendDueTodayReminder(task);
           if (sent) sentCount++;
         }
       }
@@ -359,26 +365,36 @@ const ACKNOWLEDGE_REMINDERS = [
     `${mentions} - add a 👀 reaction to acknowledge you're on this.`,
 ];
 
-// Reminder messages for overdue tasks (day 1)
-const OVERDUE_REMINDERS = [
-  (task: TaskForFollowUp, days: number, mentions: string) =>
-    `${mentions} - "${task.name}" is ${days} day${days > 1 ? 's' : ''} overdue. React with ✅ when complete.`,
-  (task: TaskForFollowUp, days: number, mentions: string) =>
-    `Hey ${mentions}, this task is past due. Add ✅ once it's done.`,
-  (task: TaskForFollowUp, days: number, mentions: string) =>
-    `${mentions} - overdue by ${days} day${days > 1 ? 's' : ''}. Mark complete with ✅ when finished.`,
+// Reminder messages for tasks due TODAY (fires at 10 AM)
+const DUE_TODAY_REMINDERS = [
+  (task: TaskForFollowUp, mentions: string) =>
+    `${mentions} - "${task.name}" is due today. Please share any blockers you have, or extend to a more realistic date with an update explaining why.`,
+  (task: TaskForFollowUp, mentions: string) =>
+    `Hey ${mentions}, this task is due today! Will it be completed? If you need more time, please post an update with the reason and set a new due date.`,
+  (task: TaskForFollowUp, mentions: string) =>
+    `${mentions} - Reminder: "${task.name}" is due today. Share any blockers or extend the due date with an explanation if needed.`,
 ];
 
-// Escalation reminder messages (day 2+) - includes manager visibility
+// Reminder messages for overdue tasks (day 1) - requires update
+const OVERDUE_REMINDERS = [
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `${mentions} - "${task.name}" is now past due. Please post an update with current status and reason for delay, then mark ✅ when complete.`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `Hey ${mentions}, this task is overdue! Post an update explaining the delay and when it will be done. React with ✅ once complete.`,
+  (task: TaskForFollowUp, days: number, mentions: string) =>
+    `${mentions} - Overdue by ${days} day${days > 1 ? 's' : ''}. Share what's blocking this and extend if needed. Mark ✅ when finished.`,
+];
+
+// Escalation reminder messages (day 2+) - includes manager visibility, more urgency
 const ESCALATION_SLACK_ID = 'U0144K906KA'; // Edward Salem - for visibility on repeat overdue
 
 const ESCALATION_REMINDERS = [
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `${mentions} - "${task.name}" is now ${days} days overdue. <@${ESCALATION_SLACK_ID}> for visibility. Please update or mark ✅ when complete.`,
+    `⚠️ ${mentions} - "${task.name}" is now ${days} days overdue. <@${ESCALATION_SLACK_ID}> for visibility. This requires immediate attention - post an update with status and plan to complete.`,
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `Hey ${mentions}, this task has been overdue for ${days} days. Looping in <@${ESCALATION_SLACK_ID}>. Add ✅ once it's done.`,
+    `🚨 Hey ${mentions}, this task has been overdue for ${days} days. Looping in <@${ESCALATION_SLACK_ID}>. Please update with current status and expected completion date.`,
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `${mentions} - ${days} days overdue now. cc <@${ESCALATION_SLACK_ID}>. Mark complete with ✅ when finished.`,
+    `⚠️ ${mentions} - ${days} days overdue! cc <@${ESCALATION_SLACK_ID}>. Post an update immediately with reason for delay and new target date.`,
 ];
 
 function pickRandom<T>(arr: T[]): T {
@@ -403,6 +419,38 @@ async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<boolean> 
 
   markFollowUpSent(followUpKey);
   console.log(`Sent acknowledge reminder for task ${task.id}`);
+  return true;
+}
+
+/**
+ * Send reminder for task due today
+ * Only fires at 10 AM Eastern (checked by scheduler)
+ * @returns true if message was sent, false if skipped
+ */
+async function sendDueTodayReminder(task: TaskForFollowUp): Promise<boolean> {
+  // Only send at 10 AM Eastern
+  const now = new Date();
+  const eastern = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const hour = eastern.getHours();
+
+  // Only send during the 10 AM hour
+  if (hour !== 10) return false;
+
+  // Use date-based key so it only sends once per day
+  const dateStr = eastern.toISOString().split('T')[0];
+  const followUpKey = `duetoday-${task.id}-${dateStr}`;
+  if (hasRecentFollowUp(followUpKey)) return false;
+
+  const ownersWithSlack = task.owners.filter(o => o.slackId);
+  if (ownersWithSlack.length === 0 || !task.slackThreadTs) return false;
+
+  const mentions = formatOwnerMentions(task.owners);
+  const message = pickRandom(DUE_TODAY_REMINDERS)(task, mentions);
+
+  await slack.postToThread(task.slackThreadTs, message);
+
+  markFollowUpSent(followUpKey);
+  console.log(`Sent due-today reminder for task ${task.id}`);
   return true;
 }
 
@@ -499,24 +547,30 @@ async function checkAndReleaseQuietHoursNotifications(): Promise<void> {
 
 /**
  * Start the follow-up scheduler
- * Runs every hour by default
- * Includes:
- * - Follow-up reminders (acknowledge, overdue)
- * - Failed attachment retry sweep (persistent across restarts)
- * - Quiet hours notification release (10am Mon-Fri)
+ * - Hourly: Follow-up reminders, attachment retry, quiet hours release
+ * - Every 20 min: Issue call @closers ping for unclaimed issues
  */
 export function startFollowUpScheduler(intervalMs: number = 60 * 60 * 1000): void {
-  console.log(`Starting follow-up scheduler (interval: ${intervalMs / 1000 / 60} minutes)`);
+  console.log(`Starting follow-up scheduler (hourly interval + 20-min issue call pings)`);
+
+  // Initialize issue call tracker (loads from disk)
+  initializeIssueCallTracker();
 
   // Run immediately on start
   checkAndSendFollowUps();
   runAttachmentRetry();
   checkAndReleaseQuietHoursNotifications();
+  pingUnclaimedIssueCalls();
 
-  // Then run on interval
+  // Hourly tasks
   setInterval(() => {
     checkAndSendFollowUps();
     runAttachmentRetry();
     checkAndReleaseQuietHoursNotifications();
   }, intervalMs);
+
+  // Issue call pings every 20 minutes (separate interval)
+  setInterval(() => {
+    pingUnclaimedIssueCalls();
+  }, 20 * 60 * 1000);
 }

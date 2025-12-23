@@ -575,17 +575,23 @@ export async function setReminder(input: ReminderInput): Promise<boolean> {
 /**
  * Post a message to an existing thread
  * Wrapped in circuit breaker (TD-05)
+ * @param threadTs - Thread timestamp to reply to
+ * @param text - Message text
+ * @param channelId - Optional channel ID (defaults to main channel)
+ * @param blocks - Optional Slack blocks
  */
 export async function postToThread(
   threadTs: string,
   text: string,
+  channelId?: string,
   blocks?: any[]
 ): Promise<SlackMessage> {
   const client = getClient();
+  const channel = channelId || config.slack.channelId;
 
   const response = await slackCircuit.execute(() =>
     client.chat.postMessage({
-      channel: config.slack.channelId,
+      channel,
       thread_ts: threadTs,
       text,
       blocks,
@@ -600,7 +606,7 @@ export async function postToThread(
 
   return {
     ts: response.ts,
-    channel: response.channel ?? config.slack.channelId,
+    channel: response.channel ?? channel,
   };
 }
 

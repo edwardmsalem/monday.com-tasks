@@ -160,6 +160,91 @@ export async function updateSlackThreadId(itemId: string, threadTs: string): Pro
 }
 
 /**
+ * Add a supporter to an item's support column
+ * Appends to existing supporters (doesn't replace)
+ */
+export async function addSupporter(itemId: string, supporterMondayId: number): Promise<void> {
+  // First, get current supporters
+  const getQuery = `
+    query GetItem($boardId: ID!, $itemId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(query_params: {ids: [$itemId]}) {
+          items {
+            column_values(ids: ["${config.monday.columns.support}"]) {
+              id
+              value
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  interface GetItemResponse {
+    boards: Array<{
+      items_page: {
+        items: Array<{
+          column_values: Array<{
+            id: string;
+            value: string;
+          }>;
+        }>;
+      };
+    }>;
+  }
+
+  const getResult = await executeQuery<GetItemResponse>(getQuery, {
+    boardId: config.monday.boardId,
+    itemId,
+  });
+
+  const item = getResult.boards?.[0]?.items_page?.items?.[0];
+  const currentValue = item?.column_values?.[0]?.value;
+
+  // Parse existing supporters
+  let existingSupporters: Array<{ id: number; kind: string }> = [];
+  if (currentValue) {
+    try {
+      const parsed = JSON.parse(currentValue);
+      existingSupporters = parsed?.personsAndTeams ?? [];
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  // Check if already a supporter
+  if (existingSupporters.some(s => s.id === supporterMondayId)) {
+    console.log(`User ${supporterMondayId} is already a supporter on item ${itemId}`);
+    return;
+  }
+
+  // Add new supporter
+  const newSupporters = [...existingSupporters, { id: supporterMondayId, kind: 'person' }];
+
+  const updateQuery = `
+    mutation UpdateItem($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  await executeQuery(updateQuery, {
+    boardId: config.monday.boardId,
+    itemId,
+    columnValues: JSON.stringify({
+      [config.monday.columns.support]: { personsAndTeams: newSupporters },
+    }),
+  });
+
+  console.log(`Added supporter ${supporterMondayId} to item ${itemId}`);
+}
+
+/**
  * Upload a file to an item's file column
  * Uses Monday's /v2/file endpoint with proper multipart format
  *
