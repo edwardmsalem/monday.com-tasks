@@ -969,38 +969,37 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     // Acknowledge immediately
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Finding orphaned backfill messages to delete...`,
+      text: `⏳ Deleting all bot messages from today...`,
     });
 
-    // Fetch recent messages from the channel and find orphaned backfill replies
+    // Delete all bot messages from today
     let deleted = 0;
     let failed = 0;
-    const errors: string[] = [];
 
     try {
-      // Get recent messages from the main channel
+      // Get today's start timestamp
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayTs = (today.getTime() / 1000).toString();
+
+      // Get messages from the main channel
       const history = await slack.getClient().conversations.history({
         channel: config.slack.channelId,
-        limit: 200,
+        oldest: todayTs,
+        limit: 500,
       });
 
       if (history.messages) {
         for (const msg of history.messages) {
-          // Check if this is a backfill-related message (via Monday or Backfilled thread)
-          const text = msg.text || '';
-          const isBackfillMessage = text.includes('via Monday') ||
-                                    text.includes('Backfilled thread') ||
-                                    text.includes('_via Monday)_');
-
-          if (isBackfillMessage && msg.ts) {
+          // Delete all bot messages (bot_id present or subtype is bot_message)
+          if ((msg.bot_id || msg.subtype === 'bot_message') && msg.ts) {
             try {
               await slack.getClient().chat.delete({
                 channel: config.slack.channelId,
                 ts: msg.ts,
               });
               deleted++;
-              console.log(`Deleted orphaned backfill message: ${msg.ts}`);
-              // Small delay between deletions
+              console.log(`Deleted bot message: ${msg.ts}`);
               await new Promise(resolve => setTimeout(resolve, 100));
             } catch (deleteErr) {
               failed++;
@@ -1011,19 +1010,15 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
       }
     } catch (historyErr) {
       console.error('Error fetching channel history:', historyErr);
-      errors.push(`Channel history error: ${historyErr instanceof Error ? historyErr.message : 'Unknown'}`);
     }
 
     // Send summary
-    let summaryText = `✅ *Cleanup Complete*\n\n` +
-      `• Deleted: ${deleted} orphaned backfill messages\n` +
-      `• Failed: ${failed}`;
-
-    if (errors.length > 0) {
-      summaryText += `\n\n*Errors:*\n${errors.map(e => `• ${e}`).join('\n')}`;
-    }
-
-    await slack.sendResponseUrl(response_url, summaryText);
+    await slack.sendResponseUrl(response_url,
+      `✅ *Cleanup Complete*\n\n` +
+      `• Deleted: ${deleted} bot messages from today\n` +
+      `• Failed: ${failed}\n\n` +
+      `_Run again if there are more messages to delete._`
+    );
   } catch (error) {
     console.error('/backfill command error:', error);
     res.json({
