@@ -77,16 +77,24 @@ function saveToDisk(): void {
 
 /**
  * Register a new issue call for tracking
+ * If claimed/claimedBy are passed, the issue call starts as already claimed (no pings)
  */
-export function registerIssueCall(issueCall: Omit<PendingIssueCall, 'claimed' | 'pingCount'>): void {
+type IssueCallRegistration = Omit<PendingIssueCall, 'claimed' | 'claimedBy' | 'pingCount'> & {
+  claimed?: boolean;
+  claimedBy?: string;
+};
+
+export function registerIssueCall(issueCall: IssueCallRegistration): void {
   const key = issueCall.slackThreadTs;
+  const preClaimed = issueCall.claimed && issueCall.claimedBy;
   pendingIssueCalls.set(key, {
     ...issueCall,
-    claimed: false,
+    claimed: preClaimed ? true : false,
+    claimedBy: preClaimed ? issueCall.claimedBy : undefined,
     pingCount: 0,
   });
   saveToDisk();
-  console.log(`Registered issue call for tracking: ${key}`);
+  console.log(`Registered issue call for tracking: ${key}${preClaimed ? ' (pre-claimed)' : ''}`);
 }
 
 /**
