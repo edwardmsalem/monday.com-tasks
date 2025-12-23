@@ -135,9 +135,50 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
 }
 
 /**
- * Update the Slack thread ID column on an item
+ * Slack thread info stored in Monday
+ * Format in column: "channelId:threadTs" (e.g., "C123ABC:1234567890.123456")
+ * Legacy format (threadTs only) defaults to config.slack.channelId
  */
-export async function updateSlackThreadId(itemId: string, threadTs: string): Promise<void> {
+export interface SlackThreadInfo {
+  channelId: string;
+  threadTs: string;
+}
+
+/**
+ * Parse the slack thread column value into channel and thread info
+ * Handles both new format (channelId:threadTs) and legacy format (threadTs only)
+ */
+export function parseSlackThreadValue(value: string | null): SlackThreadInfo | null {
+  if (!value) return null;
+
+  const parts = value.split(':');
+  if (parts.length >= 2 && parts[0].startsWith('C')) {
+    // New format: channelId:threadTs (channel IDs start with C)
+    return {
+      channelId: parts[0],
+      threadTs: parts.slice(1).join(':'), // Handle case where threadTs contains colons
+    };
+  }
+
+  // Legacy format: just threadTs, default to main channel
+  return {
+    channelId: config.slack.channelId,
+    threadTs: value,
+  };
+}
+
+/**
+ * Format channel and thread info for storage in Monday
+ */
+export function formatSlackThreadValue(channelId: string, threadTs: string): string {
+  return `${channelId}:${threadTs}`;
+}
+
+/**
+ * Update the Slack thread ID column on an item
+ * Stores in format "channelId:threadTs" for proper channel routing
+ */
+export async function updateSlackThreadId(itemId: string, threadTs: string, channelId?: string): Promise<void> {
   const query = `
     mutation UpdateItem($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
       change_multiple_column_values(
@@ -150,11 +191,15 @@ export async function updateSlackThreadId(itemId: string, threadTs: string): Pro
     }
   `;
 
+  // Store with channel ID if provided, otherwise use main channel
+  const channel = channelId || config.slack.channelId;
+  const value = formatSlackThreadValue(channel, threadTs);
+
   await executeQuery(query, {
     boardId: config.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
-      [config.monday.columns.slackThreadId]: threadTs,
+      [config.monday.columns.slackThreadId]: value,
     }),
   });
 }
@@ -381,8 +426,9 @@ export async function getAllUsers(): Promise<MondayUser[]> {
 
 /**
  * Find a Monday item by its Slack thread ID
+ * Searches for both new format (channelId:threadTs) and legacy format (threadTs only)
  */
-export async function findItemBySlackThread(slackThreadTs: string): Promise<string | null> {
+export async function findItemBySlackThread(slackThreadTs: string, channelId?: string): Promise<string | null> {
   const query = `
     query FindItemBySlackThread($boardId: ID!, $columnId: String!, $value: String!) {
       items_page_by_column_values(
@@ -398,7 +444,24 @@ export async function findItemBySlackThread(slackThreadTs: string): Promise<stri
   `;
 
   try {
-    const result = await executeQuery<{
+    // Try new format first if channel ID is provided
+    if (channelId) {
+      const newFormatValue = formatSlackThreadValue(channelId, slackThreadTs);
+      const result = await executeQuery<{
+        items_page_by_column_values: { items: Array<{ id: string }> };
+      }>(query, {
+        boardId: config.monday.boardId,
+        columnId: config.monday.columns.slackThreadId,
+        value: newFormatValue,
+      });
+
+      if (result.items_page_by_column_values.items[0]?.id) {
+        return result.items_page_by_column_values.items[0].id;
+      }
+    }
+
+    // Try legacy format (just threadTs)
+    const legacyResult = await executeQuery<{
       items_page_by_column_values: { items: Array<{ id: string }> };
     }>(query, {
       boardId: config.monday.boardId,
@@ -406,7 +469,21 @@ export async function findItemBySlackThread(slackThreadTs: string): Promise<stri
       value: slackThreadTs,
     });
 
-    return result.items_page_by_column_values.items[0]?.id ?? null;
+    if (legacyResult.items_page_by_column_values.items[0]?.id) {
+      return legacyResult.items_page_by_column_values.items[0].id;
+    }
+
+    // Also try with main channel format for backwards compatibility
+    const mainChannelValue = formatSlackThreadValue(config.slack.channelId, slackThreadTs);
+    const mainChannelResult = await executeQuery<{
+      items_page_by_column_values: { items: Array<{ id: string }> };
+    }>(query, {
+      boardId: config.monday.boardId,
+      columnId: config.monday.columns.slackThreadId,
+      value: mainChannelValue,
+    });
+
+    return mainChannelResult.items_page_by_column_values.items[0]?.id ?? null;
   } catch (error) {
     console.error('Error finding item by Slack thread:', error);
     return null;
@@ -414,9 +491,10 @@ export async function findItemBySlackThread(slackThreadTs: string): Promise<stri
 }
 
 /**
- * Get the Slack thread ID from a Monday item
+ * Get the Slack thread info from a Monday item
+ * Returns parsed channel and thread info, or null if not found
  */
-export async function getSlackThreadId(itemId: string): Promise<string | null> {
+export async function getSlackThreadInfo(itemId: string): Promise<SlackThreadInfo | null> {
   const query = `
     query GetSlackThreadId($itemId: ID!) {
       items(ids: [$itemId]) {
@@ -432,11 +510,21 @@ export async function getSlackThreadId(itemId: string): Promise<string | null> {
       items: Array<{ column_values: Array<{ text: string }> }>;
     }>(query, { itemId });
 
-    return result.items[0]?.column_values[0]?.text || null;
+    const rawValue = result.items[0]?.column_values[0]?.text || null;
+    return parseSlackThreadValue(rawValue);
   } catch (error) {
-    console.error('Error getting Slack thread ID:', error);
+    console.error('Error getting Slack thread info:', error);
     return null;
   }
+}
+
+/**
+ * Get the Slack thread ID from a Monday item (legacy - returns raw threadTs only)
+ * @deprecated Use getSlackThreadInfo() instead for proper channel routing
+ */
+export async function getSlackThreadId(itemId: string): Promise<string | null> {
+  const info = await getSlackThreadInfo(itemId);
+  return info?.threadTs ?? null;
 }
 
 /**

@@ -885,7 +885,8 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     }
 
     // Store Slack thread ID on Monday item for syncing
-    await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
+    // Pass the issue call channel ID so syncs go to the right channel
+    await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts, issueCallChannelId);
 
     // Register this issue call for monitoring (20-min pings until claimed)
     // If supporter already assigned, mark as claimed so no pings are sent

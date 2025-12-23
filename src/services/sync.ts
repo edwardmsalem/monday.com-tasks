@@ -125,10 +125,10 @@ export async function syncMondayToSlack(
   updateText: string,
   mondayUserId: number
 ): Promise<void> {
-  // Get the Slack thread ID from the Monday item
-  const slackThreadTs = await monday.getSlackThreadId(mondayItemId);
+  // Get the Slack thread info (channel + thread) from the Monday item
+  const threadInfo = await monday.getSlackThreadInfo(mondayItemId);
 
-  if (!slackThreadTs) {
+  if (!threadInfo) {
     console.warn(`No Slack thread found for Monday item ${mondayItemId}`);
     return;
   }
@@ -141,11 +141,11 @@ export async function syncMondayToSlack(
   const user = users.find(u => u.mondayId === mondayUserId);
   const authorName = user?.name ?? 'Monday User';
 
-  // Post to Slack thread
+  // Post to Slack thread - use the stored channel ID for proper routing
   // Author is just a name (not @mention), but message content still has translated @mentions
-  await slack.postToThread(slackThreadTs, `📋 *${authorName}* _(via Monday)_\n${translatedText}`);
+  await slack.postToThread(threadInfo.threadTs, `📋 *${authorName}* _(via Monday)_\n${translatedText}`, threadInfo.channelId);
 
-  console.log(`Synced Monday update to Slack thread ${slackThreadTs}`);
+  console.log(`Synced Monday update to Slack thread ${threadInfo.threadTs} in channel ${threadInfo.channelId}`);
 }
 
 /**
@@ -200,22 +200,23 @@ export async function notifySlackOfCompletion(
   mondayItemId: string,
   completedBy: string
 ): Promise<void> {
-  const slackThreadTs = await monday.getSlackThreadId(mondayItemId);
+  const threadInfo = await monday.getSlackThreadInfo(mondayItemId);
 
-  if (!slackThreadTs) {
+  if (!threadInfo) {
     console.warn(`No Slack thread found for Monday item ${mondayItemId}`);
     return;
   }
 
   await slack.postToThread(
-    slackThreadTs,
-    `:white_check_mark: *Task completed* by ${completedBy}`
+    threadInfo.threadTs,
+    `:white_check_mark: *Task completed* by ${completedBy}`,
+    threadInfo.channelId
   );
 
   // Also add checkmark reaction to the original message
-  await slack.addReaction(slackThreadTs, 'white_check_mark');
+  await slack.addReaction(threadInfo.threadTs, 'white_check_mark', threadInfo.channelId);
 
-  console.log(`Notified Slack of completion for Monday item ${mondayItemId}`);
+  console.log(`Notified Slack of completion for Monday item ${mondayItemId} in channel ${threadInfo.channelId}`);
 }
 
 /**
