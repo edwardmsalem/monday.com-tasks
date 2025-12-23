@@ -415,6 +415,25 @@ function pickRandom<T>(arr: T[]): T {
 }
 
 /**
+ * Check if an error indicates a deleted/archived thread or channel
+ */
+function isDeletedThreadError(error: unknown): boolean {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const errorStr = JSON.stringify(error);
+
+  return (
+    errorMessage.includes('channel_not_found') ||
+    errorMessage.includes('message_not_found') ||
+    errorMessage.includes('thread_not_found') ||
+    errorMessage.includes('not_in_channel') ||
+    errorMessage.includes('is_archived') ||
+    errorStr.includes('channel_not_found') ||
+    errorStr.includes('message_not_found') ||
+    errorStr.includes('thread_not_found')
+  );
+}
+
+/**
  * Send reminder to acknowledge with 👀
  * @returns true if message was sent, false if skipped
  */
@@ -429,11 +448,21 @@ async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<boolean> 
   const message = pickRandom(ACKNOWLEDGE_REMINDERS)(task, mentions);
   const channel = getChannelForTask(task);
 
-  await slack.postToThread(task.slackThreadTs, message, channel);
-
-  markFollowUpSent(followUpKey);
-  console.log(`Sent acknowledge reminder for task ${task.id} (type: ${task.taskType || 'General'})`);
-  return true;
+  try {
+    await slack.postToThread(task.slackThreadTs, message, channel);
+    markFollowUpSent(followUpKey);
+    console.log(`Sent acknowledge reminder for task ${task.id} (type: ${task.taskType || 'General'})`);
+    return true;
+  } catch (error) {
+    if (isDeletedThreadError(error)) {
+      console.log(`[AutoFollowUp] Thread ${task.slackThreadTs} for task ${task.id} appears deleted, skipping`);
+      // Mark as sent so we don't retry immediately
+      markFollowUpSent(followUpKey);
+      return false;
+    }
+    console.error(`[AutoFollowUp] Failed to send acknowledge reminder for task ${task.id}:`, error);
+    return false;
+  }
 }
 
 /**
@@ -462,11 +491,20 @@ async function sendDueTodayReminder(task: TaskForFollowUp): Promise<boolean> {
   const message = pickRandom(DUE_TODAY_REMINDERS)(task, mentions);
   const channel = getChannelForTask(task);
 
-  await slack.postToThread(task.slackThreadTs, message, channel);
-
-  markFollowUpSent(followUpKey);
-  console.log(`Sent due-today reminder for task ${task.id} (type: ${task.taskType || 'General'})`);
-  return true;
+  try {
+    await slack.postToThread(task.slackThreadTs, message, channel);
+    markFollowUpSent(followUpKey);
+    console.log(`Sent due-today reminder for task ${task.id} (type: ${task.taskType || 'General'})`);
+    return true;
+  } catch (error) {
+    if (isDeletedThreadError(error)) {
+      console.log(`[AutoFollowUp] Thread ${task.slackThreadTs} for task ${task.id} appears deleted, skipping`);
+      markFollowUpSent(followUpKey);
+      return false;
+    }
+    console.error(`[AutoFollowUp] Failed to send due-today reminder for task ${task.id}:`, error);
+    return false;
+  }
 }
 
 /**
@@ -491,11 +529,20 @@ async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): 
     : pickRandom(OVERDUE_REMINDERS)(task, daysOverdue, mentions);
   const channel = getChannelForTask(task);
 
-  await slack.postToThread(task.slackThreadTs, message, channel);
-
-  markFollowUpSent(followUpKey);
-  console.log(`Sent ${daysOverdue >= 2 ? 'escalated ' : ''}overdue reminder for task ${task.id} (${daysOverdue} days, type: ${task.taskType || 'General'})`);
-  return true;
+  try {
+    await slack.postToThread(task.slackThreadTs, message, channel);
+    markFollowUpSent(followUpKey);
+    console.log(`Sent ${daysOverdue >= 2 ? 'escalated ' : ''}overdue reminder for task ${task.id} (${daysOverdue} days, type: ${task.taskType || 'General'})`);
+    return true;
+  } catch (error) {
+    if (isDeletedThreadError(error)) {
+      console.log(`[AutoFollowUp] Thread ${task.slackThreadTs} for task ${task.id} appears deleted, skipping`);
+      markFollowUpSent(followUpKey);
+      return false;
+    }
+    console.error(`[AutoFollowUp] Failed to send overdue reminder for task ${task.id}:`, error);
+    return false;
+  }
 }
 
 function hasRecentFollowUp(key: string): boolean {
@@ -515,9 +562,17 @@ function markFollowUpSent(key: string): void {
  */
 async function runAttachmentRetry(): Promise<void> {
   try {
-    // Create a Slack poster function for notifications
+    // Create a Slack poster function for notifications that handles deleted threads
     const postToSlack = async (threadTs: string, message: string) => {
-      await slack.postToThread(threadTs, message);
+      try {
+        await slack.postToThread(threadTs, message);
+      } catch (error) {
+        if (isDeletedThreadError(error)) {
+          console.log(`[AutoFollowUp] Attachment retry: Thread ${threadTs} appears deleted, skipping notification`);
+          return; // Silently skip deleted threads
+        }
+        throw error; // Re-throw other errors
+      }
     };
 
     const result = await monday.retryFailedAttachments(postToSlack);
