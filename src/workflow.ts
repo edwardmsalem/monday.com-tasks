@@ -32,9 +32,12 @@ export {
   parseSlackTaskInput,
   executeSlackTaskWorkflow,
   executeSlackTaskWorkflowSafe,
+  executeAISlackTaskWorkflow,
+  executeAISlackTaskWorkflowSafe,
   type SlackTaskInput,
   type ParsedSlackTask,
   type SlackTaskWorkflowInput,
+  type AISlackTaskInput,
 } from './workflows/slackTaskWorkflow.js';
 
 // Re-export email task workflow functions for backward compatibility

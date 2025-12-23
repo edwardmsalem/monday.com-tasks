@@ -424,3 +424,247 @@ export async function analyzeEmailSafe(
     };
   }
 }
+
+// ============================================================================
+// /task Slash Command Parsing (AI-Powered)
+// ============================================================================
+
+/**
+ * Parsed /task result from AI
+ */
+export interface SlackTaskAnalysisResult {
+  owner: string;              // Owner name (to be resolved to Monday/Slack user)
+  supporters: string[];       // Support user names
+  description: string;        // Task description/name
+  dueDate: string;            // Due date in +N or MM/DD/YY format
+  taskType: string;           // Task type
+  priority: Priority;         // high/medium/low
+  notes: string | null;       // Additional notes
+  team: string | null;        // Sports team (if mentioned)
+  confidence: number;         // Confidence score
+}
+
+/**
+ * Build the system prompt for /task parsing
+ */
+function buildSlackTaskSystemPrompt(userNames: string): string {
+  return `You are a task parsing assistant. Your job is to extract task details from natural language Slack /task commands.
+
+Available team members to assign tasks to:
+${userNames}
+
+Available task types:
+  - ${availableTaskTypes}
+
+When parsing a /task command, extract:
+1. **Owner**: Who should own this task? Match to one of the available team members by first name or full name.
+   - If a @mention like <@U12345> is present, note the name after | if available, or return "slack_mention:U12345"
+   - If no owner is specified, return null (caller will default to creator)
+2. **Supporters**: Additional team members who should help (NOT the owner). Look for:
+   - "with X" or "X for support"
+   - Additional @mentions beyond the first
+   - Return an empty array if no supporters mentioned
+3. **Description**: The main task name/description. This is the core of what needs to be done.
+   - Extract the essential task, removing owner/date/priority markers
+   - Keep it concise but complete
+4. **Due Date**: When is this due? Can be:
+   - Relative: "tomorrow", "next week", "friday", "next friday", "in 3 days" → convert to "+N" format
+   - "today" → "+0"
+   - "asap", "urgent", "immediately" → "+0" with high priority
+   - Absolute: "12/25", "Dec 25" → convert to "MM/DD/YY" format
+   - If no date mentioned, default to "+1" (tomorrow)
+5. **Task Type**: What kind of task is this? Match to available types.
+   - Refund: refund requests, money back, credits
+   - Decline: declined payments, card issues, payment failed
+   - Payment Plan: payment arrangements, installments
+   - Renewal: renewals, season ticket renewals
+   - Relocation: seat moves, relocations
+   - Opportunity: sales opportunities, upsells
+   - Issue Call: customer complaints, escalations, issues requiring a call
+   - General: anything else
+6. **Priority**: Detect urgency level:
+   - high: "ASAP", "urgent", "immediately", "critical", "emergency", "hot", "fire"
+   - medium: standard task with a deadline
+   - low: "FYI", "when you can", "no rush", "low priority"
+7. **Notes**: Any additional context or details that aren't part of the core task.
+   - Details about the customer, situation, or special instructions
+   - Return null if no additional notes
+8. **Team**: ONLY extract a sports team if explicitly mentioned.
+   - MLB, NFL, NBA, NHL, MLS teams, NCAA D1 teams
+   - Return null if no team mentioned - never guess
+
+Examples:
+- "Dayna refund for angry customer next friday" → owner: dayna, description: refund for angry customer, dueDate: +N (days until friday), priority: medium, taskType: Refund
+- "call back customer about Yankees tickets asap" → owner: null, description: call back customer about Yankees tickets, dueDate: +0, priority: high, taskType: Issue Call, team: Yankees
+- "@jamie follow up on renewal with Sarah's help" → owner: jamie, supporters: [sarah], description: follow up on renewal, taskType: Renewal
+- "urgent payment declined for season tickets" → priority: high, taskType: Decline, description: payment declined for season tickets`;
+}
+
+/**
+ * Build the tool definition for /task parsing
+ */
+function buildSlackTaskTool(userNames: string): Anthropic.Tool {
+  return {
+    name: 'extract_slack_task',
+    description: 'Extract task details from a Slack /task command',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        owner: {
+          type: 'string',
+          nullable: true,
+          description: `The team member to own this task. Match to: ${userNames}. Return null if not specified.`,
+        },
+        supporters: {
+          type: 'array',
+          items: { type: 'string' },
+          description: `Additional team members to help (NOT the owner). Match to: ${userNames}. Return empty array if none.`,
+        },
+        description: {
+          type: 'string',
+          description: 'The core task description/name. Concise but complete.',
+        },
+        dueDate: {
+          type: 'string',
+          description: 'Due date in +N (relative days) or MM/DD/YY format.',
+        },
+        taskType: {
+          type: 'string',
+          enum: TASK_TYPE_MAPPINGS.flatMap(t => [t.displayName, ...t.aliases]),
+          description: 'The type of task.',
+        },
+        priority: {
+          type: 'string',
+          enum: ['high', 'medium', 'low'],
+          description: 'Priority level.',
+        },
+        notes: {
+          type: 'string',
+          nullable: true,
+          description: 'Additional context or details. Null if none.',
+        },
+        team: {
+          type: 'string',
+          nullable: true,
+          description: 'Sports team if explicitly mentioned. Null if not clearly stated.',
+        },
+        confidence: {
+          type: 'number',
+          description: 'Confidence score from 0 to 1.',
+        },
+      },
+      required: ['description', 'dueDate', 'taskType', 'priority', 'confidence'],
+    },
+  };
+}
+
+/**
+ * Analyze a /task command using Claude AI to extract task details
+ * Works just like the email workflow - natural language in, structured data out
+ */
+export async function analyzeSlackTask(
+  taskText: string,
+  creatorSlackId: string
+): Promise<SlackTaskAnalysisResult> {
+  const client = getClient();
+
+  // Get dynamic user names from Monday.com/Slack
+  const userNames = await getUserNamesString();
+  console.log('Available users for /task assignment:', userNames);
+
+  // Build dynamic prompt and tool
+  const systemPrompt = buildSlackTaskSystemPrompt(userNames);
+  const extractTaskTool = buildSlackTaskTool(userNames);
+
+  const content = `Parse this /task command and extract the task details:\n\n${taskText}`;
+
+  console.log('Sending /task to Claude for analysis...');
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    system: systemPrompt,
+    tools: [extractTaskTool],
+    tool_choice: { type: 'tool', name: 'extract_slack_task' },
+    messages: [
+      {
+        role: 'user',
+        content,
+      },
+    ],
+  });
+
+  // Extract the tool use response
+  const toolUse = response.content.find(
+    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+  );
+
+  if (!toolUse || toolUse.name !== 'extract_slack_task') {
+    throw new Error('Claude did not return task extraction results');
+  }
+
+  const input = toolUse.input as {
+    owner?: string | null;
+    supporters?: string[];
+    description: string;
+    dueDate: string;
+    taskType: string;
+    priority: Priority;
+    notes?: string | null;
+    team?: string | null;
+    confidence: number;
+  };
+
+  console.log('Claude /task analysis result:', input);
+
+  // Normalize owner and supporters to lowercase
+  const owner = input.owner?.toLowerCase().trim() || '';
+  const supporters = (input.supporters ?? []).map(s => s.toLowerCase().trim()).filter(s => s.length > 0);
+
+  return {
+    owner,
+    supporters,
+    description: input.description,
+    dueDate: input.dueDate,
+    taskType: input.taskType,
+    priority: input.priority,
+    notes: input.notes || null,
+    team: input.team || null,
+    confidence: input.confidence,
+  };
+}
+
+/**
+ * Analyze /task with fallback to simple parsing if AI fails
+ */
+export async function analyzeSlackTaskSafe(
+  taskText: string,
+  creatorSlackId: string
+): Promise<SlackTaskAnalysisResult> {
+  try {
+    return await analyzeSlackTask(taskText, creatorSlackId);
+  } catch (error) {
+    console.error('Claude /task analysis failed, using fallback:', error);
+
+    // Simple fallback - just use the text as description
+    const text = taskText.toLowerCase();
+    let priority: Priority = 'medium';
+    if (text.includes('asap') || text.includes('urgent') || text.includes('immediately')) {
+      priority = 'high';
+    } else if (text.includes('fyi') || text.includes('no rush')) {
+      priority = 'low';
+    }
+
+    return {
+      owner: '',  // Will default to creator
+      supporters: [],
+      description: taskText.trim(),
+      dueDate: '+1',
+      taskType: 'General',
+      priority,
+      notes: null,
+      team: null,
+      confidence: 0.2,
+    };
+  }
+}

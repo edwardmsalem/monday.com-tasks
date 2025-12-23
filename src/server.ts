@@ -21,6 +21,7 @@ import {
   parseSlackTaskInput,
   executeSlackTaskWorkflowSafe,
   executeEmailTaskWorkflowSafe,
+  executeAISlackTaskWorkflowSafe,
 } from './workflow.js';
 import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
@@ -461,15 +462,17 @@ app.post('/webhook/slack/taskdebug', slackUrlEncodedWithRawBody, async (req: Req
  * /task slash command handler
  * Primary intake path for internal task creation via Slack
  *
- * Usage:
- * - Single-line: /task @assignee refund due fri urgency high notes: customer called twice
- * - Multiline:
- *     @assignee
- *     due fri
- *     refund
- *     notes...
+ * NOW AI-POWERED - Works exactly like the email workflow!
+ *
+ * Usage (natural language):
+ * - /task Dayna refund for angry customer next friday
+ * - /task call back about Yankees tickets asap
+ * - /task @jamie follow up on renewal with Sarah's help
+ * - /task urgent payment declined for season tickets
  *
  * Behavior:
+ * - Uses Claude AI to parse natural language (same as email workflow)
+ * - Auto-detects owner, due date, priority, task type, team
  * - Creates Monday item immediately
  * - Generates Run ID and stores it
  * - Posts initial Monday Update (narrative only)
@@ -512,57 +515,28 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
     if (!trimmedText || trimmedText.toLowerCase() === 'help') {
       res.json({
         response_type: 'ephemeral',
-        text: `*Task Creation*\n\n` +
-          `Create tasks directly from Slack.\n\n` +
-          `*Single-line format:*\n` +
-          `\`/task @assignee description due friday urgency high notes: details\`\n\n` +
-          `*Multiline format:*\n` +
-          `\`\`\`\n` +
-          `@assignee\n` +
-          `due friday\n` +
-          `Task description here\n` +
-          `notes: Additional details\n` +
-          `\`\`\`\n\n` +
-          `*Options:*\n` +
-          `• \`@assignee\` - Required (use @ mention)\n` +
-          `• \`due X\` - Date (fri, 12/25, tomorrow, ASAP)\n` +
-          `• \`urgency high|medium|low\` - Priority\n` +
-          `• \`type X\` - Task type (refund, shipping, etc.)\n` +
-          `• \`notes: X\` - Additional notes\n\n` +
-          `_ASAP sets due date to null and urgency to High._`,
+        text: `*Task Creation (AI-Powered)*\n\n` +
+          `Just describe your task naturally! I'll figure out the rest.\n\n` +
+          `*Examples:*\n` +
+          `• \`/task Dayna refund for angry customer next friday\`\n` +
+          `• \`/task call back about Yankees tickets asap\`\n` +
+          `• \`/task @jamie follow up on renewal\`\n` +
+          `• \`/task urgent payment declined for season tickets\`\n` +
+          `• \`/task Jamie relocation with Sarah's help by monday\`\n\n` +
+          `*What I detect automatically:*\n` +
+          `• Owner (name or @mention)\n` +
+          `• Due date (friday, next week, 12/25, asap)\n` +
+          `• Priority (urgent, asap = high)\n` +
+          `• Task type (refund, renewal, relocation, etc.)\n` +
+          `• Team (Yankees, Knicks, etc.)\n` +
+          `• Supporters ("with Sarah's help")\n\n` +
+          `_If no owner specified, task is assigned to you._`,
       });
       return;
     }
 
-    // Parse the input
-    const parsed = parseSlackTaskInput(text);
-
-    // Owner rules:
-    // - Default owner is ALWAYS the creator
-    // - owner: prefix can ONLY be used by authorized users (SLACK_OWNER_OVERRIDE_USER_IDS)
-    // - Plain @mentions go to Support, not Owner
-    const ownerOverrideUserIds = config.slack.ownerOverrideUserIds;
-    const isOwnerAuthorized = ownerOverrideUserIds.length === 0 || ownerOverrideUserIds.includes(user_id);
-    let ownerOverridden = false;
-
-    if (parsed.ownerExplicitlySet && parsed.ownerSlackId) {
-      // User explicitly used owner: prefix
-      if (isOwnerAuthorized) {
-        // Authorized user - allow owner override
-        console.log(`Authorized owner override: ${user_id} set owner to ${parsed.ownerSlackId}`);
-      } else {
-        // Non-authorized user tried to use owner: - ignore it, set owner = creator
-        console.log(`Owner override blocked: ${user_id} tried to use owner: prefix`);
-        parsed.ownerSlackId = user_id;
-        ownerOverridden = true;
-      }
-    } else {
-      // No explicit owner: prefix - owner is always the creator
-      parsed.ownerSlackId = user_id;
-    }
-
     // Check idempotency to prevent duplicate tasks
-    const idempotencyKey = generateTaskIdempotencyKey(user_id, parsed.description ?? text);
+    const idempotencyKey = generateTaskIdempotencyKey(user_id, trimmedText);
     const { isDuplicate, cachedResult } = checkIdempotency(idempotencyKey);
     if (isDuplicate) {
       console.log(`[Idempotency] Duplicate /task request detected: ${idempotencyKey}`);
@@ -576,17 +550,14 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
     }
 
     // Acknowledge immediately (Slack requires response within 3 seconds)
-    const ackMessage = ownerOverridden
-      ? `⏳ Creating task...\n\n_Note: The \`owner:\` prefix is restricted. Task owner set to you._`
-      : `⏳ Creating task...`;
     res.json({
       response_type: 'ephemeral',
-      text: ackMessage,
+      text: `⏳ Analyzing task with AI...`,
     });
 
-    // Execute the workflow asynchronously
-    const result = await executeSlackTaskWorkflowSafe({
-      parsed,
+    // Execute the AI-powered workflow asynchronously
+    const result = await executeAISlackTaskWorkflowSafe({
+      text: trimmedText,
       creatorSlackId: user_id,
     });
 
