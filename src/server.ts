@@ -929,14 +929,15 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 // Admin Commands
 // ============================================================================
 
+import { findUserByMondayId } from './services/userResolver.js';
+
 /**
  * /backfill slash command handler
- * Deletes Slack threads for completed Monday.com items (cleanup mode)
+ * Creates Slack threads for existing Monday.com items that don't have them
  *
- * Usage: /backfill
- * - Finds all items with status "Complete" that have Slack threads
- * - Deletes those Slack messages
- * - Clears the Slack thread ID from Monday
+ * Usage: /backfill [cleanup]
+ * - Default: Creates Slack threads for items without one (excludes done/complete status)
+ * - cleanup: Deletes all bot messages from today (for fixing mistakes)
  *
  * Only allowed for users in the taskCommandWhitelist
  */
@@ -948,13 +949,16 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
   }
 
   try {
-    const { user_id, response_url } = req.body as {
+    const { text, user_id, response_url } = req.body as {
       text: string;
       user_id: string;
       response_url: string;
     };
 
-    console.log(`/backfill command received from ${user_id} - cleanup mode`);
+    const trimmedText = text?.trim().toLowerCase() || '';
+    const isCleanup = trimmedText === 'cleanup';
+
+    console.log(`/backfill command received from ${user_id}${isCleanup ? ' - cleanup mode' : ''}`);
 
     // Check permissions - only allow whitelisted users
     const whitelist = config.slack.taskCommandWhitelist;
@@ -966,64 +970,195 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
       return;
     }
 
-    // Acknowledge immediately
-    res.json({
-      response_type: 'ephemeral',
-      text: `⏳ Deleting all bot messages from today...`,
-    });
-
-    // Delete all bot messages from today
-    let deleted = 0;
-    let failed = 0;
-
-    try {
-      // Get today's start timestamp
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayTs = (today.getTime() / 1000).toString();
-
-      // Get messages from the main channel
-      const history = await slack.getClient().conversations.history({
-        channel: config.slack.channelId,
-        oldest: todayTs,
-        limit: 500,
+    // Handle cleanup mode
+    if (isCleanup) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `⏳ Deleting all bot messages from today (including thread replies)...`,
       });
 
-      if (history.messages) {
-        for (const msg of history.messages) {
-          // Delete all bot messages (bot_id present or subtype is bot_message)
-          if ((msg.bot_id || msg.subtype === 'bot_message') && msg.ts) {
-            try {
-              await slack.getClient().chat.delete({
-                channel: config.slack.channelId,
-                ts: msg.ts,
-              });
-              deleted++;
-              console.log(`Deleted bot message: ${msg.ts}`);
-              await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (deleteErr) {
-              failed++;
-              console.warn(`Could not delete message ${msg.ts}:`, deleteErr);
+      let deletedTopLevel = 0;
+      let deletedReplies = 0;
+      let failed = 0;
+
+      try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayTs = (today.getTime() / 1000).toString();
+
+        const history = await slack.getClient().conversations.history({
+          channel: config.slack.channelId,
+          oldest: todayTs,
+          limit: 500,
+        });
+
+        if (history.messages) {
+          // First pass: delete thread replies
+          for (const msg of history.messages) {
+            if (msg.ts && (msg.reply_count || msg.thread_ts === msg.ts)) {
+              try {
+                const replies = await slack.getClient().conversations.replies({
+                  channel: config.slack.channelId,
+                  ts: msg.ts,
+                  limit: 200,
+                });
+
+                if (replies.messages) {
+                  for (let i = replies.messages.length - 1; i >= 1; i--) {
+                    const reply = replies.messages[i] as { bot_id?: string; subtype?: string; ts?: string };
+                    if ((reply.bot_id || reply.subtype === 'bot_message') && reply.ts) {
+                      try {
+                        await slack.getClient().chat.delete({
+                          channel: config.slack.channelId,
+                          ts: reply.ts,
+                        });
+                        deletedReplies++;
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                      } catch {
+                        failed++;
+                      }
+                    }
+                  }
+                }
+              } catch {
+                // Thread fetch failed
+              }
+            }
+          }
+
+          // Second pass: delete top-level bot messages
+          for (const msg of history.messages) {
+            if ((msg.bot_id || msg.subtype === 'bot_message') && msg.ts) {
+              try {
+                await slack.getClient().chat.delete({
+                  channel: config.slack.channelId,
+                  ts: msg.ts,
+                });
+                deletedTopLevel++;
+                await new Promise(resolve => setTimeout(resolve, 100));
+              } catch {
+                failed++;
+              }
             }
           }
         }
+      } catch (historyErr) {
+        console.error('Error fetching channel history:', historyErr);
       }
-    } catch (historyErr) {
-      console.error('Error fetching channel history:', historyErr);
+
+      await slack.sendResponseUrl(response_url,
+        `✅ *Cleanup Complete*\n\n` +
+        `• Deleted: ${deletedTopLevel} top-level messages\n` +
+        `• Deleted: ${deletedReplies} thread replies\n` +
+        `• Failed: ${failed}\n\n` +
+        `_Run again if there are more messages to delete._`
+      );
+      return;
     }
 
-    // Send summary
+    // Default mode: Create Slack threads for items without them
+    res.json({
+      response_type: 'ephemeral',
+      text: `⏳ Fetching Monday.com items without Slack threads...`,
+    });
+
+    // Get items that need backfill (no Slack thread, status != done)
+    const items = await monday.getItemsForBackfill();
+
+    if (items.length === 0) {
+      await slack.sendResponseUrl(response_url,
+        `✅ No items need backfill.\n\n` +
+        `All non-completed items already have Slack threads.\n\n` +
+        `_Use \`/backfill cleanup\` to delete bot messages from today._`
+      );
+      return;
+    }
+
     await slack.sendResponseUrl(response_url,
-      `✅ *Cleanup Complete*\n\n` +
-      `• Deleted: ${deleted} bot messages from today\n` +
+      `📋 Found ${items.length} items to backfill. Creating Slack threads...`
+    );
+
+    let created = 0;
+    let failed = 0;
+
+    for (const item of items) {
+      try {
+        // Build owner mentions
+        let ownerMentions = '';
+        if (item.ownerPersonIds.length > 0) {
+          const owners = await Promise.all(
+            item.ownerPersonIds.map(id => findUserByMondayId(id))
+          );
+          const validOwners = owners.filter(o => o?.slackId);
+          if (validOwners.length > 0) {
+            ownerMentions = validOwners.map(o => `<@${o!.slackId}>`).join(' ');
+          }
+        }
+
+        // Create Slack thread
+        const mondayUrl = monday.getItemUrl(item.id);
+        const ownerLine = ownerMentions ? `*Owner:* ${ownerMentions}\n` : '';
+        const typeLine = item.taskType ? `*Type:* ${item.taskType}\n` : '';
+        const teamLine = item.team ? `*Team:* ${item.team}\n` : '';
+        const dueLine = item.dueDate ? `*Due:* ${item.dueDate}\n` : '';
+        const statusLine = item.workflowStatus ? `*Status:* ${item.workflowStatus}\n` : '';
+
+        const slackMessage = await slack.getClient().chat.postMessage({
+          channel: config.slack.channelId,
+          text: `📋 *${item.name}*\n\n` +
+            `${ownerLine}` +
+            `${typeLine}` +
+            `${teamLine}` +
+            `${dueLine}` +
+            `${statusLine}` +
+            `\n<${mondayUrl}|View on Monday.com>\n\n` +
+            `_Backfilled thread for existing Monday item_`,
+        });
+
+        if (!slackMessage.ts) {
+          throw new Error('No thread timestamp returned');
+        }
+
+        // Store Slack thread ID on Monday item
+        await monday.updateSlackThreadId(item.id, slackMessage.ts);
+
+        // Post existing Monday updates to the thread
+        const updates = await monday.getItemUpdates(item.id);
+        for (const update of updates) {
+          // Skip updates that were synced FROM Slack (avoid duplication)
+          if (update.textBody?.includes('(via Slack)') || update.textBody?.startsWith('[From Slack')) {
+            continue;
+          }
+
+          const authorName = update.creatorName || 'Unknown';
+          await slack.postToThread(
+            slackMessage.ts,
+            `💬 *${authorName}* (via Monday):\n${update.textBody}`
+          );
+
+          // Small delay to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+
+        created++;
+        console.log(`Backfilled thread for item ${item.id}: ${item.name}`);
+      } catch (error) {
+        failed++;
+        console.error(`Failed to backfill item ${item.id}:`, error);
+      }
+    }
+
+    await slack.sendResponseUrl(response_url,
+      `✅ *Backfill Complete*\n\n` +
+      `• Created: ${created} Slack threads\n` +
       `• Failed: ${failed}\n\n` +
-      `_Run again if there are more messages to delete._`
+      `_Use \`/backfill cleanup\` to delete bot messages if needed._`
     );
   } catch (error) {
     console.error('/backfill command error:', error);
     res.json({
       response_type: 'ephemeral',
-      text: `:x: Error running cleanup: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      text: `:x: Error running backfill: ${error instanceof Error ? error.message : 'Unknown error'}`,
     });
   }
 });
