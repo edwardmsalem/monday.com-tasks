@@ -408,7 +408,7 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 // Slack /issuecall Command - Issue Call Task with Account Lookup
 // ============================================================================
 
-import { lookupAccountForIssueCall, formatIssueCallAccount } from './services/sheets.js';
+import { lookupAccountForIssueCall, formatIssueCallAccount, logSheetsConfiguration } from './services/sheets.js';
 import { parseIssueCallInputSafe } from './services/claude.js';
 import {
   registerIssueCall,
@@ -921,6 +921,9 @@ app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
 // Start the server
 function start() {
   validateConfig();
+
+  // Log sheets configuration for debugging
+  logSheetsConfiguration();
 
   // Initialize job queue and register processors
   initializeJobQueue();

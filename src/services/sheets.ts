@@ -369,6 +369,24 @@ function getSpreadsheetIdForSport(sport: Sport): string | undefined {
   return config.accountSheets[sport];
 }
 
+/**
+ * Log configured spreadsheet IDs at startup
+ * Call this from server start to verify configuration
+ */
+export function logSheetsConfiguration(): void {
+  console.log('[Sheets] === Account Sheets Configuration ===');
+  const sports: Sport[] = ['mlb', 'nfl', 'nba', 'nhl', 'mls', 'ncaa', 'other'];
+  for (const sport of sports) {
+    const id = config.accountSheets[sport];
+    if (id) {
+      console.log(`[Sheets]   ${sport.toUpperCase()}: ${id}`);
+    } else {
+      console.log(`[Sheets]   ${sport.toUpperCase()}: NOT CONFIGURED`);
+    }
+  }
+  console.log('[Sheets] =====================================');
+}
+
 export interface AccountInfo {
   /** Raw row data from the sheet */
   rowData: string[];
@@ -396,18 +414,25 @@ async function findSheetByName(
 ): Promise<{ sheetName: string; sheetId: number } | null> {
   const sheets = await getSheetsClient();
 
+  console.log(`[Sheets] findSheetByName: Fetching sheet list from spreadsheet ${spreadsheetId.substring(0, 10)}...`);
+
   const response = await sheets.spreadsheets.get({
     spreadsheetId,
     fields: 'sheets.properties',
   });
 
   const sheetList = response.data.sheets || [];
+  const allSheetNames = sheetList.map(s => s.properties?.title || 'unnamed').join(', ');
+  console.log(`[Sheets] findSheetByName: Found ${sheetList.length} sheets: [${allSheetNames}]`);
+
   const normalized = searchName.toLowerCase().trim();
+  console.log(`[Sheets] findSheetByName: Searching for "${normalized}"...`);
 
   // First try exact match
   for (const sheet of sheetList) {
     const title = sheet.properties?.title || '';
     if (title.toLowerCase() === normalized) {
+      console.log(`[Sheets] findSheetByName: EXACT MATCH found: "${title}"`);
       return { sheetName: title, sheetId: sheet.properties?.sheetId || 0 };
     }
   }
@@ -417,6 +442,7 @@ async function findSheetByName(
     const title = sheet.properties?.title || '';
     const titleLower = title.toLowerCase();
     if (titleLower.includes(normalized) || normalized.includes(titleLower)) {
+      console.log(`[Sheets] findSheetByName: PARTIAL MATCH found: "${title}" (contains "${normalized}")`);
       return { sheetName: title, sheetId: sheet.properties?.sheetId || 0 };
     }
   }
@@ -427,10 +453,12 @@ async function findSheetByName(
     const title = sheet.properties?.title || '';
     const titleLower = title.toLowerCase();
     if (searchWords.some(word => titleLower.includes(word))) {
+      console.log(`[Sheets] findSheetByName: WORD MATCH found: "${title}" (contains word from "${normalized}")`);
       return { sheetName: title, sheetId: sheet.properties?.sheetId || 0 };
     }
   }
 
+  console.log(`[Sheets] findSheetByName: NO MATCH found for "${searchName}"`);
   return null;
 }
 
@@ -445,9 +473,14 @@ export async function lookupTeamAccounts(
   teamName: string,
   sportOverride?: Sport
 ): Promise<AccountLookupResult> {
+  console.log(`[Sheets] lookupTeamAccounts called with teamName="${teamName}", sportOverride=${sportOverride || 'none'}`);
+
   // Determine sport
   const sport = sportOverride || getSportFromTeam(teamName);
+  console.log(`[Sheets] Sport detection: "${teamName}" → ${sport || 'NOT FOUND'}`);
+
   if (!sport) {
+    console.error(`[Sheets] FAILED: Could not determine sport for team "${teamName}"`);
     return {
       success: false,
       sport: 'other',
@@ -461,7 +494,10 @@ export async function lookupTeamAccounts(
 
   // Get spreadsheet ID
   const spreadsheetId = getSpreadsheetIdForSport(sport);
+  console.log(`[Sheets] Spreadsheet lookup: ${sport.toUpperCase()} → ${spreadsheetId ? `ID: ${spreadsheetId.substring(0, 10)}...` : 'NOT CONFIGURED'}`);
+
   if (!spreadsheetId) {
+    console.error(`[Sheets] FAILED: No spreadsheet ID configured for sport ${sport.toUpperCase()}`);
     return {
       success: false,
       sport,
@@ -474,11 +510,14 @@ export async function lookupTeamAccounts(
   }
 
   try {
+    console.log(`[Sheets] Connecting to Google Sheets API...`);
     const sheets = await getSheetsClient();
 
     // Find the matching sheet
+    console.log(`[Sheets] Searching for sheet matching "${teamName}" in spreadsheet ${spreadsheetId.substring(0, 10)}...`);
     const sheetMatch = await findSheetByName(spreadsheetId, teamName);
     if (!sheetMatch) {
+      console.error(`[Sheets] FAILED: No sheet found matching "${teamName}" in ${sport.toUpperCase()} workbook`);
       return {
         success: false,
         sport,
@@ -490,14 +529,20 @@ export async function lookupTeamAccounts(
       };
     }
 
+    console.log(`[Sheets] Found matching sheet: "${sheetMatch.sheetName}" (sheetId: ${sheetMatch.sheetId})`);
+
     // Read all data from the sheet
+    console.log(`[Sheets] Reading data from sheet "${sheetMatch.sheetName}"...`);
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `'${sheetMatch.sheetName}'`,  // Quotes handle special chars in sheet names
     });
 
     const rows = dataResponse.data.values || [];
+    console.log(`[Sheets] Retrieved ${rows.length} rows from sheet`);
+
     if (rows.length === 0) {
+      console.error(`[Sheets] FAILED: Sheet "${sheetMatch.sheetName}" is empty`);
       return {
         success: false,
         sport,
@@ -516,7 +561,8 @@ export async function lookupTeamAccounts(
       rowNumber: index + 2, // +2 because 1-indexed and skipping header
     }));
 
-    console.log(`Found ${accounts.length} accounts for ${teamName} (${sheetMatch.sheetName})`);
+    console.log(`[Sheets] SUCCESS: Found ${accounts.length} accounts for ${teamName} (${sheetMatch.sheetName})`);
+    console.log(`[Sheets] Headers: ${headers.join(', ')}`);
 
     return {
       success: true,
@@ -528,7 +574,17 @@ export async function lookupTeamAccounts(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`Account lookup failed for ${teamName}:`, message);
+    // Extract more details from Google API errors
+    const errorDetails = error instanceof Error && 'response' in error
+      ? JSON.stringify((error as { response?: { data?: unknown } }).response?.data || {})
+      : '';
+    console.error(`[Sheets] EXCEPTION during lookup for "${teamName}":`);
+    console.error(`[Sheets]   Sport: ${sport}`);
+    console.error(`[Sheets]   Spreadsheet ID: ${spreadsheetId}`);
+    console.error(`[Sheets]   Error message: ${message}`);
+    if (errorDetails) {
+      console.error(`[Sheets]   API response: ${errorDetails}`);
+    }
     return {
       success: false,
       sport,
