@@ -152,11 +152,40 @@ export async function claimIssueCall(
 }
 
 /**
+ * Check if current time is within business hours
+ * Business hours: Monday-Friday, 8am-8pm Eastern Time
+ */
+function isBusinessHours(): boolean {
+  const now = new Date();
+  const eastern = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  const dayOfWeek = eastern.getDay(); // 0 = Sunday, 6 = Saturday
+  const hour = eastern.getHours();
+
+  // Skip weekends
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return false;
+  }
+
+  // Skip outside 8am-8pm
+  if (hour < 8 || hour >= 20) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Ping for all unclaimed issue calls
- * - Every 20 minutes: @closers + Dayna + Ruzzell
+ * - Every 20 minutes during business hours: @closers + Dayna + Ruzzell
  * - After 1 hour: Also include Edward
  */
 export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number }> {
+  // Only ping during business hours (M-F 8am-8pm ET)
+  if (!isBusinessHours()) {
+    return { pinged: 0 };
+  }
+
   const now = Date.now();
   let pingedCount = 0;
 
