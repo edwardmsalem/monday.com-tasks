@@ -567,3 +567,199 @@ export function formatAccountsForDisplay(result: AccountLookupResult): string {
 
   return lines.join('\n');
 }
+
+
+// ============================================================================
+// ISSUE CALL ACCOUNT LOOKUP
+// Lookup specific account by team + email for /issuecall command
+// ============================================================================
+
+/**
+ * Find column index by header name (case-insensitive, partial match)
+ */
+function findColumnIndex(headers: string[], ...possibleNames: string[]): number {
+  const lowerHeaders = headers.map(h => h.toLowerCase().trim());
+
+  for (const name of possibleNames) {
+    const lowerName = name.toLowerCase();
+    // Exact match first
+    const exactIdx = lowerHeaders.indexOf(lowerName);
+    if (exactIdx !== -1) return exactIdx;
+
+    // Partial match
+    const partialIdx = lowerHeaders.findIndex(h => h.includes(lowerName) || lowerName.includes(h));
+    if (partialIdx !== -1) return partialIdx;
+  }
+
+  return -1;
+}
+
+/**
+ * Get value from row by column name
+ */
+function getColumnValue(row: string[], headers: string[], ...possibleNames: string[]): string {
+  const idx = findColumnIndex(headers, ...possibleNames);
+  if (idx === -1 || idx >= row.length) return '';
+  return row[idx]?.trim() || '';
+}
+
+export interface IssueCallAccountResult {
+  success: boolean;
+  team: string;
+  name: string;
+  email: string;
+  phone: string;
+  seats: string;  // Formatted: "Sec 100 Row 5 Seats 1-4, Sec 200 Row 10 Seats 1-2"
+  address: string;
+  cardInfo: string;  // "Last 4: XXXX Exp: XX/XX CVC: XXX"
+  error?: string;
+}
+
+/**
+ * Lookup account by team + email for /issuecall
+ * Returns formatted account info with concatenated seats if multiple rows
+ */
+export async function lookupAccountForIssueCall(
+  teamName: string,
+  email: string
+): Promise<IssueCallAccountResult> {
+  // First get all accounts for the team
+  const teamResult = await lookupTeamAccounts(teamName);
+
+  if (!teamResult.success) {
+    return {
+      success: false,
+      team: teamName,
+      name: '',
+      email,
+      phone: '',
+      seats: '',
+      address: '',
+      cardInfo: '',
+      error: teamResult.error,
+    };
+  }
+
+  // Find email column and filter accounts
+  const emailIdx = findColumnIndex(teamResult.headers, 'email', 'e-mail', 'email address');
+  if (emailIdx === -1) {
+    return {
+      success: false,
+      team: teamName,
+      name: '',
+      email,
+      phone: '',
+      seats: '',
+      address: '',
+      cardInfo: '',
+      error: 'Email column not found in sheet',
+    };
+  }
+
+  // Filter to matching email (case-insensitive)
+  const lowerEmail = email.toLowerCase().trim();
+  const matchingAccounts = teamResult.accounts.filter(acc => {
+    const accEmail = acc.rowData[emailIdx]?.toLowerCase().trim() || '';
+    return accEmail === lowerEmail;
+  });
+
+  if (matchingAccounts.length === 0) {
+    return {
+      success: false,
+      team: teamResult.sheetName,
+      name: '',
+      email,
+      phone: '',
+      seats: '',
+      address: '',
+      cardInfo: '',
+      error: `No account found with email: ${email}`,
+    };
+  }
+
+  // Get data from first row (name, phone, address, card info are same across rows)
+  const firstRow = matchingAccounts[0].rowData;
+  const headers = teamResult.headers;
+
+  const name = getColumnValue(firstRow, headers, 'name', 'account name', 'customer name', 'full name');
+  const phone = getColumnValue(firstRow, headers, 'phone', 'phone number', 'cell', 'mobile');
+  const address = getColumnValue(firstRow, headers, 'address', 'street address', 'mailing address');
+
+  // Card info - try various column names
+  const last4 = getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4');
+  const exp = getColumnValue(firstRow, headers, 'exp', 'expiration', 'exp date', 'expiry');
+  const cvc = getColumnValue(firstRow, headers, 'cvc', 'cvv', 'security code', 'cv2');
+
+  // Build card info string
+  const cardParts: string[] = [];
+  if (last4) cardParts.push(`Last 4: ${last4}`);
+  if (exp) cardParts.push(`Exp: ${exp}`);
+  if (cvc) cardParts.push(`CVC: ${cvc}`);
+  const cardInfo = cardParts.join(' | ');
+
+  // Build seats string from all matching rows
+  const seatStrings: string[] = [];
+  for (const acc of matchingAccounts) {
+    const section = getColumnValue(acc.rowData, headers, 'section', 'sec');
+    const row = getColumnValue(acc.rowData, headers, 'row');
+    const lowSeat = getColumnValue(acc.rowData, headers, 'low seat', 'seat low', 'first seat', 'seat from', 'low');
+    const highSeat = getColumnValue(acc.rowData, headers, 'high seat', 'seat high', 'last seat', 'seat to', 'high');
+    const seats = getColumnValue(acc.rowData, headers, 'seats', 'seat', 'seat numbers');
+
+    // Build seat string for this row
+    const parts: string[] = [];
+    if (section) parts.push(`Sec ${section}`);
+    if (row) parts.push(`Row ${row}`);
+
+    // Handle seats - either low-high range or single seats column
+    if (lowSeat && highSeat) {
+      parts.push(`Seats ${lowSeat}-${highSeat}`);
+    } else if (lowSeat) {
+      parts.push(`Seat ${lowSeat}`);
+    } else if (seats) {
+      parts.push(`Seats ${seats}`);
+    }
+
+    if (parts.length > 0) {
+      seatStrings.push(parts.join(' '));
+    }
+  }
+
+  const seatsFormatted = seatStrings.length > 1
+    ? '\n  • ' + seatStrings.join('\n  • ')
+    : seatStrings[0] || '';
+
+  console.log(`Found ${matchingAccounts.length} seat location(s) for ${email} (${teamResult.sheetName})`);
+
+  return {
+    success: true,
+    team: teamResult.sheetName,
+    name,
+    email,
+    phone,
+    seats: seatsFormatted,
+    address,
+    cardInfo,
+  };
+}
+
+/**
+ * Format issue call account for Slack display
+ */
+export function formatIssueCallAccount(result: IssueCallAccountResult): string {
+  if (!result.success) {
+    return `❌ ${result.error}`;
+  }
+
+  const lines: string[] = [
+    `*Team:* ${result.team}`,
+    `*Name:* ${result.name || 'N/A'}`,
+    `*Email:* ${result.email}`,
+    `*Phone:* ${result.phone || 'N/A'}`,
+    `*Seats:* ${result.seats || 'N/A'}`,
+    `*Address:* ${result.address || 'N/A'}`,
+    `*Card:* ${result.cardInfo || 'N/A'}`,
+  ];
+
+  return lines.join('\n');
+}

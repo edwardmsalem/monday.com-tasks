@@ -18,12 +18,8 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import { randomUUID } from 'crypto';
 import { config, validateConfig } from './config/environment.js';
 import {
-  parseSlackTaskInput,
-  executeSlackTaskWorkflowSafe,
-  executeEmailTaskWorkflowSafe,
   executeAISlackTaskWorkflowSafe,
 } from './workflow.js';
-import * as sync from './services/sync.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
 import { findUserByName, findUserBySlackId } from './services/userResolver.js';
@@ -34,7 +30,6 @@ import {
   checkIdempotency,
   setIdempotencyKey,
   generateTaskIdempotencyKey,
-  generateEmailTaskIdempotencyKey,
   startCleanupInterval as startIdempotencyCleanup,
 } from './services/idempotency.js';
 
@@ -80,199 +75,6 @@ app.use(mondayWebhookRouter);
 
 // Relay events (Slack events via relay proxy, /relay/events)
 app.use(relayEventsRouter);
-
-// ============================================================================
-// Slack Slash Commands (AI-powered with follow-up questions)
-// ============================================================================
-
-// Allowed channels for /seasontask command (from config - QW-06)
-const SEASONTASK_ALLOWED_CHANNELS = config.slack.seasontaskAllowedChannels;
-
-/**
- * /seasontask slash command handler - Restricted to specific channels
- * Uses Claude AI to understand natural language and asks follow-up questions
- * for missing required fields (assignee, due date)
- *
- * Examples:
- *   /seasontask Fix the login bug
- *   /seasontask Review the Yankees tickets for John by Friday
- *   /seasontask urgent: follow up on Knicks renewal @sarah
- */
-app.post('/webhook/slack/seasontask', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
-  // Verify Slack signature (QW-07)
-  if (!verifySlackSignature(req)) {
-    res.status(401).send('Invalid signature');
-    return;
-  }
-
-  try {
-    const { text, user_id, channel_id, command } = req.body as {
-      text: string;
-      user_id: string;
-      channel_id: string;
-      command: string;
-    };
-
-    console.log(`Slash command received: ${command} ${text} in channel ${channel_id}`);
-
-    // Check if channel is allowed
-    if (!SEASONTASK_ALLOWED_CHANNELS.includes(channel_id)) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `:no_entry: This command only works in the season tickets channels.\n\n` +
-          `If you need to create a task elsewhere, please use the appropriate channel.`,
-      });
-      return;
-    }
-
-    const trimmedText = text.trim().toLowerCase();
-
-    // Handle help
-    if (trimmedText === 'help' || trimmedText === '') {
-      res.json({
-        response_type: 'ephemeral',
-        text: `*Season Tickets - Smart Task Creation*\n\n` +
-          `Just describe your task naturally! I'll ask for any missing details.\n\n` +
-          `*Examples:*\n` +
-          `• \`/seasontask Follow up on Yankees renewal\`\n` +
-          `• \`/seasontask Call John about Knicks tickets by friday\`\n` +
-          `• \`/seasontask urgent: Rangers invoice needs review\`\n` +
-          `• \`/seasontask Schedule Giants meeting next week @sarah\`\n\n` +
-          `*Required info (I'll ask if missing):*\n` +
-          `• Task description\n` +
-          `• Assignee (who's responsible?)\n` +
-          `• Due date (when is it due?)\n\n` +
-          `*Team names I recognize:*\n` +
-          `Yankees, Mets, Knicks, Nets, Rangers, Islanders, Giants, Jets, etc.\n\n` +
-          `_Tip: Mention the team name and I'll automatically tag it!_`,
-      });
-      return;
-    }
-
-    // Handle cancel
-    if (trimmedText === 'cancel') {
-      const result = sync.cancelSmartTask(user_id, channel_id);
-      res.json({
-        response_type: 'ephemeral',
-        text: result.message,
-      });
-      return;
-    }
-
-    // Check if there's a pending task (user is answering a question)
-    if (sync.hasPendingTask(user_id, channel_id)) {
-      const result = await sync.continueSmartTaskCreation(text, user_id, channel_id);
-      res.json({
-        response_type: 'ephemeral',
-        text: result.message ?? '',
-        blocks: result.blocks,
-      });
-      return;
-    }
-
-    // Start new task creation with AI
-    const result = await sync.startSmartTaskCreation(text, user_id, channel_id);
-
-    res.json({
-      response_type: 'ephemeral',
-      text: result.message ?? '',
-      blocks: result.blocks,
-    });
-  } catch (error) {
-    console.error('Seasontask command error:', error);
-    res.json({
-      response_type: 'ephemeral',
-      text: ':x: Error processing command. Please try again.',
-    });
-  }
-});
-
-/**
- * Slack slash command handler (/monday - general purpose)
- * Uses Claude AI to understand natural language and asks follow-up questions
- * for missing required fields (assignee, due date)
- *
- * Examples:
- *   /monday Fix the login bug
- *   /monday Review the contract for John by Friday
- *   /monday urgent: deploy hotfix @sarah
- */
-app.post('/webhook/slack/command', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
-  // Verify Slack signature (QW-07)
-  if (!verifySlackSignature(req)) {
-    res.status(401).send('Invalid signature');
-    return;
-  }
-
-  try {
-    const { text, user_id, channel_id, command } = req.body as {
-      text: string;
-      user_id: string;
-      channel_id: string;
-      command: string;
-    };
-
-    console.log(`Slash command received: ${command} ${text}`);
-
-    const trimmedText = text.trim().toLowerCase();
-
-    // Handle help
-    if (trimmedText === 'help' || trimmedText === '') {
-      res.json({
-        response_type: 'ephemeral',
-        text: `*Monday.com - Smart Task Creation*\n\n` +
-          `Just describe your task naturally! I'll ask for any missing details.\n\n` +
-          `*Examples:*\n` +
-          `• \`/monday Fix the login bug\`\n` +
-          `• \`/monday Review contract for @john by friday\`\n` +
-          `• \`/monday urgent: deploy hotfix asap\`\n` +
-          `• \`/monday Schedule meeting with team next week\`\n\n` +
-          `*Required info (I'll ask if missing):*\n` +
-          `• Task description\n` +
-          `• Assignee (who's responsible?)\n` +
-          `• Due date (when is it due?)\n\n` +
-          `_Tip: The more detail you provide, the faster the task is created!_`,
-      });
-      return;
-    }
-
-    // Handle cancel
-    if (trimmedText === 'cancel') {
-      const result = sync.cancelSmartTask(user_id, channel_id);
-      res.json({
-        response_type: 'ephemeral',
-        text: result.message,
-      });
-      return;
-    }
-
-    // Check if there's a pending task (user is answering a question)
-    if (sync.hasPendingTask(user_id, channel_id)) {
-      const result = await sync.continueSmartTaskCreation(text, user_id, channel_id);
-      res.json({
-        response_type: 'ephemeral',
-        text: result.message ?? '',
-        blocks: result.blocks,
-      });
-      return;
-    }
-
-    // Start new task creation with AI
-    const result = await sync.startSmartTaskCreation(text, user_id, channel_id);
-
-    res.json({
-      response_type: 'ephemeral',
-      text: result.message ?? '',
-      blocks: result.blocks,
-    });
-  } catch (error) {
-    console.error('Slash command error:', error);
-    res.json({
-      response_type: 'ephemeral',
-      text: ':x: Error processing command. Please try again.',
-    });
-  }
-});
 
 // ============================================================================
 // Slack Debug Commands
@@ -603,16 +405,52 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 });
 
 // ============================================================================
-// Slack /issuecall Command - Issue Call Task Creation
+// Slack /issuecall Command - Issue Call Task with Account Lookup
 // ============================================================================
+
+import { lookupAccountForIssueCall, formatIssueCallAccount } from './services/sheets.js';
+import { parseIssueCallInputSafe } from './services/claude.js';
+import {
+  registerIssueCall,
+  CLOSERS_GROUP_ID,
+} from './services/issueCallTracker.js';
+
+/**
+ * Calculate due date for issue call:
+ * - If before 4 PM EST → today
+ * - If 4 PM EST or later → tomorrow
+ */
+function getIssueCallDueDate(): string {
+  const now = new Date();
+  const estFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    hour12: false,
+  });
+  const estHour = parseInt(estFormatter.format(now), 10);
+
+  const dueDate = new Date(now);
+  if (estHour >= 16) {
+    // 4 PM or later → tomorrow
+    dueDate.setDate(dueDate.getDate() + 1);
+  }
+
+  // Format as YYYY-MM-DD
+  return dueDate.toISOString().split('T')[0];
+}
 
 /**
  * /issuecall slash command handler
- * Creates an "Issue Call" task with Dayna as owner
- * Posts to a dedicated issue call channel (not main channel)
+ * Creates an Issue Call task with account lookup from Google Sheets
  *
- * Usage: /issuecall @supporter [optional description]
- * Example: /issuecall @jamie Customer complaint about order #123
+ * Usage: /issuecall [team] [email]
+ * Example: /issuecall astros john@example.com
+ *
+ * - Owners: Dayna + Ruzzell Garcia
+ * - Due: Today (or tomorrow if after 4 PM EST)
+ * - Posts to issue call channel with account info
+ * - Monitors thread for first 👀 or reply → assigns as supporter
+ * - Pings @closers hourly until claimed
  */
 app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
   // Verify Slack signature (QW-07)
@@ -645,46 +483,14 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     if (!trimmedText || trimmedText.toLowerCase() === 'help') {
       res.json({
         response_type: 'ephemeral',
-        text: `*Issue Call Task Creation*\n\n` +
-          `Create an issue call task assigned to Dayna with a supporter.\n\n` +
-          `*Usage:* \`/issuecall @supporter [description]\`\n\n` +
+        text: `*Issue Call - AI-Powered Task with Account Lookup*\n\n` +
+          `Describe the issue call naturally. I'll extract the team and email.\n\n` +
           `*Examples:*\n` +
-          `• \`/issuecall @jamie\`\n` +
-          `• \`/issuecall @jamie Customer complaint about order #123\`\n\n` +
-          `_The task will be posted to the issue call channel._`,
-      });
-      return;
-    }
-
-    // Parse supporter mention from text
-    const mentionMatch = trimmedText.match(/<@([A-Z0-9]+)>/);
-    if (!mentionMatch) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `:x: Please mention a supporter.\n\nUsage: \`/issuecall @supporter [description]\``,
-      });
-      return;
-    }
-
-    const supporterSlackId = mentionMatch[1];
-    const description = trimmedText.replace(/<@[A-Z0-9]+>/, '').trim();
-
-    // Look up Dayna (fixed owner)
-    const dayna = await findUserByName('Dayna');
-    if (!dayna) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `:x: Could not find Dayna in the user directory. Please contact an admin.`,
-      });
-      return;
-    }
-
-    // Look up supporter
-    const supporter = await findUserBySlackId(supporterSlackId);
-    if (!supporter) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `:x: Could not find the mentioned user in the system.`,
+          `• \`/issuecall astros john@example.com\`\n` +
+          `• \`/issuecall issue call for houston astros customer jane@gmail.com\`\n` +
+          `• \`/issuecall rockets account holder bob@email.com @jamie\`\n` +
+          `• \`/issuecall texans fan@gmail.com with Sarah's help\`\n\n` +
+          `_Mention someone to suggest them as supporter. They'll be pinged first._`,
       });
       return;
     }
@@ -692,22 +498,87 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Acknowledge immediately
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Creating issue call task with ${supporter.name}...`,
+      text: `⏳ Analyzing issue call request...`,
     });
+
+    // Use AI to parse the input
+    const parseResult = await parseIssueCallInputSafe(trimmedText);
+
+    if (!parseResult || !parseResult.email) {
+      await slack.sendResponseUrl(response_url,
+        `:x: Could not find an email address in your request.\n\n` +
+        `Please include the account holder's email.\n\n` +
+        `Example: \`/issuecall astros john@example.com\``
+      );
+      return;
+    }
+
+    if (!parseResult.team) {
+      await slack.sendResponseUrl(response_url,
+        `:x: Could not identify the team.\n\n` +
+        `Please include the team name (e.g., Astros, Rockets, Texans).\n\n` +
+        `Example: \`/issuecall astros john@example.com\``
+      );
+      return;
+    }
+
+    const email = parseResult.email;
+    const teamName = parseResult.team;
+
+    // Check for @mention in the original text (Slack IDs)
+    let suggestedSupporterSlackId: string | undefined;
+    const mentionPattern = /<@([A-Z0-9]+)>/;
+    const mentionMatch = trimmedText.match(mentionPattern);
+    if (mentionMatch) {
+      suggestedSupporterSlackId = mentionMatch[1];
+    } else if (parseResult.suggestedSupporter) {
+      // AI found a supporter name, try to resolve to Slack ID
+      const supporter = await findUserByName(parseResult.suggestedSupporter);
+      if (supporter?.slackId) {
+        suggestedSupporterSlackId = supporter.slackId;
+      }
+    }
+
+    console.log(`Issue call parsed: team=${teamName}, email=${email}, supporter=${suggestedSupporterSlackId || 'none'}`);
+
+    // Look up the account
+    const accountResult = await lookupAccountForIssueCall(teamName, email);
+
+    // Look up owners: Dayna + Ruzzell Garcia
+    const dayna = await findUserByName('Dayna');
+    const ruzzell = await findUserByName('Ruzzell Garcia');
+
+    if (!dayna) {
+      await slack.sendResponseUrl(response_url,
+        `:x: Could not find Dayna in the user directory. Please contact an admin.`
+      );
+      return;
+    }
+
+    if (!ruzzell) {
+      await slack.sendResponseUrl(response_url,
+        `:x: Could not find Ruzzell Garcia in the user directory. Please contact an admin.`
+      );
+      return;
+    }
+
+    // Calculate due date
+    const dueDate = getIssueCallDueDate();
 
     // Generate run ID for tracking
     const runId = randomUUID();
 
     // Create Monday item
-    const taskName = description ? `Issue Call: ${description}` : 'Issue Call';
+    const taskName = `Issue Call: ${accountResult.success ? accountResult.name || email : email} (${accountResult.team || teamName})`;
     const mondayItem = await monday.createItem({
       name: taskName,
-      dueDate: null, // No due date for issue calls
-      ownerIds: [dayna.mondayId],
-      supportIds: [String(supporter.mondayId)],
+      dueDate,
+      ownerIds: [dayna.mondayId, ruzzell.mondayId],
+      supportIds: [], // Will be assigned when someone claims
       taskType: 'Issue Call',
       source: 'Slack Tasks',
       urgency: 'High',
+      team: accountResult.team || teamName,
     });
 
     console.log(`Created Monday item ${mondayItem.id} for issue call`);
@@ -715,26 +586,47 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Store run ID
     await monday.storeRunId(mondayItem.id, runId);
 
-    // Create initial update with context
+    // Create initial update with account info
     const creator = await findUserBySlackId(user_id);
     const creatorName = creator?.name ?? 'Unknown';
-    await monday.createUpdate(
-      mondayItem.id,
-      `<p><strong>Issue Call Task</strong></p>` +
-      `<p>Created by: ${creatorName}</p>` +
-      `<p>Supporter: ${supporter.name}</p>` +
-      (description ? `<p>Details: ${description}</p>` : '')
-    );
 
-    // Post to issue call channel (NOT main channel)
+    let updateHtml = `<p><strong>Issue Call Task</strong></p>` +
+      `<p>Created by: ${creatorName}</p>`;
+
+    if (accountResult.success) {
+      updateHtml += `<p><strong>Account Info:</strong></p>` +
+        `<p>Name: ${accountResult.name || 'N/A'}</p>` +
+        `<p>Email: ${accountResult.email}</p>` +
+        `<p>Phone: ${accountResult.phone || 'N/A'}</p>` +
+        `<p>Seats: ${accountResult.seats || 'N/A'}</p>` +
+        `<p>Address: ${accountResult.address || 'N/A'}</p>` +
+        `<p>Card: ${accountResult.cardInfo || 'N/A'}</p>`;
+    } else {
+      updateHtml += `<p><em>Account lookup failed: ${accountResult.error}</em></p>`;
+    }
+
+    await monday.createUpdate(mondayItem.id, updateHtml);
+
+    // Build Slack message
     const mondayUrl = monday.getItemUrl(mondayItem.id);
+    const accountInfo = accountResult.success
+      ? formatIssueCallAccount(accountResult)
+      : `⚠️ Account lookup failed: ${accountResult.error}`;
+
+    // Include suggested supporter mention if provided
+    const supporterLine = suggestedSupporterSlackId
+      ? `*Suggested Supporter:* <@${suggestedSupporterSlackId}> - please confirm by reacting 👀\n`
+      : '';
+
     const slackMessage = await slack.getClient().chat.postMessage({
       channel: issueCallChannelId,
       text: `📞 *Issue Call*\n\n` +
-        `*Owner:* <@${dayna.slackId}>\n` +
-        `*Supporter:* <@${supporterSlackId}>\n` +
-        (description ? `*Details:* ${description}\n` : '') +
-        `\n<${mondayUrl}|View on Monday.com>`,
+        `${accountInfo}\n\n` +
+        `*Due:* ${dueDate}\n` +
+        `*Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>\n` +
+        `${supporterLine}\n` +
+        `⏳ *Waiting for supporter* - React with 👀 or reply to claim this issue.\n\n` +
+        `<${mondayUrl}|View on Monday.com>`,
     });
 
     if (!slackMessage.ts) {
@@ -744,13 +636,25 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Store Slack thread ID on Monday item for syncing
     await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
 
+    // Register this issue call for monitoring (20-min pings until claimed)
+    registerIssueCall({
+      mondayItemId: mondayItem.id,
+      slackThreadTs: slackMessage.ts,
+      channelId: issueCallChannelId,
+      createdAt: Date.now(),
+      ownerSlackIds: [dayna.slackId, ruzzell.slackId].filter((id): id is string => !!id),
+      suggestedSupporterSlackId,
+    });
+
     console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
 
     // Send confirmation via response_url
     const slackThreadUrl = `https://slack.com/app_redirect?channel=${issueCallChannelId}&message_ts=${slackMessage.ts}`;
     await slack.sendResponseUrl(response_url,
       `✅ *Issue Call Created*\n\n` +
-      `• *Supporter:* ${supporter.name}\n` +
+      `• *Team:* ${accountResult.team || teamName}\n` +
+      `• *Email:* ${email}\n` +
+      `• *Due:* ${dueDate}\n` +
       `• *Monday:* <${mondayUrl}|View Item>\n` +
       `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
       `• *Run ID:* \`${runId.substring(0, 8)}\``
@@ -760,435 +664,6 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     res.json({
       response_type: 'ephemeral',
       text: `:x: Error creating issue call: ${error instanceof Error ? error.message : 'Unknown error'}`,
-    });
-  }
-});
-
-// ============================================================================
-// Slack /emailtask Command - Gmail Search → Task Creation
-// ============================================================================
-
-import * as gmail from './services/gmail.js';
-import { convertHtmlToPdf, convertTextToPdf } from './services/convertApi.js';
-import { parseEmailTaskInput } from './services/claude.js';
-import {
-  getPendingEmailSelection,
-  setPendingEmailSelection,
-  deletePendingEmailSelection,
-  hasPendingEmailSelection,
-  getDmCooldown,
-  setDmCooldown,
-  initializePendingState,
-  PENDING_EMAIL_TTL,
-  DM_COOLDOWN_TTL,
-  type PendingEmailSelection,
-} from './services/pendingState.js';
-
-// TTL constant for expiresAt calculation
-const SELECTION_TIMEOUT_MS = PENDING_EMAIL_TTL;
-
-/**
- * Create task from selected email
- */
-async function createTaskFromEmail(
-  selectedEmail: gmail.GmailEmailResult,
-  userId: string,
-  responseUrl: string
-): Promise<void> {
-  // Check idempotency to prevent duplicate task creation from same email
-  const idempotencyKey = generateEmailTaskIdempotencyKey(userId, selectedEmail.messageId);
-  const { isDuplicate, cachedResult } = checkIdempotency(idempotencyKey);
-  if (isDuplicate) {
-    console.log(`[Idempotency] Duplicate /emailtask request detected: ${idempotencyKey}`);
-    await slack.sendResponseUrl(responseUrl,
-      cachedResult
-        ? `✅ Task already created from this email (duplicate request ignored)`
-        : `⚠️ This email is already being processed. Please wait.`
-    );
-    return;
-  }
-
-  // Generate PDF from email
-  let pdfBuffer: Buffer | null = null;
-  let pdfFilename = 'email.pdf';
-
-  try {
-    if (selectedEmail.bodyHtml) {
-      const pdfResult = await convertHtmlToPdf(selectedEmail.bodyHtml, selectedEmail.subject);
-      pdfBuffer = pdfResult.data;
-      pdfFilename = pdfResult.filename;
-    } else if (selectedEmail.bodyText) {
-      const pdfResult = await convertTextToPdf(
-        selectedEmail.bodyText,
-        selectedEmail.subject,
-        selectedEmail.from,
-        selectedEmail.date
-      );
-      pdfBuffer = pdfResult.data;
-      pdfFilename = pdfResult.filename;
-    }
-    console.log('PDF generated:', pdfFilename, pdfBuffer?.length, 'bytes');
-  } catch (pdfError) {
-    console.error('PDF generation failed (non-fatal):', pdfError);
-  }
-
-  // Execute the email task workflow (with initiator for authorization check)
-  const result = await executeEmailTaskWorkflowSafe({
-    subject: selectedEmail.subject,
-    bodyText: selectedEmail.bodyText,
-    bodyHtml: selectedEmail.bodyHtml,
-    fromEmail: selectedEmail.from,
-    toEmail: selectedEmail.to,
-    emailDate: selectedEmail.date,
-    pdfBuffer,
-    pdfFilename,
-    source: 'Email Task',
-    initiatorSlackId: userId,  // Pass initiator for owner authorization check
-  });
-
-  if (result.success) {
-    // Store result for idempotency
-    setIdempotencyKey(idempotencyKey, {
-      success: true,
-      mondayItemId: result.mondayItemId,
-      slackThreadTs: result.slackThreadTs,
-    });
-
-    const mondayUrl = monday.getItemUrl(result.mondayItemId);
-    const slackThreadUrl = `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${result.slackThreadTs}`;
-
-    await slack.postToThread(
-      result.slackThreadTs,
-      `📧 Created via \`/emailtask\` by <@${userId}>`
-    );
-
-    await slack.sendResponseUrl(responseUrl,
-      `✅ *Task Created from Email*\n\n` +
-      `• *Subject:* ${selectedEmail.subject}\n` +
-      `• *Monday:* <${mondayUrl}|View Item>\n` +
-      `• *Slack Thread:* <${slackThreadUrl}|View Thread>\n` +
-      `• *Run ID:* \`${result.runId?.substring(0, 8)}\``
-    );
-  } else {
-    console.error('Email task creation failed:', result.error);
-    await slack.sendResponseUrl(responseUrl, `:x: *Task Creation Failed*\n\n${result.error}`);
-  }
-}
-
-/**
- * /emailtask slash command handler
- * Search Gmail for emails by subject and create a task from the result
- *
- * Supports natural language input:
- * - /emailtask Knicks Presale 2025
- * - /emailtask Yankees relocation from last week
- * - /emailtask Rangers email use most recent
- *
- * Also supports structured format:
- * - /emailtask subject: Your Subject Here days: 7 match: contains
- *
- * Defaults: today only (Eastern Time), exact match
- */
-app.post('/webhook/slack/emailtask', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
-  // Verify Slack signature (QW-07)
-  if (!verifySlackSignature(req)) {
-    res.status(401).send('Invalid signature');
-    return;
-  }
-
-  try {
-    const { text, user_id, response_url } = req.body as {
-      text: string;
-      user_id: string;
-      response_url: string;
-    };
-
-    console.log(`/emailtask command received from ${user_id}: ${text}`);
-
-    // Check whitelist permissions (same as /task)
-    const whitelist = config.slack.taskCommandWhitelist;
-    if (whitelist.length > 0 && !whitelist.includes(user_id)) {
-      res.json({
-        response_type: 'ephemeral',
-        text: `🔒 *Access Restricted*\n\n` +
-          `The \`/emailtask\` command is currently limited to authorized users.\n\n` +
-          `_Contact your admin if you need access._`,
-      });
-      return;
-    }
-
-    // Handle help or empty input
-    const trimmedText = text.trim();
-    if (!trimmedText || trimmedText.toLowerCase() === 'help') {
-      res.json({
-        response_type: 'ephemeral',
-        text: `*Email Task Creation*\n\n` +
-          `Search Gmail and create a task from the email.\n\n` +
-          `*Natural language examples:*\n` +
-          `• \`/emailtask Knicks Presale 2025\`\n` +
-          `• \`/emailtask Yankees relocation from last week\`\n` +
-          `• \`/emailtask Rangers email use most recent\`\n` +
-          `• \`/emailtask email containing season tickets\`\n\n` +
-          `*Structured format (optional):*\n` +
-          `\`/emailtask subject: Your Subject days: 7 match: contains\`\n\n` +
-          `*Defaults:*\n` +
-          `• Search window: today only (Eastern Time)\n` +
-          `• Match mode: exact match\n\n` +
-          `*Multiple matches:*\n` +
-          `If multiple emails match, you'll see a list to choose from.\n` +
-          `Add "use most recent" to auto-select the newest one.`,
-      });
-      return;
-    }
-
-    // Check for "confirm" to create task from pending single-match preview
-    if (trimmedText.toLowerCase() === 'confirm') {
-      const pending = getPendingEmailSelection(user_id);
-      if (pending && pending.expiresAt > Date.now() && pending.emails.length === 1) {
-        deletePendingEmailSelection(user_id);
-        res.json({
-          response_type: 'ephemeral',
-          text: `⏳ Creating task from confirmed email...`,
-        });
-        await createTaskFromEmail(pending.emails[0], user_id, response_url);
-        return;
-      }
-      // No valid pending confirmation
-      res.json({
-        response_type: 'ephemeral',
-        text: `:warning: No pending email to confirm. Run \`/emailtask\` with a search first.`,
-      });
-      return;
-    }
-
-    // Check for pending selection (user replying with 1-5)
-    const selectionMatch = trimmedText.match(/^(\d)$/);
-    if (selectionMatch) {
-      const pending = getPendingEmailSelection(user_id);
-      if (pending && pending.expiresAt > Date.now()) {
-        const selection = parseInt(selectionMatch[1], 10) - 1;
-        if (selection >= 0 && selection < pending.emails.length) {
-          deletePendingEmailSelection(user_id);
-          res.json({
-            response_type: 'ephemeral',
-            text: `⏳ Creating task from email #${selection + 1}...`,
-          });
-          await createTaskFromEmail(pending.emails[selection], user_id, response_url);
-          return;
-        }
-      }
-      // No valid pending selection
-      res.json({
-        response_type: 'ephemeral',
-        text: `:warning: No pending email selection. Run \`/emailtask\` with a search first.`,
-      });
-      return;
-    }
-
-    // Check for "cancel" to clear pending selection
-    if (trimmedText.toLowerCase() === 'cancel') {
-      if (hasPendingEmailSelection(user_id)) {
-        deletePendingEmailSelection(user_id);
-        res.json({
-          response_type: 'ephemeral',
-          text: `🚫 Email selection cancelled.`,
-        });
-      } else {
-        res.json({
-          response_type: 'ephemeral',
-          text: `No pending selection to cancel.`,
-        });
-      }
-      return;
-    }
-
-    // Parse the input using Claude AI
-    res.json({
-      response_type: 'ephemeral',
-      text: `⏳ Parsing search...`,
-    });
-
-    let searchParams;
-    try {
-      searchParams = await parseEmailTaskInput(trimmedText);
-    } catch (parseError) {
-      console.error('Failed to parse /emailtask input:', parseError);
-      await slack.sendResponseUrl(response_url,
-        `:warning: *Could not parse search*\n\n` +
-        `Try a simpler format like:\n` +
-        `\`/emailtask Knicks Presale 2025\`\n` +
-        `\`/emailtask subject: Your Subject Here\``
-      );
-      return;
-    }
-
-    // Search Gmail
-    console.log(`Searching Gmail: "${searchParams.subject}" (${searchParams.matchMode}, ${searchParams.daysBack} days)`);
-    const emails = await gmail.searchEmailsBySubject(
-      searchParams.subject,
-      searchParams.matchMode,
-      searchParams.daysBack
-    );
-
-    // Handle no matches
-    if (emails.length === 0) {
-      const suggestion = searchParams.daysBack === 0
-        ? `Try: \`/emailtask ${searchParams.subject} from last week\``
-        : searchParams.daysBack < 30
-          ? `Try: \`/emailtask ${searchParams.subject} from last month\``
-          : `No emails found in the last ${searchParams.daysBack} days.`;
-
-      await slack.sendResponseUrl(response_url,
-        `:mag: *No emails found*\n\n` +
-        `No emails matching "${searchParams.subject}" found${searchParams.daysBack === 0 ? ' today (Eastern Time)' : ` in the last ${searchParams.daysBack} days`} (${searchParams.matchMode} match).\n\n` +
-        `${suggestion}`
-      );
-      return;
-    }
-
-    // Check if user explicitly requested auto-select (useLatest)
-    // This is the ONLY case where we bypass confirmation
-    if (searchParams.useLatest) {
-      await slack.sendResponseUrl(response_url,
-        `⏳ Found ${emails.length} email${emails.length > 1 ? 's' : ''}, using most recent...`
-      );
-      await createTaskFromEmail(emails[0], user_id, response_url);
-      return;
-    }
-
-    // Single match - require confirmation (do NOT auto-create)
-    if (emails.length === 1) {
-      const email = emails[0];
-      const dateStr = email.date.toLocaleDateString('en-US', {
-        timeZone: 'America/New_York',
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-      });
-      const timeStr = email.date.toLocaleTimeString('en-US', {
-        timeZone: 'America/New_York',
-        hour: 'numeric',
-        minute: '2-digit',
-      });
-      const from = email.from?.replace(/<[^>]+>/, '').trim() || 'Unknown sender';
-
-      // Store pending confirmation (persisted to disk)
-      setPendingEmailSelection(user_id, {
-        emails: [email],
-        subject: searchParams.subject,
-        responseUrl: response_url,
-        expiresAt: Date.now() + SELECTION_TIMEOUT_MS,
-      });
-
-      await slack.sendResponseUrl(response_url,
-        `:mag: *Found 1 email matching "${searchParams.subject}"*\n\n` +
-        `*Subject:* ${email.subject}\n` +
-        `*From:* ${from}\n` +
-        `*Date:* ${dateStr} ${timeStr} (Eastern Time)\n\n` +
-        `Reply \`/emailtask confirm\` to create task from this email.\n` +
-        `Or \`/emailtask cancel\` to cancel.\n\n` +
-        `_Select within 5 minutes. Tip: Add "use most recent" to skip confirmation._`
-      );
-      return;
-    }
-
-    // Multiple matches - show list for user to choose
-    const topEmails = emails.slice(0, 5);
-    const listItems = topEmails.map((email, i) => {
-      const dateStr = email.date.toLocaleDateString('en-US', {
-        timeZone: 'America/New_York',
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-      });
-      const timeStr = email.date.toLocaleTimeString('en-US', {
-        timeZone: 'America/New_York',
-        hour: 'numeric',
-        minute: '2-digit',
-      });
-      const from = email.from?.replace(/<[^>]+>/, '').trim().substring(0, 30) || 'Unknown';
-      return `*${i + 1}.* ${dateStr} ${timeStr} - ${from}`;
-    });
-
-    // Store pending selection (persisted to disk)
-    setPendingEmailSelection(user_id, {
-      emails: topEmails,
-      subject: searchParams.subject,
-      responseUrl: response_url,
-      expiresAt: Date.now() + SELECTION_TIMEOUT_MS,
-    });
-
-    await slack.sendResponseUrl(response_url,
-      `:mag: *Found ${emails.length} emails matching "${searchParams.subject}"*\n\n` +
-      `${listItems.join('\n')}\n\n` +
-      `Reply with \`/emailtask 1\` to \`/emailtask 5\` to select one.\n` +
-      `Or \`/emailtask cancel\` to cancel.\n\n` +
-      `_Select within 5 minutes. Tip: Add "use most recent" to auto-select the newest._`
-    );
-  } catch (error) {
-    console.error('/emailtask command error:', error);
-    res.json({
-      response_type: 'ephemeral',
-      text: `:x: Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-    });
-  }
-});
-
-// ============================================================================
-// Slack Interactive Messages (button clicks, etc.)
-// ============================================================================
-
-interface SlackInteraction {
-  type: string;
-  user: { id: string };
-  channel: { id: string };
-  actions?: Array<{ action_id: string }>;
-  response_url?: string;
-}
-
-/**
- * Handle Slack interactive messages (button clicks)
- */
-app.post('/webhook/slack/interactive', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
-  // Verify Slack signature (QW-07)
-  if (!verifySlackSignature(req)) {
-    res.status(401).send('Invalid signature');
-    return;
-  }
-
-  try {
-    const payload = JSON.parse(req.body.payload) as SlackInteraction;
-
-    const userId = payload.user.id;
-    const channelId = payload.channel.id;
-    const actionId = payload.actions?.[0]?.action_id;
-
-    console.log(`Slack interactive: ${actionId} from ${userId}`);
-
-    if (actionId === 'confirm_task') {
-      // User confirmed - create the task
-      const result = await sync.confirmSmartTask(userId, channelId);
-      res.json({
-        response_type: 'ephemeral',
-        text: result.message,
-        replace_original: true,
-      });
-    } else if (actionId === 'cancel_task') {
-      // User cancelled
-      const result = sync.cancelSmartTask(userId, channelId);
-      res.json({
-        response_type: 'ephemeral',
-        text: result.message,
-        replace_original: true,
-      });
-    } else {
-      res.json({ text: 'Unknown action' });
-    }
-  } catch (error) {
-    console.error('Interactive message error:', error);
-    res.json({
-      response_type: 'ephemeral',
-      text: ':x: Error processing action.',
     });
   }
 });
@@ -1210,9 +685,6 @@ app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
 function start() {
   validateConfig();
 
-  // Initialize pending state persistence (loads from disk, starts cleanup interval)
-  initializePendingState();
-
   // Initialize job queue and register processors
   initializeJobQueue();
   monday.registerMondayJobProcessors();
@@ -1229,13 +701,9 @@ function start() {
     console.log(`  Email webhook:   http://localhost:${config.port}/webhook/email`);
     console.log(`  JSON webhook:    http://localhost:${config.port}/webhook/json`);
     console.log(`  Slack events:    http://localhost:${config.port}/webhook/slack/events`);
-    console.log(`  Slack /monday:   http://localhost:${config.port}/webhook/slack/command`);
-    console.log(`  Slack /seasontask: http://localhost:${config.port}/webhook/slack/seasontask`);
     console.log(`  Slack /task:     http://localhost:${config.port}/webhook/slack/task`);
-    console.log(`  Slack /emailtask: http://localhost:${config.port}/webhook/slack/emailtask`);
     console.log(`  Slack /taskdebug: http://localhost:${config.port}/webhook/slack/taskdebug`);
     console.log(`  Slack /issuecall: http://localhost:${config.port}/webhook/slack/issuecall`);
-    console.log(`  Slack interact:  http://localhost:${config.port}/webhook/slack/interactive`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log(`  Relay events:    http://localhost:${config.port}/relay/events`);
     console.log('');

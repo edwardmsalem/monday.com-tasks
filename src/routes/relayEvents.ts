@@ -10,6 +10,7 @@ import express from 'express';
 import * as sync from '../services/sync.js';
 import * as slack from '../services/slack.js';
 import { config } from '../config/environment.js';
+import { isPendingIssueCall, claimIssueCall, isIssueCall, completeIssueCall } from '../services/issueCallTracker.js';
 
 const router = Router();
 
@@ -152,44 +153,65 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
         // Ignore bot messages to prevent loops - check both old and new format
         const isFromMonday = event.text.includes('(via Monday)') || event.text.startsWith('[From Monday');
         if (!isFromMonday && !event.text.includes('[supporter-notification:')) {
-          // Check if this is in a supporter channel
-          const supporterChannels = [
-            config.slack.supporterPrimaryChannel,
-            ...config.slack.supporterSecondaryChannels,
-          ].filter(Boolean) as string[];
-
-          if (supporterChannels.includes(event.channel)) {
-            // This is a reply in a supporter channel - check if parent is a supporter notification
-            console.log('Reply in supporter channel detected, checking parent message...');
+          // Check if this is an issue call thread being claimed
+          if (isPendingIssueCall(event.thread_ts)) {
+            console.log('Reply in issue call thread detected, claiming for user:', event.user);
             try {
-              await handleSupporterChannelReply(event.channel, event.thread_ts, event.user);
+              await claimIssueCall(event.thread_ts, event.user);
             } catch (err) {
-              console.error('Failed to handle supporter channel reply:', err);
+              console.error('Failed to claim issue call:', err);
             }
-          } else {
-            // Main channel - sync to Monday
-            console.log('Slack thread reply detected (via relay):', {
-              thread_ts: event.thread_ts,
-              user: event.user,
-              text: event.text.substring(0, 50),
-            });
-            try {
-              await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
-            } catch (syncError) {
-              console.error('Failed to sync Slack to Monday:', syncError);
+          }
+          // Check if this is in a supporter channel
+          else {
+            const supporterChannels = [
+              config.slack.supporterPrimaryChannel,
+              ...config.slack.supporterSecondaryChannels,
+            ].filter(Boolean) as string[];
+
+            if (supporterChannels.includes(event.channel)) {
+              // This is a reply in a supporter channel - check if parent is a supporter notification
+              console.log('Reply in supporter channel detected, checking parent message...');
+              try {
+                await handleSupporterChannelReply(event.channel, event.thread_ts, event.user);
+              } catch (err) {
+                console.error('Failed to handle supporter channel reply:', err);
+              }
+            } else {
+              // Main channel - sync to Monday
+              console.log('Slack thread reply detected (via relay):', {
+                thread_ts: event.thread_ts,
+                user: event.user,
+                text: event.text.substring(0, 50),
+              });
+              try {
+                await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
+              } catch (syncError) {
+                console.error('Failed to sync Slack to Monday:', syncError);
+              }
             }
           }
         }
       }
 
       // Handle reaction added - 👀 = acknowledged, ✅ = complete
-      if (event.type === 'reaction_added' && event.reaction && event.item) {
+      if (event.type === 'reaction_added' && event.reaction && event.item && event.user) {
         if (event.reaction === 'eyes') {
           console.log('Eyes reaction added (via relay), marking Monday item acknowledged...');
           await sync.markAcknowledgedFromSlack(event.item.ts);
 
-          // Also handle after-hours acknowledgement tracking
+          // Check if this is an issue call being claimed via 👀 reaction
           const threadTs = event.item.thread_ts || event.item.ts;
+          if (isPendingIssueCall(threadTs)) {
+            console.log('Eyes reaction on issue call thread, claiming for user:', event.user);
+            try {
+              await claimIssueCall(threadTs, event.user);
+            } catch (err) {
+              console.error('Failed to claim issue call via reaction:', err);
+            }
+          }
+
+          // Also handle after-hours acknowledgement tracking
           try {
             await slack.markThreadAcknowledged(threadTs);
             console.log(`After-hours ack tracked for thread ${threadTs}`);
@@ -209,6 +231,16 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
             console.log(`After-hours done tracked for thread ${threadTs}`);
           } catch (doneError) {
             console.log('After-hours done tracking skipped (not a deferred task or already done)');
+          }
+
+          // Handle issue call completion
+          if (isIssueCall(threadTs)) {
+            console.log('Checkmark on issue call thread, marking complete:', event.user);
+            try {
+              await completeIssueCall(threadTs, event.user);
+            } catch (err) {
+              console.error('Failed to complete issue call:', err);
+            }
           }
         }
       }
