@@ -170,6 +170,18 @@ export const config = {
     enabled: getEnvVarBool('ENABLE_TODOIST_SYNC', false),
     apiToken: getEnvVarOptional('TODOIST_API_TOKEN'),
   },
+
+  // Google Sheets - Account lookup by sport/team
+  // Each sport has its own workbook with a sheet per team
+  accountSheets: {
+    mlb: getEnvVarOptional('SHEETS_MLB_ID'),       // MLB workbook spreadsheet ID
+    nfl: getEnvVarOptional('SHEETS_NFL_ID'),       // NFL workbook spreadsheet ID
+    nba: getEnvVarOptional('SHEETS_NBA_ID'),       // NBA workbook spreadsheet ID
+    nhl: getEnvVarOptional('SHEETS_NHL_ID'),       // NHL workbook spreadsheet ID
+    mls: getEnvVarOptional('SHEETS_MLS_ID'),       // MLS workbook spreadsheet ID
+    ncaa: getEnvVarOptional('SHEETS_NCAA_ID'),     // NCAA workbook spreadsheet ID (college)
+    other: getEnvVarOptional('SHEETS_OTHER_ID'),   // Other events workbook
+  },
 } as const;
 
 /**
