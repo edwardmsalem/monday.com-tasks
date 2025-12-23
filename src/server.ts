@@ -957,8 +957,9 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
 
     const trimmedText = text?.trim().toLowerCase() || '';
     const isCleanup = trimmedText === 'cleanup';
+    const isReset = trimmedText === 'reset';
 
-    console.log(`/backfill command received from ${user_id}${isCleanup ? ' - cleanup mode' : ''}`);
+    console.log(`/backfill command received from ${user_id}${isCleanup ? ' - cleanup mode' : isReset ? ' - reset mode' : ''}`);
 
     // Check permissions - only allow whitelisted users
     const whitelist = config.slack.taskCommandWhitelist;

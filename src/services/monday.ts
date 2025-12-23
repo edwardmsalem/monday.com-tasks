@@ -1411,8 +1411,10 @@ export interface BackfillItemWithOwner extends BackfillItem {
 /**
  * Fetch all items from the board that DON'T have a Slack Thread ID
  * and are NOT complete/done. Used for backfill to create Slack threads.
+ *
+ * @param ignoreExistingThread - If true, returns all non-done items regardless of thread ID
  */
-export async function getItemsForBackfill(): Promise<BackfillItemWithOwner[]> {
+export async function getItemsForBackfill(ignoreExistingThread = false): Promise<BackfillItemWithOwner[]> {
   const { columns } = config.monday;
 
   const query = `
@@ -1467,32 +1469,37 @@ export async function getItemsForBackfill(): Promise<BackfillItemWithOwner[]> {
       const isComplete = workflowStatus?.toLowerCase() === 'complete' ||
                          workflowStatus?.toLowerCase() === 'done';
 
-      // Only include items WITHOUT a Slack thread ID AND status is NOT complete/done
-      if ((!slackThreadId || slackThreadId.trim() === '') && !isComplete) {
-        // Parse owner person IDs from the raw column value
-        let ownerPersonIds: number[] = [];
-        const ownerRaw = getRawValue(columns.owner);
-        if (ownerRaw) {
-          try {
-            const parsed = JSON.parse(ownerRaw);
-            ownerPersonIds = parsed?.personsAndTeams?.map((p: { id: number }) => p.id) ?? [];
-          } catch {
-            // Ignore parse errors
-          }
-        }
+      // Skip completed items
+      if (isComplete) continue;
 
-        backfillItems.push({
-          id: item.id,
-          name: item.name,
-          owner: getValue(columns.owner),
-          taskType: getValue(columns.type),
-          team: getValue(columns.team),
-          workflowStatus,
-          dueDate: getValue(columns.date),
-          slackThreadId,
-          ownerPersonIds,
-        });
+      // If ignoreExistingThread, include all non-done items
+      // Otherwise, only include items without a Slack thread ID
+      const hasThread = slackThreadId && slackThreadId.trim() !== '';
+      if (!ignoreExistingThread && hasThread) continue;
+
+      // Parse owner person IDs from the raw column value
+      let ownerPersonIds: number[] = [];
+      const ownerRaw = getRawValue(columns.owner);
+      if (ownerRaw) {
+        try {
+          const parsed = JSON.parse(ownerRaw);
+          ownerPersonIds = parsed?.personsAndTeams?.map((p: { id: number }) => p.id) ?? [];
+        } catch {
+          // Ignore parse errors
+        }
       }
+
+      backfillItems.push({
+        id: item.id,
+        name: item.name,
+        owner: getValue(columns.owner),
+        taskType: getValue(columns.type),
+        team: getValue(columns.team),
+        workflowStatus,
+        dueDate: getValue(columns.date),
+        slackThreadId,
+        ownerPersonIds,
+      });
     }
 
     return backfillItems;
