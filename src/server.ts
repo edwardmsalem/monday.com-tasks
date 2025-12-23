@@ -925,6 +925,160 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 });
 
 // ============================================================================
+// Admin Commands
+// ============================================================================
+
+/**
+ * /backfill slash command handler
+ * Creates Slack threads for existing Monday.com items that don't have one
+ *
+ * Usage: /backfill [preview]
+ * - /backfill preview - Show items that would be backfilled (dry run)
+ * - /backfill - Actually create threads for items without one
+ *
+ * Only allowed for users in the taskCommandWhitelist
+ */
+app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  // Verify Slack signature (QW-07)
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
+  try {
+    const { text, user_id, response_url } = req.body as {
+      text: string;
+      user_id: string;
+      response_url: string;
+    };
+
+    console.log(`/backfill command received from ${user_id}: ${text}`);
+
+    // Check permissions - only allow whitelisted users
+    const whitelist = config.slack.taskCommandWhitelist;
+    if (whitelist.length > 0 && !whitelist.includes(user_id)) {
+      res.json({
+        response_type: 'ephemeral',
+        text: `:x: You don't have permission to use this command.`,
+      });
+      return;
+    }
+
+    const trimmedText = text.trim().toLowerCase();
+
+    // Handle help
+    if (trimmedText === 'help') {
+      res.json({
+        response_type: 'ephemeral',
+        text: `*Backfill - Create Slack threads for existing Monday items*\n\n` +
+          `*Usage:*\n` +
+          `• \`/backfill preview\` - Show items that need Slack threads (dry run)\n` +
+          `• \`/backfill\` - Actually create threads for all items\n\n` +
+          `_Only creates threads for items without an existing Slack Thread ID._`,
+      });
+      return;
+    }
+
+    const isPreview = trimmedText === 'preview';
+
+    // Acknowledge immediately
+    res.json({
+      response_type: 'ephemeral',
+      text: isPreview
+        ? `⏳ Fetching items without Slack threads...`
+        : `⏳ Starting backfill - creating Slack threads for existing items...`,
+    });
+
+    // Fetch items without Slack thread
+    const items = await monday.getItemsWithoutSlackThread();
+
+    if (items.length === 0) {
+      await slack.sendResponseUrl(response_url,
+        `✅ All items already have Slack threads. Nothing to backfill.`
+      );
+      return;
+    }
+
+    // Preview mode - just show what would be done
+    if (isPreview) {
+      const itemList = items.slice(0, 20).map(item =>
+        `• *${item.name}* (ID: ${item.id}) - Owner: ${item.owner || 'None'}, Type: ${item.taskType || 'None'}`
+      ).join('\n');
+
+      const moreText = items.length > 20 ? `\n\n_...and ${items.length - 20} more items_` : '';
+
+      await slack.sendResponseUrl(response_url,
+        `*📋 Items Without Slack Threads (${items.length} total)*\n\n` +
+        `${itemList}${moreText}\n\n` +
+        `_Run \`/backfill\` (without preview) to create threads for these items._`
+      );
+      return;
+    }
+
+    // Actually create threads
+    let created = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const item of items) {
+      try {
+        // Create Slack thread for this item
+        const mondayUrl = monday.getItemUrl(item.id);
+
+        const slackMessage = await slack.getClient().chat.postMessage({
+          channel: config.slack.channelId,
+          text: `📋 *${item.name}*\n\n` +
+            `*Type:* ${item.taskType || 'Not set'}\n` +
+            `*Owner:* ${item.owner || 'Unassigned'}\n` +
+            `*Team:* ${item.team || 'N/A'}\n` +
+            `*Due:* ${item.dueDate || 'Not set'}\n` +
+            `*Status:* ${item.workflowStatus || 'Not set'}\n\n` +
+            `<${mondayUrl}|View on Monday.com>\n\n` +
+            `_Backfilled thread - created from existing Monday item._`,
+        });
+
+        if (slackMessage.ts) {
+          // Update Monday item with the Slack thread ID
+          await monday.updateSlackThreadId(item.id, slackMessage.ts);
+          created++;
+          console.log(`Backfilled Slack thread for item ${item.id}: ${slackMessage.ts}`);
+        } else {
+          failed++;
+          errors.push(`Item ${item.id}: No thread timestamp returned`);
+        }
+
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        failed++;
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        errors.push(`Item ${item.id}: ${errorMsg}`);
+        console.error(`Failed to backfill item ${item.id}:`, error);
+      }
+    }
+
+    // Send summary
+    let summaryText = `✅ *Backfill Complete*\n\n` +
+      `• Created: ${created} Slack threads\n` +
+      `• Failed: ${failed}`;
+
+    if (errors.length > 0 && errors.length <= 5) {
+      summaryText += `\n\n*Errors:*\n${errors.map(e => `• ${e}`).join('\n')}`;
+    } else if (errors.length > 5) {
+      summaryText += `\n\n*First 5 errors:*\n${errors.slice(0, 5).map(e => `• ${e}`).join('\n')}\n_...and ${errors.length - 5} more_`;
+    }
+
+    await slack.sendResponseUrl(response_url, summaryText);
+  } catch (error) {
+    console.error('/backfill command error:', error);
+    res.json({
+      response_type: 'ephemeral',
+      text: `:x: Error running backfill: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    });
+  }
+});
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -963,6 +1117,7 @@ function start() {
     console.log(`  Slack /task:     http://localhost:${config.port}/webhook/slack/task`);
     console.log(`  Slack /taskdebug: http://localhost:${config.port}/webhook/slack/taskdebug`);
     console.log(`  Slack /issuecall: http://localhost:${config.port}/webhook/slack/issuecall`);
+    console.log(`  Slack /backfill: http://localhost:${config.port}/webhook/slack/backfill`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log(`  Relay events:    http://localhost:${config.port}/relay/events`);
     console.log('');

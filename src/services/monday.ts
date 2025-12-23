@@ -1132,3 +1132,86 @@ export async function getTaskDebugInfo(itemId: string): Promise<TaskDebugInfo | 
     return null;
   }
 }
+
+/**
+ * Backfill item: data needed to create a Slack thread for an existing Monday item
+ */
+export interface BackfillItem {
+  id: string;
+  name: string;
+  owner: string | null;
+  taskType: string | null;
+  team: string | null;
+  workflowStatus: string | null;
+  dueDate: string | null;
+}
+
+/**
+ * Fetch all items from the board that don't have a Slack Thread ID
+ * Used for backfilling existing items with Slack threads
+ */
+export async function getItemsWithoutSlackThread(): Promise<BackfillItem[]> {
+  const { columns } = config.monday;
+
+  // First, get all items from the board
+  const query = `
+    query GetAllItems($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(limit: 500) {
+          items {
+            id
+            name
+            column_values {
+              id
+              text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      boards: Array<{
+        items_page: {
+          items: Array<{
+            id: string;
+            name: string;
+            column_values: Array<{ id: string; text: string }>;
+          }>;
+        };
+      }>;
+    }>(query, { boardId: config.monday.boardId });
+
+    const items = result.boards[0]?.items_page?.items ?? [];
+    const itemsWithoutThread: BackfillItem[] = [];
+
+    for (const item of items) {
+      const getValue = (colId: string): string | null => {
+        const col = item.column_values.find(c => c.id === colId);
+        return col?.text || null;
+      };
+
+      const slackThreadId = getValue(columns.slackThreadId);
+
+      // Only include items WITHOUT a Slack thread ID
+      if (!slackThreadId || slackThreadId.trim() === '') {
+        itemsWithoutThread.push({
+          id: item.id,
+          name: item.name,
+          owner: getValue(columns.owner),
+          taskType: getValue(columns.type),
+          team: getValue(columns.team),
+          workflowStatus: getValue(columns.workflowStatus),
+          dueDate: getValue(columns.date),
+        });
+      }
+    }
+
+    return itemsWithoutThread;
+  } catch (error) {
+    console.error('Error fetching items without Slack thread:', error);
+    return [];
+  }
+}
