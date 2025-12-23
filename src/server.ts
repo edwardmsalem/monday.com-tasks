@@ -1058,13 +1058,17 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
     }
 
     // Default mode: Create Slack threads for items without them
+    // Reset mode: Recreate threads for items backfilled today (after cleanup)
+    const mode = isReset ? 'today' : 'missing';
     res.json({
       response_type: 'ephemeral',
-      text: `⏳ Fetching Monday.com items without Slack threads...`,
+      text: isReset
+        ? `⏳ Fetching items backfilled today (to recreate after cleanup)...`
+        : `⏳ Fetching Monday.com items without Slack threads...`,
     });
 
-    // Get items that need backfill (no Slack thread, status != done)
-    const items = await monday.getItemsForBackfill();
+    // Get items that need backfill
+    const items = await monday.getItemsForBackfill(mode);
 
     if (items.length === 0) {
       await slack.sendResponseUrl(response_url,

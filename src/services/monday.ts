@@ -1409,12 +1409,14 @@ export interface BackfillItemWithOwner extends BackfillItem {
 }
 
 /**
- * Fetch all items from the board that DON'T have a Slack Thread ID
- * and are NOT complete/done. Used for backfill to create Slack threads.
+ * Fetch all items from the board that need Slack thread backfill.
+ * Excludes completed/done items.
  *
- * @param ignoreExistingThread - If true, returns all non-done items regardless of thread ID
+ * @param mode - 'missing' (default): items without thread ID
+ *               'today': items with thread ID created today (for re-backfill after cleanup)
+ *               'all': all non-done items regardless of thread ID
  */
-export async function getItemsForBackfill(ignoreExistingThread = false): Promise<BackfillItemWithOwner[]> {
+export async function getItemsForBackfill(mode: 'missing' | 'today' | 'all' = 'missing'): Promise<BackfillItemWithOwner[]> {
   const { columns } = config.monday;
 
   const query = `
@@ -1472,10 +1474,28 @@ export async function getItemsForBackfill(ignoreExistingThread = false): Promise
       // Skip completed items
       if (isComplete) continue;
 
-      // If ignoreExistingThread, include all non-done items
-      // Otherwise, only include items without a Slack thread ID
+      // Filter based on mode
       const hasThread = slackThreadId && slackThreadId.trim() !== '';
-      if (!ignoreExistingThread && hasThread) continue;
+
+      if (mode === 'missing') {
+        // Only items without a Slack thread ID
+        if (hasThread) continue;
+      } else if (mode === 'today') {
+        // Only items WITH a thread ID that was created today
+        if (!hasThread) continue;
+
+        // Parse the thread timestamp to check if it's from today
+        // Slack thread_ts format: "1234567890.123456" (seconds since epoch)
+        // Extract just the threadTs part if it's in channelId:threadTs format
+        const threadInfo = parseSlackThreadValue(slackThreadId);
+        if (threadInfo) {
+          const threadDate = new Date(parseFloat(threadInfo.threadTs) * 1000);
+          const today = new Date();
+          const isToday = threadDate.toDateString() === today.toDateString();
+          if (!isToday) continue;
+        }
+      }
+      // mode === 'all': include all non-done items
 
       // Parse owner person IDs from the raw column value
       let ownerPersonIds: number[] = [];
