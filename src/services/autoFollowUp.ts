@@ -444,6 +444,14 @@ async function sendAcknowledgeReminder(task: TaskForFollowUp): Promise<boolean> 
   const ownersWithSlack = task.owners.filter(o => o.slackId);
   if (ownersWithSlack.length === 0 || !task.slackThreadTs) return false;
 
+  // Verify the Monday item still exists before sending reminder
+  const itemExists = await monday.getItem(task.id);
+  if (!itemExists) {
+    console.log(`[AutoFollowUp] Task ${task.id} no longer exists in Monday, skipping reminder`);
+    markFollowUpSent(followUpKey); // Don't retry
+    return false;
+  }
+
   const mentions = formatOwnerMentions(task.owners);
   const message = pickRandom(ACKNOWLEDGE_REMINDERS)(task, mentions);
   const channel = getChannelForTask(task);
@@ -487,6 +495,14 @@ async function sendDueTodayReminder(task: TaskForFollowUp): Promise<boolean> {
   const ownersWithSlack = task.owners.filter(o => o.slackId);
   if (ownersWithSlack.length === 0 || !task.slackThreadTs) return false;
 
+  // Verify the Monday item still exists before sending reminder
+  const itemExists = await monday.getItem(task.id);
+  if (!itemExists) {
+    console.log(`[AutoFollowUp] Task ${task.id} no longer exists in Monday, skipping reminder`);
+    markFollowUpSent(followUpKey);
+    return false;
+  }
+
   const mentions = formatOwnerMentions(task.owners);
   const message = pickRandom(DUE_TODAY_REMINDERS)(task, mentions);
   const channel = getChannelForTask(task);
@@ -520,6 +536,14 @@ async function sendOverdueReminder(task: TaskForFollowUp, daysOverdue: number): 
 
   const ownersWithSlack = task.owners.filter(o => o.slackId);
   if (ownersWithSlack.length === 0 || !task.slackThreadTs) return false;
+
+  // Verify the Monday item still exists before sending reminder
+  const itemExists = await monday.getItem(task.id);
+  if (!itemExists) {
+    console.log(`[AutoFollowUp] Task ${task.id} no longer exists in Monday, skipping reminder`);
+    markFollowUpSent(followUpKey);
+    return false;
+  }
 
   const mentions = formatOwnerMentions(task.owners);
 
