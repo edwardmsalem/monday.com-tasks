@@ -1100,24 +1100,53 @@ app.post('/webhook/slack/backfill', slackUrlEncodedWithRawBody, async (req: Requ
           }
         }
 
-        // Create Slack thread
+        // Create Slack thread with Block Kit header
         const mondayUrl = monday.getItemUrl(item.id);
-        const ownerLine = ownerMentions ? `*Owner:* ${ownerMentions}\n` : '';
-        const typeLine = item.taskType ? `*Type:* ${item.taskType}\n` : '';
-        const teamLine = item.team ? `*Team:* ${item.team}\n` : '';
-        const dueLine = item.dueDate ? `*Due:* ${item.dueDate}\n` : '';
-        const statusLine = item.workflowStatus ? `*Status:* ${item.workflowStatus}\n` : '';
+        const ownerLine = ownerMentions ? `*Owner:* ${ownerMentions}` : '';
+        const typeLine = item.taskType ? `*Type:* ${item.taskType}` : '';
+        const teamLine = item.team ? `*Team:* ${item.team}` : '';
+        const dueLine = item.dueDate ? `*Due:* ${item.dueDate}` : '';
+        const statusLine = item.workflowStatus ? `*Status:* ${item.workflowStatus}` : '';
+
+        // Build details section
+        const details = [ownerLine, typeLine, teamLine, dueLine, statusLine]
+          .filter(line => line)
+          .join('\n');
 
         const slackMessage = await slack.getClient().chat.postMessage({
           channel: config.slack.channelId,
-          text: `📋 *${item.name}*\n\n` +
-            `${ownerLine}` +
-            `${typeLine}` +
-            `${teamLine}` +
-            `${dueLine}` +
-            `${statusLine}` +
-            `\n<${mondayUrl}|View on Monday.com>\n\n` +
-            `_Backfilled thread for existing Monday item_`,
+          blocks: [
+            {
+              type: 'header',
+              text: {
+                type: 'plain_text',
+                text: item.name,
+                emoji: true,
+              },
+            },
+            ...(details ? [{
+              type: 'section' as const,
+              text: {
+                type: 'mrkdwn' as const,
+                text: details,
+              },
+            }] : []),
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `<${mondayUrl}|View on Monday.com>`,
+              },
+            },
+            {
+              type: 'context',
+              elements: [{
+                type: 'mrkdwn',
+                text: '_Backfilled thread for existing Monday item_',
+              }],
+            },
+          ],
+          text: `📋 ${item.name}`, // Fallback for notifications
         });
 
         if (!slackMessage.ts) {
