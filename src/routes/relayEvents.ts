@@ -203,12 +203,16 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
 
       // Handle reaction added - 👀 = acknowledged, ✅ = complete
       if (event.type === 'reaction_added' && event.reaction && event.item && event.user) {
+        // Use thread_ts if available (reaction on a reply), otherwise item.ts (reaction on parent)
+        // Monday items are linked to the parent thread timestamp
+        const threadTs = event.item.thread_ts || event.item.ts;
+        const channelId = event.item.channel;
+
         if (event.reaction === 'eyes') {
-          console.log('Eyes reaction added (via relay), marking Monday item acknowledged...');
-          await sync.markAcknowledgedFromSlack(event.item.ts);
+          console.log(`Eyes reaction added (via relay) in channel ${channelId}, marking Monday item acknowledged...`);
+          await sync.markAcknowledgedFromSlack(threadTs, channelId);
 
           // Check if this is an issue call being claimed via 👀 reaction
-          const threadTs = event.item.thread_ts || event.item.ts;
           if (isPendingIssueCall(threadTs)) {
             console.log('Eyes reaction on issue call thread, claiming for user:', event.user);
             try {
@@ -228,11 +232,10 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
         } else if (
           ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)
         ) {
-          console.log('Checkmark reaction added (via relay), marking Monday item complete...');
-          await sync.markCompleteFromSlack(event.item.ts);
+          console.log(`Checkmark reaction added (via relay) in channel ${channelId}, marking Monday item complete...`);
+          await sync.markCompleteFromSlack(threadTs, channelId);
 
           // Also handle after-hours done tracking
-          const threadTs = event.item.thread_ts || event.item.ts;
           try {
             await slack.markThreadDone(threadTs);
             console.log(`After-hours done tracked for thread ${threadTs}`);

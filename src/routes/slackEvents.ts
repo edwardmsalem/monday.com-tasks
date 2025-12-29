@@ -200,12 +200,16 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
 
       // Handle reaction added - 👀 = acknowledged, ✅ = complete
       if (event.type === 'reaction_added' && event.reaction && event.item) {
+        // Use thread_ts if available (reaction on a reply), otherwise item.ts (reaction on parent)
+        // Monday items are linked to the parent thread timestamp
+        const threadTs = event.item.thread_ts || event.item.ts;
+        const channelId = event.item.channel;
+
         if (event.reaction === 'eyes') {
-          console.log('Eyes reaction added, marking Monday item acknowledged...');
-          await sync.markAcknowledgedFromSlack(event.item.ts);
+          console.log(`Eyes reaction added in channel ${channelId}, marking Monday item acknowledged...`);
+          await sync.markAcknowledgedFromSlack(threadTs, channelId);
 
           // Also handle after-hours acknowledgement tracking
-          const threadTs = event.item.thread_ts || event.item.ts;
           try {
             await slack.markThreadAcknowledged(threadTs);
             console.log(`After-hours ack tracked for thread ${threadTs}`);
@@ -215,11 +219,10 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
         } else if (
           ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)
         ) {
-          console.log('Checkmark reaction added, marking Monday item complete...');
-          await sync.markCompleteFromSlack(event.item.ts);
+          console.log(`Checkmark reaction added in channel ${channelId}, marking Monday item complete...`);
+          await sync.markCompleteFromSlack(threadTs, channelId);
 
           // Also handle after-hours done tracking
-          const threadTs = event.item.thread_ts || event.item.ts;
           try {
             await slack.markThreadDone(threadTs);
             console.log(`After-hours done tracked for thread ${threadTs}`);
