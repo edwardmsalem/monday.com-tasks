@@ -125,10 +125,14 @@ const EXCLUDED_RECIPIENT_DOMAINS = [
 
 /**
  * Check if an email address should be excluded from recipient list
+ * Matches both exact domain (@make.com) and subdomains (@hook.us1.make.com)
  */
 function shouldExcludeRecipient(email: string): boolean {
   const lowerEmail = email.toLowerCase();
-  return EXCLUDED_RECIPIENT_DOMAINS.some(domain => lowerEmail.endsWith(`@${domain}`));
+  const emailDomain = lowerEmail.split('@')[1] || '';
+  return EXCLUDED_RECIPIENT_DOMAINS.some(domain =>
+    emailDomain === domain || emailDomain.endsWith(`.${domain}`)
+  );
 }
 
 /**
