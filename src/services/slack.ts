@@ -36,6 +36,7 @@ interface SlackNotificationInput {
   toEmail: string | null;
   mondayItemId: string;
   meeting?: MeetingInfo;
+  team?: string;                // Team name (shown in header if present)
 }
 
 // Priority display config
@@ -220,13 +221,18 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     ? supportSlackIds.map(id => `<@${id}>`).join(', ')
     : null;
 
+  // Build header text - include team name if available
+  const headerText = input.team
+    ? `New ${input.taskType} Email: ${input.team}`
+    : `New ${input.taskType} Email`;
+
   // Build Block Kit message - use any[] to avoid type issues with mixed block types
   const blocks: any[] = [
     {
       type: 'header',
       text: {
         type: 'plain_text',
-        text: `New ${input.taskType} Email`,
+        text: headerText,
         emoji: true,
       },
     },

@@ -15,6 +15,7 @@ import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
+import { formatTaskName } from '../utils/taskName.js';
 import { createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult, mapPriorityToUrgency } from './shared.js';
 import { analyzeSlackTaskSafe, type SlackTaskAnalysisResult } from '../services/claude.js';
 
@@ -38,6 +39,7 @@ export interface ParsedSlackTask {
   urgency: 'High' | 'Medium' | 'Low';
   taskType: string;
   notes: string | null;
+  team: string | null;               // Sports team if detected
 }
 
 export interface SlackTaskWorkflowInput {
@@ -254,6 +256,7 @@ export function parseSlackTaskInput(text: string): ParsedSlackTask {
     urgency,
     taskType,
     notes,
+    team: null,  // Simple parser doesn't detect team - AI analysis needed
   };
 }
 
@@ -312,7 +315,7 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   log.log('Urgency:', finalUrgency);
 
   // Step 3: Create Monday.com item
-  const taskName = parsed.description || 'Slack Task';
+  const taskName = formatTaskName(parsed.description || 'Slack Task', parsed.team);
   log.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
     name: taskName,
@@ -370,7 +373,7 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
     fromEmail: null,  // No From for Slack tasks
     toEmail: null,    // No To for Slack tasks
     mondayItemId: mondayItem.id,
-    // No meeting detection for Slack-created tasks
+    team: parsed.team ?? undefined,  // Include team in header if detected
   });
   log.log('Slack message sent:', slackMessage.ts);
 
@@ -543,7 +546,7 @@ export async function executeAISlackTaskWorkflow(input: AISlackTaskInput): Promi
   }
 
   // Step 6: Create Monday.com item
-  const taskName = analysis.description || 'Slack Task';
+  const taskName = formatTaskName(analysis.description || 'Slack Task', analysis.team);
   log.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
     name: taskName,
@@ -600,6 +603,7 @@ export async function executeAISlackTaskWorkflow(input: AISlackTaskInput): Promi
     fromEmail: null,
     toEmail: null,
     mondayItemId: mondayItem.id,
+    team: analysis.team ?? undefined,  // Include team in header if detected
   });
   log.log('Slack message sent:', slackMessage.ts);
 

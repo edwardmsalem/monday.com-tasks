@@ -807,3 +807,97 @@ export async function parseIssueCallInputSafe(input: string): Promise<IssueCallP
     return null;
   }
 }
+
+// ============================================================================
+// Item Analysis for Cleanup
+// ============================================================================
+
+export interface ItemAnalysis {
+  detectedTeam: string | null;
+  suggestedName: string | null;
+  confidence: number;
+}
+
+/**
+ * Analyze an existing Monday item name to detect team and suggest improvements
+ */
+export async function analyzeItemName(itemName: string, taskType?: string | null): Promise<ItemAnalysis> {
+  const client = getClient();
+
+  const systemPrompt = `You are analyzing existing task names to detect sports team mentions and suggest improvements.
+
+Your job:
+1. Detect if a sports team is mentioned in the task name (MLB, NFL, NBA, NHL, MLS, NCAA D1)
+2. If a team is detected, suggest a new name with [Team] prefix format
+3. If the name already has a [Team] prefix, don't suggest changes
+
+Rules:
+- Only detect teams that are EXPLICITLY mentioned in the name
+- Common teams: Yankees, Mets, Dodgers, Cubs, Red Sox, Astros, Rangers, Lakers, Knicks, Celtics, Cowboys, Giants, Eagles, Rockets, Texans, etc.
+- NCAA teams: Georgia Tech, Alabama, Texas, Ohio State, etc.
+- Return null for detectedTeam if no team is found
+- Return null for suggestedName if name already has [Team] prefix or no team detected`;
+
+  const userPrompt = `Task name: "${itemName}"${taskType ? `\nTask type: ${taskType}` : ''}
+
+Analyze this task name and return:
+1. detectedTeam: The sports team if mentioned (or null)
+2. suggestedName: New name with [Team] prefix (or null if no changes needed)
+3. confidence: 0-1 score`;
+
+  try {
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 200,
+      tools: [
+        {
+          name: 'analyze_item',
+          description: 'Analyze item name for team detection',
+          input_schema: {
+            type: 'object' as const,
+            properties: {
+              detectedTeam: {
+                type: 'string',
+                nullable: true,
+                description: 'Sports team name if detected, null otherwise',
+              },
+              suggestedName: {
+                type: 'string',
+                nullable: true,
+                description: 'Suggested new name with [Team] prefix, null if no changes needed',
+              },
+              confidence: {
+                type: 'number',
+                description: 'Confidence score 0-1',
+              },
+            },
+            required: ['detectedTeam', 'suggestedName', 'confidence'],
+          },
+        },
+      ],
+      tool_choice: { type: 'tool', name: 'analyze_item' },
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    const toolUse = response.content.find(block => block.type === 'tool_use');
+    if (!toolUse || toolUse.type !== 'tool_use') {
+      return { detectedTeam: null, suggestedName: null, confidence: 0 };
+    }
+
+    const result = toolUse.input as {
+      detectedTeam: string | null;
+      suggestedName: string | null;
+      confidence: number;
+    };
+
+    return {
+      detectedTeam: result.detectedTeam || null,
+      suggestedName: result.suggestedName || null,
+      confidence: result.confidence,
+    };
+  } catch (error) {
+    console.error('Error analyzing item name:', error);
+    return { detectedTeam: null, suggestedName: null, confidence: 0 };
+  }
+}

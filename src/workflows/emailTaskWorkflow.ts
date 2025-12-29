@@ -21,6 +21,7 @@ import { findUserByName, getUserNamesString } from '../services/userResolver.js'
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { config } from '../config/environment.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
+import { formatTaskName } from '../utils/taskName.js';
 import { normalizeSubject } from '../services/gmail.js';
 import { mapPriorityToUrgency, createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult } from './shared.js';
 
@@ -117,8 +118,8 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
   const finalUrgency = asapDetected ? 'High' : mapPriorityToUrgency(analysisResult.priority);
   log.log('Urgency:', finalUrgency);
 
-  // Step 6: Use normalized subject as task name (strip FWD:/RE:)
-  const taskName = normalizeSubject(subject);
+  // Step 6: Use normalized subject with team prefix if detected
+  const taskName = formatTaskName(normalizeSubject(subject), analysisResult.team);
   log.log('Task name:', taskName);
 
   // Step 7: Create Monday.com item
@@ -177,6 +178,7 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
     toEmail,
     mondayItemId: mondayItem.id,
     meeting: analysisResult.meeting,
+    team: analysisResult.team ?? undefined,  // Include team in header if detected
   });
   log.log('Slack message sent:', slackMessage.ts);
 
