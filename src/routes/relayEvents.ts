@@ -206,10 +206,11 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
         // Use thread_ts if available (reaction on a reply), otherwise item.ts (reaction on parent)
         // Monday items are linked to the parent thread timestamp
         const threadTs = event.item.thread_ts || event.item.ts;
+        const channelId = event.item.channel;
 
         if (event.reaction === 'eyes') {
-          console.log('Eyes reaction added (via relay), marking Monday item acknowledged...');
-          await sync.markAcknowledgedFromSlack(threadTs);
+          console.log(`Eyes reaction added (via relay) in channel ${channelId}, marking Monday item acknowledged...`);
+          await sync.markAcknowledgedFromSlack(threadTs, channelId);
 
           // Check if this is an issue call being claimed via 👀 reaction
           if (isPendingIssueCall(threadTs)) {
@@ -231,8 +232,8 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
         } else if (
           ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)
         ) {
-          console.log('Checkmark reaction added (via relay), marking Monday item complete...');
-          await sync.markCompleteFromSlack(threadTs);
+          console.log(`Checkmark reaction added (via relay) in channel ${channelId}, marking Monday item complete...`);
+          await sync.markCompleteFromSlack(threadTs, channelId);
 
           // Also handle after-hours done tracking
           try {
