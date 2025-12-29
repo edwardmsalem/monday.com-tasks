@@ -253,6 +253,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
     toEmail: emlHeaders.to,
     mondayItemId: mondayItem.id,
     meeting: analysisResult.meeting,  // Include meeting info
+    team: analysisResult.team ?? undefined,  // Include team in header if detected
   });
   log.log('Slack message sent:', slackMessage.ts);
 

@@ -582,6 +582,7 @@ router.post(
         toEmail: toEmail,
         mondayItemId: mondayItem.id,
         meeting: analysisResult.meeting,
+        team: analysisResult.team ?? undefined,  // Include team in header if detected
       });
       console.log('Slack message sent:', slackMessage.ts);
 

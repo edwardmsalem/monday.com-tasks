@@ -177,6 +177,7 @@ export async function executeEmailTaskWorkflow(input: EmailTaskInput): Promise<W
     toEmail,
     mondayItemId: mondayItem.id,
     meeting: analysisResult.meeting,
+    team: analysisResult.team ?? undefined,  // Include team in header if detected
   });
   log.log('Slack message sent:', slackMessage.ts);
 
