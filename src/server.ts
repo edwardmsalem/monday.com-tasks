@@ -47,6 +47,7 @@ import {
 
 // Import middleware
 import { requestLogger } from './middleware/index.js';
+import { formatTaskName } from './utils/taskName.js';
 
 const app = express();
 
@@ -797,10 +798,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const displayTeam = accountResult.team ? expandTeamName(accountResult.team) : fullTeamName;
     const accountName = accountResult.success ? accountResult.name || email : email;
 
-    // Include issue description in title if provided
-    const taskName = issueDescription
-      ? `Issue Call: ${accountName} (${displayTeam}) - ${issueDescription}`
-      : `Issue Call: ${accountName} (${displayTeam})`;
+    // Include issue description in title if provided, with [Team] prefix
+    const baseName = issueDescription
+      ? `Issue Call: ${accountName} - ${issueDescription}`
+      : `Issue Call: ${accountName}`;
+    const taskName = formatTaskName(baseName, displayTeam);
 
     // If supporter was mentioned, assign them directly
     const supportIds = supporterUser ? [String(supporterUser.mondayId)] : [];
@@ -991,6 +993,125 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 });
 
 // ============================================================================
+// Slack /analyze Command - Analyze and cleanup existing Monday items
+// ============================================================================
+
+/**
+ * /analyze slash command handler
+ *
+ * Analyzes existing Monday items to detect teams and suggest name improvements.
+ * Usage: /analyze [preview|apply]
+ * - preview (default): Show suggested changes without applying
+ * - apply: Apply all suggested changes
+ */
+app.post('/webhook/slack/analyze', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  const { text, response_url, user_id } = req.body;
+  const mode = (text || '').trim().toLowerCase() || 'preview';
+
+  // Acknowledge immediately
+  res.json({
+    response_type: 'ephemeral',
+    text: `🔍 Analyzing Monday items (mode: ${mode})...`,
+  });
+
+  try {
+    console.log(`/analyze command received from ${user_id}: mode=${mode}`);
+
+    // Import the analyze function
+    const { analyzeItemName } = await import('./services/claude.js');
+
+    // Get all non-done items
+    const items = await monday.getItemsForBackfill('all');
+    console.log(`Found ${items.length} non-done items to analyze`);
+
+    // Filter items that might need team detection
+    // Skip items that already have [Team] prefix
+    const itemsToAnalyze = items.filter(item => !item.name.startsWith('['));
+    console.log(`${itemsToAnalyze.length} items need analysis (no [Team] prefix)`);
+
+    if (itemsToAnalyze.length === 0) {
+      await slack.sendResponseUrl(response_url,
+        `✅ All items already have [Team] prefix or are complete.\n\nNo changes needed.`
+      );
+      return;
+    }
+
+    // Analyze items (limit to first 20 to avoid timeout)
+    const maxItems = 20;
+    const itemsToProcess = itemsToAnalyze.slice(0, maxItems);
+    const suggestions: Array<{
+      id: string;
+      currentName: string;
+      suggestedName: string | null;
+      detectedTeam: string | null;
+      confidence: number;
+    }> = [];
+
+    for (const item of itemsToProcess) {
+      const analysis = await analyzeItemName(item.name, item.taskType);
+      if (analysis.suggestedName && analysis.confidence >= 0.7) {
+        suggestions.push({
+          id: item.id,
+          currentName: item.name,
+          suggestedName: analysis.suggestedName,
+          detectedTeam: analysis.detectedTeam,
+          confidence: analysis.confidence,
+        });
+      }
+    }
+
+    if (suggestions.length === 0) {
+      await slack.sendResponseUrl(response_url,
+        `✅ Analyzed ${itemsToProcess.length} items.\n\nNo team mentions detected with high confidence.` +
+        (itemsToAnalyze.length > maxItems ? `\n\n_Note: Only analyzed first ${maxItems} items. ${itemsToAnalyze.length - maxItems} more items pending._` : '')
+      );
+      return;
+    }
+
+    if (mode === 'apply') {
+      // Apply changes
+      let applied = 0;
+      for (const suggestion of suggestions) {
+        try {
+          // Update name
+          if (suggestion.suggestedName) {
+            await monday.updateItemName(suggestion.id, suggestion.suggestedName);
+          }
+          // Update team column if detected
+          if (suggestion.detectedTeam) {
+            await monday.updateTeam(suggestion.id, suggestion.detectedTeam);
+          }
+          applied++;
+        } catch (err) {
+          console.error(`Failed to update item ${suggestion.id}:`, err);
+        }
+      }
+
+      await slack.sendResponseUrl(response_url,
+        `✅ *Applied ${applied} changes:*\n\n` +
+        suggestions.map(s => `• \`${s.currentName}\`\n  → \`${s.suggestedName}\``).join('\n\n') +
+        (itemsToAnalyze.length > maxItems ? `\n\n_Note: Only processed first ${maxItems} items. Run again to process more._` : '')
+      );
+    } else {
+      // Preview mode - just show suggestions
+      await slack.sendResponseUrl(response_url,
+        `🔍 *Found ${suggestions.length} suggested changes:*\n\n` +
+        suggestions.map(s =>
+          `• \`${s.currentName}\`\n  → \`${s.suggestedName}\` _(${s.detectedTeam}, ${Math.round(s.confidence * 100)}% confidence)_`
+        ).join('\n\n') +
+        `\n\n_Use \`/analyze apply\` to apply these changes._` +
+        (itemsToAnalyze.length > maxItems ? `\n\n_Note: Only analyzed first ${maxItems} items. ${itemsToAnalyze.length - maxItems} more items pending._` : '')
+      );
+    }
+  } catch (error) {
+    console.error('/analyze command error:', error);
+    await slack.sendResponseUrl(response_url,
+      `:x: Error analyzing items: ${error instanceof Error ? error.message : 'Unknown error'}`
+    );
+  }
+});
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -1029,7 +1150,7 @@ function start() {
     console.log(`  Slack /task:     http://localhost:${config.port}/webhook/slack/task`);
     console.log(`  Slack /taskdebug: http://localhost:${config.port}/webhook/slack/taskdebug`);
     console.log(`  Slack /issuecall: http://localhost:${config.port}/webhook/slack/issuecall`);
-    console.log(`  Slack /backfill: http://localhost:${config.port}/webhook/slack/backfill`);
+    console.log(`  Slack /analyze:  http://localhost:${config.port}/webhook/slack/analyze`);
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log(`  Relay events:    http://localhost:${config.port}/relay/events`);
     console.log('');

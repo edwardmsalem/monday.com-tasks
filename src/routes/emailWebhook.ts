@@ -425,6 +425,7 @@ router.post(
       const monday = await import('../services/monday.js');
       const slack = await import('../services/slack.js');
       const { parseDate, formatDateForDisplay } = await import('../utils/dateParser.js');
+      const { formatTaskName } = await import('../utils/taskName.js');
       const { getTaskTypeDisplayName } = await import('../config/taskTypes.js');
       const { normalizeSubject } = await import('../services/gmail.js');
 
@@ -477,7 +478,7 @@ router.post(
         }
       }
 
-      const taskName = normalizeSubject(subject);
+      const taskName = formatTaskName(normalizeSubject(subject), analysisResult.team);
       console.log('Task name:', taskName);
 
       console.log('Creating Monday.com item...');

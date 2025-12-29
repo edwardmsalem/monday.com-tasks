@@ -15,6 +15,7 @@ import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
+import { formatTaskName } from '../utils/taskName.js';
 import { createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult, mapPriorityToUrgency } from './shared.js';
 import { analyzeSlackTaskSafe, type SlackTaskAnalysisResult } from '../services/claude.js';
 
@@ -314,7 +315,7 @@ export async function executeSlackTaskWorkflow(input: SlackTaskWorkflowInput): P
   log.log('Urgency:', finalUrgency);
 
   // Step 3: Create Monday.com item
-  const taskName = parsed.description || 'Slack Task';
+  const taskName = formatTaskName(parsed.description || 'Slack Task', parsed.team);
   log.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
     name: taskName,
@@ -545,7 +546,7 @@ export async function executeAISlackTaskWorkflow(input: AISlackTaskInput): Promi
   }
 
   // Step 6: Create Monday.com item
-  const taskName = analysis.description || 'Slack Task';
+  const taskName = formatTaskName(analysis.description || 'Slack Task', analysis.team);
   log.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
     name: taskName,

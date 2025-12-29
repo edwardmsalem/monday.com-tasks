@@ -37,6 +37,7 @@ import { findUserByName, getUserNamesString } from '../services/userResolver.js'
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { config } from '../config/environment.js';
 import { parseDate, formatDateForDisplay } from '../utils/dateParser.js';
+import { formatTaskName } from '../utils/taskName.js';
 import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from '../services/gmail.js';
 import { createRecipientSheet, shouldCreateSheet } from '../services/sheets.js';
 import * as todoist from '../services/todoist.js';
@@ -124,8 +125,8 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   log.log('PDF generated:', pdfFile.filename);
 
   // Step 8: Create Monday.com item
-  // Use normalized subject (strip FWD:/RE:) as task name
-  const taskName = normalizeSubject(email.subject);
+  // Use normalized subject with team prefix if detected
+  const taskName = formatTaskName(normalizeSubject(email.subject), analysisResult.team);
   log.log('Creating Monday.com item...');
   const mondayItem = await monday.createItem({
     name: taskName,

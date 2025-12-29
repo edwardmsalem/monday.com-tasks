@@ -641,6 +641,56 @@ export async function updateWorkflowStatus(itemId: string, status: string): Prom
 }
 
 /**
+ * Update the item name
+ */
+export async function updateItemName(itemId: string, newName: string): Promise<void> {
+  const query = `
+    mutation UpdateItemName($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  await executeQuery(query, {
+    boardId: config.monday.boardId,
+    itemId,
+    columnValues: JSON.stringify({
+      name: newName,
+    }),
+  });
+}
+
+/**
+ * Update the team column on a Monday item
+ */
+export async function updateTeam(itemId: string, team: string): Promise<void> {
+  const query = `
+    mutation UpdateTeam($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  await executeQuery(query, {
+    boardId: config.monday.boardId,
+    itemId,
+    columnValues: JSON.stringify({
+      [config.monday.columns.team]: { labels: [team] },
+    }),
+  });
+}
+
+/**
  * Update the task type column on a Monday item
  * (General, Opportunity, Decline, etc.)
  */
