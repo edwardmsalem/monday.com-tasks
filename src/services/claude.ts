@@ -678,6 +678,7 @@ export interface IssueCallParseResult {
   email: string;
   issueDescription: string | null;
   notes: string | null;  // Full context/details that don't fit in brief description
+  slackThreadLink: string | null;  // Link to related Slack thread if provided
   suggestedSupporter: string | null;
   confidence: number;
 }
@@ -714,7 +715,11 @@ Rules:
    - Instructions ("please call from...", "call the team at...")
    - Any other relevant details
    This should be the FULL unabridged context, not a summary. Do NOT lose any information.
-5. Suggested supporter: Optional. Look for:
+5. Slack thread link: Optional. Extract any Slack links in these formats:
+   - https://[workspace].slack.com/archives/[channel]/p[timestamp]
+   - <https://[workspace].slack.com/archives/[channel]/p[timestamp]>
+   - Return the full URL, or null if none found
+6. Suggested supporter: Optional. Look for:
    - @mentions like "@jamie", "@romeo", or "<@U12345>"
    - "with X's help" or "have X help"
    - "X for support" or "assign to X"
@@ -749,6 +754,11 @@ Be flexible with input formats. Users might say:
           type: 'string',
           nullable: true,
           description: 'ALL additional context and details - phone, address, card info, history, instructions. Preserve everything.',
+        },
+        slackThreadLink: {
+          type: 'string',
+          nullable: true,
+          description: 'Slack thread link if provided (https://[workspace].slack.com/archives/...)',
         },
         suggestedSupporter: {
           type: 'string',
@@ -792,6 +802,7 @@ Be flexible with input formats. Users might say:
     email: string;
     issueDescription?: string | null;
     notes?: string | null;
+    slackThreadLink?: string | null;
     suggestedSupporter?: string | null;
     confidence: number;
   };
@@ -801,6 +812,7 @@ Be flexible with input formats. Users might say:
     email: result.email,
     issueDescription: result.issueDescription || null,
     notes: result.notes || null,
+    slackThreadLink: result.slackThreadLink || null,
     suggestedSupporter: result.suggestedSupporter || null,
     confidence: result.confidence,
   };

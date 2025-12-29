@@ -840,6 +840,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       updateHtml += `<p><strong>Notes:</strong> ${parseResult.notes}</p>`;
     }
 
+    // Add Slack thread link if provided
+    if (parseResult.slackThreadLink) {
+      updateHtml += `<p><strong>Related Thread:</strong> <a href="${parseResult.slackThreadLink}">${parseResult.slackThreadLink}</a></p>`;
+    }
+
     if (accountResult.success) {
       updateHtml += `<p><strong>Account Info:</strong></p>` +
         `<p>Name: ${accountResult.name || 'N/A'}</p>` +
@@ -890,6 +895,17 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
         text: {
           type: 'mrkdwn',
           text: `*Notes:* ${parseResult.notes}`,
+        },
+      });
+    }
+
+    // Add Slack thread link if provided
+    if (parseResult.slackThreadLink) {
+      issueCallBlocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Related Thread:* ${parseResult.slackThreadLink}`,
         },
       });
     }
