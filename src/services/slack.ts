@@ -210,16 +210,14 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   const mondayUrl = monday.getItemUrl(input.mondayItemId);
   const afterHours = isAfterHours();
 
-  // During after-hours: show owner name without @ mention (quiet)
-  // During working hours: full @ mention (pings OWNER only)
-  const ownerDisplay = afterHours
-    ? `_${input.assigneeName}_`  // Italicized name (no ping during after-hours)
-    : `<@${input.assigneeSlackId}>`;  // Full mention, notifies owner
+  // Always show owner as @mention (clickable link to profile)
+  // The after-hours system handles notification timing separately
+  const ownerDisplay = `<@${input.assigneeSlackId}>`;
 
-  // Support users display (if any) - NEVER ping support users, always show as plain text
+  // Support users display (if any) - show as @mentions
   const supportSlackIds = input.supportSlackIds ?? [];
   const supportDisplay = supportSlackIds.length > 0
-    ? supportSlackIds.join(', ')  // Just IDs, no @ mentions
+    ? supportSlackIds.map(id => `<@${id}>`).join(', ')
     : null;
 
   // Build Block Kit message - use any[] to avoid type issues with mixed block types
@@ -351,11 +349,8 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     ],
   });
 
-  // Fallback text for notifications
-  // During after-hours, don't include @ mention in fallback either
-  const fallbackText = afterHours
-    ? `New ${input.taskType} Email: ${input.subject} - Assigned to ${input.assigneeSlackId} - Due: ${input.dueDate}`
-    : `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
+  // Fallback text for notifications (always with @mention)
+  const fallbackText = `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
 
   // Wrapped in circuit breaker to prevent cascading failures (TD-05)
   const response: ChatPostMessageResponse = await slackCircuit.execute(() =>
