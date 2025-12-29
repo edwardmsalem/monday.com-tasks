@@ -32,6 +32,8 @@ interface SlackEvent {
     ts?: string;
     channel?: string;
     reaction?: string;
+    bot_id?: string; // Present if message is from a bot
+    subtype?: string; // 'bot_message' for bot messages
     item?: {
       type: string;
       ts: string;
@@ -158,7 +160,12 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
 
       // Handle thread replies - sync to Monday (main channel) or remind about Monday (supporter channels)
       if (event.type === 'message' && event.thread_ts && event.text && event.user && event.channel) {
-        // Ignore bot messages to prevent loops - check both old and new format
+        // Ignore bot messages to prevent loops
+        if (event.bot_id || event.subtype === 'bot_message') {
+          console.log('Ignoring bot message, not syncing to Monday');
+          return;
+        }
+        // Also check text content for Monday sync markers
         const isFromMonday = event.text.includes('(via Monday)') || event.text.startsWith('[From Monday');
         if (!isFromMonday && !event.text.includes('[supporter-notification:')) {
           // Check if this is in a supporter channel
