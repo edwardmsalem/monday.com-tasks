@@ -161,6 +161,39 @@ export async function findUserByName(name: string): Promise<UnifiedUser | null> 
     return partialMatches[0];
   }
 
+  // 5. Fuzzy match - handle typos/nicknames like "romeo" → "Rommel"
+  // Check for names that share a significant common prefix (at least 3 chars)
+  const fuzzyMatches = users.filter(u => {
+    const firstName = u.name.split(' ')[0].toLowerCase();
+    // Find common prefix length
+    let commonPrefixLen = 0;
+    const minLen = Math.min(firstName.length, searchName.length);
+    for (let i = 0; i < minLen; i++) {
+      if (firstName[i] === searchName[i]) {
+        commonPrefixLen++;
+      } else {
+        break;
+      }
+    }
+    // Match if they share at least 3 characters of prefix
+    return commonPrefixLen >= 3;
+  });
+
+  if (fuzzyMatches.length === 1) {
+    console.log(`User match: fuzzy prefix "${searchName}" → ${fuzzyMatches[0].name}`);
+    return fuzzyMatches[0];
+  }
+  if (fuzzyMatches.length > 1) {
+    // Sort by how close the first name length is to search term
+    fuzzyMatches.sort((a, b) => {
+      const aFirst = a.name.split(' ')[0].length;
+      const bFirst = b.name.split(' ')[0].length;
+      return Math.abs(aFirst - searchName.length) - Math.abs(bFirst - searchName.length);
+    });
+    console.warn(`Fuzzy match "${searchName}" found multiple users: ${fuzzyMatches.map(u => u.name).join(', ')}. Using closest length match.`);
+    return fuzzyMatches[0];
+  }
+
   console.warn(`No user found matching "${searchName}"`);
   return null;
 }

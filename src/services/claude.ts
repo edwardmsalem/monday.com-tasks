@@ -677,12 +677,13 @@ export interface IssueCallParseResult {
   team: string;
   email: string;
   issueDescription: string | null;
+  notes: string | null;  // Full context/details that don't fit in brief description
   suggestedSupporter: string | null;
   confidence: number;
 }
 
 /**
- * Parse natural language issue call input to extract team, email, issue description, and optional supporter
+ * Parse natural language issue call input to extract team, email, issue description, notes, and optional supporter
  *
  * Examples:
  * - "astros john@example.com tickets not in account" → team: astros, email: john@example.com, issue: tickets not in account
@@ -692,7 +693,7 @@ export interface IssueCallParseResult {
 export async function parseIssueCallInput(input: string): Promise<IssueCallParseResult> {
   const client = getClient();
 
-  const systemPrompt = `You are an issue call parser. Extract the team name, email address, issue description, and optional suggested supporter from natural language input.
+  const systemPrompt = `You are an issue call parser. Extract the team name, email address, issue description, detailed notes, and optional suggested supporter from natural language input.
 
 Sports teams to recognize:
 - MLB: Astros, Rangers, Mariners, Athletics, Angels, Yankees, Mets, Red Sox, Cubs, Dodgers, etc.
@@ -704,15 +705,17 @@ Sports teams to recognize:
 Rules:
 1. Team name: Required. Extract the sports team mentioned. Can be partial (e.g., "astros") or full (e.g., "houston astros").
 2. Email: Required. Extract the email address from the input.
-3. Issue description: Optional but important. Extract the problem/issue being reported. Examples:
-   - "tickets not in account"
-   - "can't access seats"
-   - "transfer not working"
-   - "missing tickets"
-   - "login issues"
-   This should be a brief description of what the customer needs help with.
-4. Suggested supporter: Optional. Look for:
-   - @mentions like "@jamie" or "<@U12345>"
+3. Issue description: Brief 5-10 word summary of the issue (for the title).
+4. Notes: CRITICAL - Preserve ALL additional context, details, and information from the input. Include:
+   - Phone numbers
+   - Addresses
+   - Card details (WEX numbers, last 4 digits, expiration)
+   - Background/history of the issue
+   - Instructions ("please call from...", "call the team at...")
+   - Any other relevant details
+   This should be the FULL unabridged context, not a summary. Do NOT lose any information.
+5. Suggested supporter: Optional. Look for:
+   - @mentions like "@jamie", "@romeo", or "<@U12345>"
    - "with X's help" or "have X help"
    - "X for support" or "assign to X"
    - Return just the name (not the @), or null if none mentioned
@@ -725,7 +728,7 @@ Be flexible with input formats. Users might say:
 
   const tool: Anthropic.Tool = {
     name: 'parse_issue_call',
-    description: 'Parse issue call input to extract team, email, issue description, and supporter',
+    description: 'Parse issue call input to extract team, email, issue description, notes, and supporter',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -740,12 +743,17 @@ Be flexible with input formats. Users might say:
         issueDescription: {
           type: 'string',
           nullable: true,
-          description: 'Brief description of the issue/problem (e.g., "tickets not in account", "can\'t access seats")',
+          description: 'Brief 5-10 word summary of the issue for the title',
+        },
+        notes: {
+          type: 'string',
+          nullable: true,
+          description: 'ALL additional context and details - phone, address, card info, history, instructions. Preserve everything.',
         },
         suggestedSupporter: {
           type: 'string',
           nullable: true,
-          description: 'Name of suggested supporter if mentioned, null otherwise',
+          description: 'Name of suggested supporter if mentioned (e.g., "romeo", "jamie"), null otherwise',
         },
         confidence: {
           type: 'number',
@@ -783,6 +791,7 @@ Be flexible with input formats. Users might say:
     team: string;
     email: string;
     issueDescription?: string | null;
+    notes?: string | null;
     suggestedSupporter?: string | null;
     confidence: number;
   };
@@ -791,6 +800,7 @@ Be flexible with input formats. Users might say:
     team: result.team,
     email: result.email,
     issueDescription: result.issueDescription || null,
+    notes: result.notes || null,
     suggestedSupporter: result.suggestedSupporter || null,
     confidence: result.confidence,
   };

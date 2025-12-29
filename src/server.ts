@@ -835,6 +835,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       updateHtml += `<p><strong>Issue:</strong> ${issueDescription}</p>`;
     }
 
+    // Add notes if provided (full context from user input)
+    if (parseResult.notes) {
+      updateHtml += `<p><strong>Notes:</strong> ${parseResult.notes}</p>`;
+    }
+
     if (accountResult.success) {
       updateHtml += `<p><strong>Account Info:</strong></p>` +
         `<p>Name: ${accountResult.name || 'N/A'}</p>` +
@@ -874,6 +879,17 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
         text: {
           type: 'mrkdwn',
           text: `*Issue:* ${issueDescription}`,
+        },
+      });
+    }
+
+    // Add notes if provided (full context from user input)
+    if (parseResult.notes) {
+      issueCallBlocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Notes:* ${parseResult.notes}`,
         },
       });
     }
