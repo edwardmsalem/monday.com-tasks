@@ -223,8 +223,8 @@ export async function markCompleteFromSlack(slackThreadTs: string, channelId?: s
     return;
   }
 
-  await monday.updateWorkflowStatus(mondayItemId, 'Complete');
-  console.log(`Marked Monday item ${mondayItemId} as Complete from Slack reaction`);
+  await monday.updateWorkflowStatus(mondayItemId, 'Done');
+  console.log(`Marked Monday item ${mondayItemId} as Done from Slack reaction`);
 }
 
 /**
@@ -240,6 +240,36 @@ export async function unmarkCompleteFromSlack(slackThreadTs: string): Promise<vo
 
   await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
   console.log(`Unmarked Monday item ${mondayItemId} from Slack reaction removal`);
+}
+
+/**
+ * Mark Monday item as "Working on it" when 🟡 reaction added in Slack
+ */
+export async function markWorkingFromSlack(slackThreadTs: string, channelId?: string): Promise<void> {
+  const mondayItemId = await monday.findItemBySlackThread(slackThreadTs, channelId);
+
+  if (!mondayItemId) {
+    console.warn(`No Monday item found for Slack thread ${slackThreadTs}`);
+    return;
+  }
+
+  await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
+  console.log(`Marked Monday item ${mondayItemId} as "Working on it" from Slack 🟡 reaction`);
+}
+
+/**
+ * Mark Monday item as "Stuck" when 🔴 reaction added in Slack
+ */
+export async function markStuckFromSlack(slackThreadTs: string, channelId?: string): Promise<void> {
+  const mondayItemId = await monday.findItemBySlackThread(slackThreadTs, channelId);
+
+  if (!mondayItemId) {
+    console.warn(`No Monday item found for Slack thread ${slackThreadTs}`);
+    return;
+  }
+
+  await monday.updateWorkflowStatus(mondayItemId, 'Stuck');
+  console.log(`Marked Monday item ${mondayItemId} as "Stuck" from Slack 🔴 reaction`);
 }
 
 /**

@@ -1095,10 +1095,44 @@ export async function sendAckReminder(
 }
 
 /**
+ * Check if a thread is an after-hours deferred task
+ */
+async function isDeferredTask(threadTs: string): Promise<boolean> {
+  try {
+    if (!slackClient) return false;
+
+    const response = await slackClient.conversations.replies({
+      channel: config.slack.channelId,
+      ts: threadTs,
+      limit: 50,
+    });
+
+    if (!response.messages) return false;
+
+    for (const msg of response.messages) {
+      if (msg.text) {
+        if (DEFERRED_MARKER_PATTERN.test(msg.text) || LEGACY_DEFERRED_PATTERN.test(msg.text)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Mark a thread as acknowledged (when 👀 reaction is received)
+ * Only posts if this is an after-hours deferred task
  */
 export async function markThreadAcknowledged(threadTs: string): Promise<boolean> {
   try {
+    // Only mark if this is a deferred after-hours task
+    if (!(await isDeferredTask(threadTs))) {
+      return false;
+    }
+
     await postToThread(
       threadTs,
       `${ACKNOWLEDGED_MARKER} ✓ _Task acknowledged_`
@@ -1112,9 +1146,15 @@ export async function markThreadAcknowledged(threadTs: string): Promise<boolean>
 
 /**
  * Mark a thread as done (when ✅ reaction is received)
+ * Only posts if this is an after-hours deferred task
  */
 export async function markThreadDone(threadTs: string): Promise<boolean> {
   try {
+    // Only mark if this is a deferred after-hours task
+    if (!(await isDeferredTask(threadTs))) {
+      return false;
+    }
+
     await postToThread(
       threadTs,
       `${DONE_MARKER} ✓ _Task marked done_`
