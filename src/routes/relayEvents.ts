@@ -244,26 +244,11 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
             }
           }
 
-          // Also handle after-hours acknowledgement tracking
-          try {
-            await slack.markThreadAcknowledged(threadTs);
-            console.log(`After-hours ack tracked for thread ${threadTs}`);
-          } catch (ackError) {
-            console.log('After-hours ack tracking skipped (not a deferred task or already acked)');
-          }
         } else if (
           ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check', 'large_green_circle'].includes(event.reaction)
         ) {
           console.log(`Complete reaction added (via relay) in channel ${channelId}, marking Monday item complete...`);
           await sync.markCompleteFromSlack(threadTs, channelId);
-
-          // Also handle after-hours done tracking
-          try {
-            await slack.markThreadDone(threadTs);
-            console.log(`After-hours done tracked for thread ${threadTs}`);
-          } catch (doneError) {
-            console.log('After-hours done tracking skipped (not a deferred task or already done)');
-          }
 
           // Handle issue call completion
           if (isIssueCall(threadTs)) {
