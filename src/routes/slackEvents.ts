@@ -183,14 +183,15 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
               console.error('Failed to handle supporter channel reply:', err);
             }
           } else {
-            // Main channel - sync to Monday
+            // Main channel or issue call channel - sync to Monday
             console.log('Slack thread reply detected:', {
+              channel: event.channel,
               thread_ts: event.thread_ts,
               user: event.user,
               text: event.text.substring(0, 50),
             });
             try {
-              await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
+              await sync.syncSlackToMonday(event.thread_ts, event.text, event.user, event.channel);
             } catch (syncError) {
               console.error('Failed to sync Slack to Monday:', syncError);
             }

@@ -87,12 +87,13 @@ function escapeRegex(str: string): string {
 export async function syncSlackToMonday(
   slackThreadTs: string,
   messageText: string,
-  slackUserId: string
+  slackUserId: string,
+  channelId?: string
 ): Promise<void> {
-  console.log(`Looking up Monday item for Slack thread: ${slackThreadTs}`);
+  console.log(`Looking up Monday item for Slack thread: ${slackThreadTs} in channel: ${channelId || 'unknown'}`);
 
   // Find the Monday item ID from the Slack thread
-  const mondayItemId = await monday.findItemBySlackThread(slackThreadTs);
+  const mondayItemId = await monday.findItemBySlackThread(slackThreadTs, channelId);
 
   if (!mondayItemId) {
     console.warn(`No Monday item found for Slack thread ${slackThreadTs} - check if thread ID is stored correctly in Monday`);
