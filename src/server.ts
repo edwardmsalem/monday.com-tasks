@@ -799,11 +799,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const displayTeam = accountResult.team ? expandTeamName(accountResult.team) : fullTeamName;
     const accountName = accountResult.success ? accountResult.name || email : email;
 
-    // Include issue description in title if provided, with [Team] prefix
-    const baseName = issueDescription
-      ? `Issue Call: ${accountName} - ${issueDescription}`
-      : `Issue Call: ${accountName}`;
-    const taskName = formatTaskName(baseName, displayTeam);
+    // Clean item name - just account and issue description
+    // Team and Type columns already store this info, no need to duplicate in name
+    const taskName = issueDescription
+      ? `${accountName} - ${issueDescription}`
+      : accountName;
 
     // If supporter was mentioned, assign them directly
     const supportIds = supporterUser ? [String(supporterUser.mondayId)] : [];
