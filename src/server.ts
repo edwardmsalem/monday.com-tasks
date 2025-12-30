@@ -985,7 +985,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       elements: [
         {
           type: 'mrkdwn',
-          text: '*Status:* 👀 Acknowledged  •  🟡 Working on it  •  🔴 Stuck/Need Help  •  🟢 Done',
+          text: '*Status:* 👀 Acknowledged  •  🟡 Working on it  •  🔴 Stuck  •  🟢 Done',
         },
       ],
     });
