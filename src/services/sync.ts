@@ -196,16 +196,19 @@ export async function syncMondayToSlack(
  * Mark Monday item as acknowledged when 👀 reaction added in Slack
  */
 export async function markAcknowledgedFromSlack(slackThreadTs: string, channelId?: string): Promise<void> {
-  console.log(`Looking up Monday item for Slack thread: ${slackThreadTs} in channel: ${channelId || 'unknown'}`);
+  const searchValue = channelId ? `${channelId}:${slackThreadTs}` : slackThreadTs;
+  console.log(`[ACK] Looking up Monday item for Slack thread: ${searchValue}`);
+
   const mondayItemId = await monday.findItemBySlackThread(slackThreadTs, channelId);
 
   if (!mondayItemId) {
-    console.warn(`No Monday item found for Slack thread ${slackThreadTs} (channel: ${channelId}) - check if thread ID is stored correctly in Monday`);
+    console.warn(`[ACK] No Monday item found for thread ${searchValue}. Checked formats: new (channelId:ts), legacy (ts only), main channel.`);
     return;
   }
 
+  console.log(`[ACK] Found Monday item ${mondayItemId}, updating status to Acknowledged...`);
   await monday.updateWorkflowStatus(mondayItemId, 'Acknowledged');
-  console.log(`Marked Monday item ${mondayItemId} as Acknowledged from Slack 👀 reaction on thread ${slackThreadTs}`);
+  console.log(`[ACK] Successfully marked Monday item ${mondayItemId} as Acknowledged from Slack 👀 reaction`);
 }
 
 /**

@@ -217,9 +217,22 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
         const threadTs = event.item.thread_ts || event.item.ts;
         const channelId = event.item.channel;
 
+        console.log(`Reaction event received (via relay):`, {
+          reaction: event.reaction,
+          channelId,
+          threadTs,
+          itemTs: event.item.ts,
+          itemThreadTs: event.item.thread_ts,
+          user: event.user,
+        });
+
         if (event.reaction === 'eyes') {
-          console.log(`Eyes reaction added (via relay) in channel ${channelId}, marking Monday item acknowledged...`);
-          await sync.markAcknowledgedFromSlack(threadTs, channelId);
+          console.log(`Eyes reaction added (via relay) in channel ${channelId}, looking up Monday item for thread ${threadTs}...`);
+          try {
+            await sync.markAcknowledgedFromSlack(threadTs, channelId);
+          } catch (ackError) {
+            console.error('Failed to mark acknowledged from eyes reaction (relay):', ackError);
+          }
 
           // Check if this is an issue call being claimed via 👀 reaction
           if (isPendingIssueCall(threadTs)) {
