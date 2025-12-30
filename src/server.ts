@@ -1167,16 +1167,19 @@ app.post('/webhook/slack/backfill-sync', slackUrlEncodedWithRawBody, async (req:
   const { text, response_url, user_id } = req.body;
   const args = (text || '').trim().split(/\s+/);
   const target = args[0] || 'all';
-  const limit = parseInt(args[1] || '5', 10);
+  // Support "unlimited" or very high number to process all
+  const limitArg = args[1]?.toLowerCase();
+  const limit = limitArg === 'unlimited' || limitArg === 'all' ? Infinity : parseInt(limitArg || '5', 10);
+  const limitDisplay = limit === Infinity ? 'unlimited' : limit;
 
   // Acknowledge immediately
   res.json({
     response_type: 'ephemeral',
-    text: `🔄 Starting backfill sync (target: ${target}, limit: ${limit})...`,
+    text: `🔄 Starting backfill sync (target: ${target}, limit: ${limitDisplay})...`,
   });
 
   try {
-    console.log(`/backfill-sync command received from ${user_id}: target=${target}, limit=${limit}`);
+    console.log(`/backfill-sync command received from ${user_id}: target=${target}, limit=${limitDisplay}`);
 
     const slackClient = slack.getClient();
     let itemsToSync: Array<{ id: string; threadInfo: { channelId: string; threadTs: string } }> = [];
@@ -1184,7 +1187,8 @@ app.post('/webhook/slack/backfill-sync', slackUrlEncodedWithRawBody, async (req:
     if (target === 'all') {
       // Get recent items with Slack threads
       const items = await monday.getItemsForBackfill('all');
-      for (const item of items.slice(0, limit)) {
+      const itemsToProcess = limit === Infinity ? items : items.slice(0, limit);
+      for (const item of itemsToProcess) {
         const threadInfo = await monday.getSlackThreadInfo(item.id);
         if (threadInfo) {
           itemsToSync.push({ id: item.id, threadInfo });
