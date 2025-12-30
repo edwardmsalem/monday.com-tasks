@@ -140,7 +140,8 @@ export async function syncSlackToMonday(
 export async function syncMondayToSlack(
   mondayItemId: string,
   updateText: string,
-  mondayUserId: number
+  mondayUserId: number,
+  updateId?: string
 ): Promise<void> {
   // Get the Slack thread info (channel + thread) from the Monday item
   const threadInfo = await monday.getSlackThreadInfo(mondayItemId);
@@ -163,6 +164,32 @@ export async function syncMondayToSlack(
   await slack.postToThread(threadInfo.threadTs, `📋 *${authorName}* _(via Monday)_\n${translatedText}`, threadInfo.channelId);
 
   console.log(`Synced Monday update to Slack thread ${threadInfo.threadTs} in channel ${threadInfo.channelId}`);
+
+  // Sync files if updateId is provided (wrapped in try/catch for safety)
+  if (updateId) {
+    try {
+      const assets = await monday.getUpdateAssets(updateId);
+      if (assets.length > 0) {
+        console.log(`Syncing ${assets.length} file(s) from Monday update ${updateId} to Slack`);
+        for (const asset of assets) {
+          try {
+            const fileBuffer = await monday.downloadFile(asset.url);
+            await slack.uploadFileToThread(
+              threadInfo.channelId,
+              threadInfo.threadTs,
+              fileBuffer,
+              asset.name
+            );
+            console.log(`Synced file ${asset.name} from Monday to Slack`);
+          } catch (fileError) {
+            console.error(`Failed to sync file ${asset.name} to Slack:`, fileError);
+          }
+        }
+      }
+    } catch (assetError) {
+      console.error('Failed to check Monday update assets:', assetError);
+    }
+  }
 }
 
 /**
