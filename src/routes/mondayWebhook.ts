@@ -37,6 +37,7 @@ interface MondayWebhook {
     userId?: number;
     textBody?: string;
     boardId?: number;
+    id?: number;  // Update ID for create_update events
   };
 }
 
@@ -181,8 +182,9 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
         // Only sync if not from Slack (avoid loops) - check both old and new format
         const isFromSlack = event.textBody.includes('(via Slack)') || event.textBody.startsWith('[From Slack');
         if (!isFromSlack) {
-          console.log('Monday update created, syncing to Slack...');
-          await sync.syncMondayToSlack(String(event.pulseId), event.textBody, event.userId);
+          console.log('Monday update created, syncing to Slack...', { updateId: event.id });
+          const updateId = event.id ? String(event.id) : undefined;
+          await sync.syncMondayToSlack(String(event.pulseId), event.textBody, event.userId, updateId);
         }
       }
     }

@@ -31,6 +31,13 @@ interface SlackEvent {
     reaction?: string;
     bot_id?: string; // Present if message is from a bot
     subtype?: string; // 'bot_message' for bot messages
+    files?: Array<{
+      id: string;
+      name: string;
+      mimetype: string;
+      url_private: string;
+      size?: number;
+    }>;
     item?: {
       type: string;
       ts: string;
@@ -185,14 +192,16 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
                 console.error('Failed to handle supporter channel reply:', err);
               }
             } else {
-              // Main channel - sync to Monday
+              // Main channel or issue call channel - sync to Monday
               console.log('Slack thread reply detected (via relay):', {
+                channel: event.channel,
                 thread_ts: event.thread_ts,
                 user: event.user,
                 text: event.text.substring(0, 50),
+                fileCount: event.files?.length ?? 0,
               });
               try {
-                await sync.syncSlackToMonday(event.thread_ts, event.text, event.user);
+                await sync.syncSlackToMonday(event.thread_ts, event.text, event.user, event.channel, event.files);
               } catch (syncError) {
                 console.error('Failed to sync Slack to Monday:', syncError);
               }
