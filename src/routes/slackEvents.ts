@@ -214,9 +214,21 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
         const threadTs = event.item.thread_ts || event.item.ts;
         const channelId = event.item.channel;
 
+        console.log(`Reaction event received:`, {
+          reaction: event.reaction,
+          channelId,
+          threadTs,
+          itemTs: event.item.ts,
+          itemThreadTs: event.item.thread_ts,
+        });
+
         if (event.reaction === 'eyes') {
-          console.log(`Eyes reaction added in channel ${channelId}, marking Monday item acknowledged...`);
-          await sync.markAcknowledgedFromSlack(threadTs, channelId);
+          console.log(`Eyes reaction added in channel ${channelId}, looking up Monday item for thread ${threadTs}...`);
+          try {
+            await sync.markAcknowledgedFromSlack(threadTs, channelId);
+          } catch (ackError) {
+            console.error('Failed to mark acknowledged from eyes reaction:', ackError);
+          }
 
           // Also handle after-hours acknowledgement tracking
           try {
