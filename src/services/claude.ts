@@ -677,6 +677,7 @@ export interface IssueCallParseResult {
   team: string;
   email: string;
   issueDescription: string | null;
+  actionRequired: string | null;  // Single imperative sentence: what needs to be done
   notes: string | null;  // Full context/details that don't fit in brief description
   slackThreadLink: string | null;  // Link to related Slack thread if provided
   suggestedSupporter: string | null;
@@ -707,19 +708,26 @@ Rules:
 1. Team name: Required. Extract the sports team mentioned. Can be partial (e.g., "astros") or full (e.g., "houston astros").
 2. Email: Required. Extract the email address from the input.
 3. Issue description: Brief 5-10 word summary of the issue (for the title).
-4. Notes: CRITICAL - Preserve ALL additional context, details, and information from the input. Include:
+4. Action required: A single imperative sentence stating exactly what needs to be done.
+   - Start with a verb (Call, Email, Confirm, Resolve, Follow up, Check, Verify)
+   - Include any conditional logic (if X, do Y)
+   - Keep under 20 words
+   - Examples: "Call to confirm parking availability", "Verify tickets are in account", "Follow up on transfer request"
+   - If no clear action, return null
+5. Notes: CRITICAL - Preserve ALL additional context, details, and information from the input. Include:
    - Phone numbers
    - Addresses
    - Card details (WEX numbers, last 4 digits, expiration)
    - Background/history of the issue
    - Instructions ("please call from...", "call the team at...")
+   - Preferences ("use Witherell lot if multiple options")
    - Any other relevant details
    This should be the FULL unabridged context, not a summary. Do NOT lose any information.
-5. Slack thread link: Optional. Extract any Slack links in these formats:
+6. Slack thread link: Optional. Extract any Slack links in these formats:
    - https://[workspace].slack.com/archives/[channel]/p[timestamp]
    - <https://[workspace].slack.com/archives/[channel]/p[timestamp]>
    - Return the full URL, or null if none found
-6. Suggested supporter: Optional. Look for:
+7. Suggested supporter: Optional. Look for:
    - @mentions like "@jamie", "@romeo", or "<@U12345>"
    - "with X's help" or "have X help"
    - "X for support" or "assign to X"
@@ -749,6 +757,11 @@ Be flexible with input formats. Users might say:
           type: 'string',
           nullable: true,
           description: 'Brief 5-10 word summary of the issue for the title',
+        },
+        actionRequired: {
+          type: 'string',
+          nullable: true,
+          description: 'Single imperative sentence stating what needs to be done (start with verb, under 20 words)',
         },
         notes: {
           type: 'string',
@@ -801,6 +814,7 @@ Be flexible with input formats. Users might say:
     team: string;
     email: string;
     issueDescription?: string | null;
+    actionRequired?: string | null;
     notes?: string | null;
     slackThreadLink?: string | null;
     suggestedSupporter?: string | null;
@@ -811,6 +825,7 @@ Be flexible with input formats. Users might say:
     team: result.team,
     email: result.email,
     issueDescription: result.issueDescription || null,
+    actionRequired: result.actionRequired || null,
     notes: result.notes || null,
     slackThreadLink: result.slackThreadLink || null,
     suggestedSupporter: result.suggestedSupporter || null,

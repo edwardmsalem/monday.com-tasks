@@ -831,6 +831,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     let updateHtml = `<p><strong>Issue Call Task</strong></p>` +
       `<p>Created by: ${creatorName}</p>`;
 
+    // Add ACTION REQUIRED prominently at the top
+    if (parseResult.actionRequired) {
+      updateHtml += `<p><strong>🎯 ACTION REQUIRED:</strong> ${parseResult.actionRequired}</p>`;
+    }
+
     // Add issue description if provided
     if (issueDescription) {
       updateHtml += `<p><strong>Issue:</strong> ${issueDescription}</p>`;
@@ -838,7 +843,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 
     // Add notes if provided (full context from user input)
     if (parseResult.notes) {
-      updateHtml += `<p><strong>Notes:</strong> ${parseResult.notes}</p>`;
+      updateHtml += `<p><strong>Context:</strong> ${parseResult.notes}</p>`;
     }
 
     // Add Slack thread link if provided
@@ -878,13 +883,13 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       },
     ];
 
-    // Add issue description if provided
-    if (issueDescription) {
+    // Add ACTION REQUIRED prominently at the top
+    if (parseResult.actionRequired) {
       issueCallBlocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Issue:* ${issueDescription}`,
+          text: `🎯 *ACTION REQUIRED:* ${parseResult.actionRequired}`,
         },
       });
     }
@@ -895,7 +900,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Notes:* ${parseResult.notes}`,
+          text: `*Context:* ${parseResult.notes}`,
         },
       });
     }
@@ -973,6 +978,17 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
         ],
       }
     );
+
+    // Add Status Legend
+    issueCallBlocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: '*Status:* 👀 Acknowledged  •  🟡 Working on it  •  🔴 Stuck/Need Help  •  🟢 Done',
+        },
+      ],
+    });
 
     const slackMessage = await slack.getClient().chat.postMessage({
       channel: issueCallChannelId,
