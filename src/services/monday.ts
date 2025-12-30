@@ -1673,3 +1673,72 @@ export async function getItemsForBackfill(mode: 'missing' | 'today' | 'all' = 'm
     return [];
   }
 }
+
+/**
+ * Get all Issue Call items from the board
+ * Used for renaming legacy items with verbose naming
+ */
+export async function getIssueCallItems(): Promise<Array<{
+  id: string;
+  name: string;
+  team: string | null;
+}>> {
+  const { columns } = config.monday;
+
+  const query = `
+    query GetAllItems($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(limit: 500) {
+          items {
+            id
+            name
+            column_values {
+              id
+              text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      boards: Array<{
+        items_page: {
+          items: Array<{
+            id: string;
+            name: string;
+            column_values: Array<{ id: string; text: string }>;
+          }>;
+        };
+      }>;
+    }>(query, { boardId: config.monday.boardId });
+
+    const items = result.boards[0]?.items_page?.items ?? [];
+    const issueCallItems: Array<{ id: string; name: string; team: string | null }> = [];
+
+    for (const item of items) {
+      const getValue = (colId: string): string | null => {
+        const col = item.column_values.find(c => c.id === colId);
+        return col?.text || null;
+      };
+
+      const taskType = getValue(columns.type);
+
+      // Only include Issue Call items
+      if (taskType === 'Issue Call') {
+        issueCallItems.push({
+          id: item.id,
+          name: item.name,
+          team: getValue(columns.team),
+        });
+      }
+    }
+
+    return issueCallItems;
+  } catch (error) {
+    console.error('Error fetching issue call items:', error);
+    return [];
+  }
+}

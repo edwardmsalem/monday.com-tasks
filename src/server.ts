@@ -1161,137 +1161,124 @@ app.post('/webhook/slack/analyze', slackUrlEncodedWithRawBody, async (req: Reque
 });
 
 // ============================================================================
-// Slack /backfill-sync Command - Retroactively sync Slack messages to Monday
+// Slack /rename-issuecalls Command - Clean up verbose issue call names
 // ============================================================================
 
 /**
- * /backfill-sync slash command handler
+ * /rename-issuecalls slash command handler
  *
- * Retroactively syncs Slack thread messages to Monday items.
- * Useful for recovering messages that weren't synced due to bugs.
+ * Renames issue call items from verbose format to clean format.
+ * Old: "[Team] Issue Call: Account Name - Description"
+ * New: "Account Name - Description"
  *
- * Usage: /backfill-sync [item_id|all] [limit]
- * - /backfill-sync 1234567890 - Sync a specific item
- * - /backfill-sync all 10 - Sync up to 10 items
+ * Usage: /rename-issuecalls [preview|apply]
+ * - /rename-issuecalls preview - Show what would be renamed (default)
+ * - /rename-issuecalls apply - Actually rename the items
  */
-app.post('/webhook/slack/backfill-sync', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+app.post('/webhook/slack/rename-issuecalls', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
   if (!verifySlackSignature(req)) {
     res.status(401).send('Invalid signature');
     return;
   }
 
   const { text, response_url, user_id } = req.body;
-  const args = (text || '').trim().split(/\s+/);
-  const target = args[0] || 'all';
-  // Support "unlimited" or very high number to process all
-  const limitArg = args[1]?.toLowerCase();
-  const limit = limitArg === 'unlimited' || limitArg === 'all' ? Infinity : parseInt(limitArg || '5', 10);
-  const limitDisplay = limit === Infinity ? 'unlimited' : limit;
+  const mode = (text || '').trim().toLowerCase() || 'preview';
 
   // Acknowledge immediately
   res.json({
     response_type: 'ephemeral',
-    text: `🔄 Starting backfill sync (target: ${target}, limit: ${limitDisplay})...`,
+    text: `🔄 Scanning issue call items (mode: ${mode})...`,
   });
 
   try {
-    console.log(`/backfill-sync command received from ${user_id}: target=${target}, limit=${limitDisplay}`);
+    console.log(`/rename-issuecalls command received from ${user_id}: mode=${mode}`);
 
-    const slackClient = slack.getClient();
-    let itemsToSync: Array<{ id: string; threadInfo: { channelId: string; threadTs: string } }> = [];
+    const items = await monday.getIssueCallItems();
 
-    if (target === 'all') {
-      // Get recent items with Slack threads
-      const items = await monday.getItemsForBackfill('all');
-      const itemsToProcess = limit === Infinity ? items : items.slice(0, limit);
-      for (const item of itemsToProcess) {
-        const threadInfo = await monday.getSlackThreadInfo(item.id);
-        if (threadInfo) {
-          itemsToSync.push({ id: item.id, threadInfo });
-        }
-      }
-    } else {
-      // Specific item
-      const threadInfo = await monday.getSlackThreadInfo(target);
-      if (threadInfo) {
-        itemsToSync.push({ id: target, threadInfo });
-      } else {
-        await slack.sendResponseUrl(response_url,
-          `:x: No Slack thread found for Monday item ${target}`
-        );
-        return;
-      }
-    }
-
-    if (itemsToSync.length === 0) {
+    if (items.length === 0) {
       await slack.sendResponseUrl(response_url,
-        `:information_source: No items with Slack threads found to sync.`
+        `:information_source: No issue call items found.`
       );
       return;
     }
 
-    let totalSynced = 0;
-    const results: string[] = [];
+    // Parse old format and generate new names
+    // Old formats:
+    // "[Team] Issue Call: Account Name - Description"
+    // "[Team] Issue Call: Account Name"
+    // "Issue Call: Account Name - Description"
+    // "Issue Call: Account Name"
+    const renamePattern = /^(?:\[.+?\]\s*)?Issue Call:\s*(.+)$/i;
 
-    for (const { id: mondayItemId, threadInfo } of itemsToSync) {
-      try {
-        // Fetch thread messages from Slack
-        const threadResult = await slackClient.conversations.replies({
-          channel: threadInfo.channelId,
-          ts: threadInfo.threadTs,
-          limit: 100,
-        });
+    const toRename: Array<{ id: string; oldName: string; newName: string }> = [];
 
-        if (!threadResult.messages || threadResult.messages.length <= 1) {
-          results.push(`• Item ${mondayItemId}: No replies in thread`);
-          continue;
+    for (const item of items) {
+      const match = item.name.match(renamePattern);
+      if (match) {
+        const newName = match[1].trim();
+        if (newName !== item.name) {
+          toRename.push({
+            id: item.id,
+            oldName: item.name,
+            newName,
+          });
         }
-
-        // Get existing Monday updates to avoid duplicates
-        const existingUpdates = await monday.getItemUpdates(mondayItemId);
-        const existingTexts = new Set(existingUpdates.map(u => u.textBody.toLowerCase().trim()));
-
-        let itemSynced = 0;
-        // Skip first message (parent), process replies
-        for (const msg of threadResult.messages.slice(1)) {
-          if (!msg.text || !msg.user) continue;
-
-          // Skip bot messages
-          if (msg.bot_id || (msg as { subtype?: string }).subtype === 'bot_message') continue;
-
-          // Skip if already synced (check for "(via Slack)" marker or similar content)
-          const msgText = msg.text;
-          const isAlreadySynced = msgText.includes('(via Monday)') ||
-            existingTexts.has(msgText.toLowerCase().trim()) ||
-            Array.from(existingTexts).some(t => t.includes(msgText.toLowerCase().trim().substring(0, 50)));
-
-          if (isAlreadySynced) continue;
-
-          // Sync this message
-          await sync.syncSlackToMonday(threadInfo.threadTs, msgText, msg.user, threadInfo.channelId);
-          itemSynced++;
-          totalSynced++;
-
-          // Rate limit - small delay between syncs
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-
-        results.push(`• Item ${mondayItemId}: Synced ${itemSynced} messages`);
-      } catch (itemError) {
-        console.error(`Failed to backfill item ${mondayItemId}:`, itemError);
-        results.push(`• Item ${mondayItemId}: Error - ${itemError instanceof Error ? itemError.message : 'Unknown'}`);
       }
     }
 
-    await slack.sendResponseUrl(response_url,
-      `✅ *Backfill sync complete*\n\n` +
-      `Processed ${itemsToSync.length} items, synced ${totalSynced} total messages.\n\n` +
-      results.join('\n')
-    );
+    if (toRename.length === 0) {
+      await slack.sendResponseUrl(response_url,
+        `✅ *No items need renaming*\n\nAll ${items.length} issue call items already have clean names.`
+      );
+      return;
+    }
+
+    if (mode === 'preview') {
+      // Preview mode - show what would be renamed
+      const previewLines = toRename.slice(0, 20).map(item =>
+        `• \`${item.oldName}\`\n   → \`${item.newName}\``
+      );
+
+      const moreText = toRename.length > 20 ? `\n\n...and ${toRename.length - 20} more` : '';
+
+      await slack.sendResponseUrl(response_url,
+        `📋 *Preview: ${toRename.length} items to rename*\n\n` +
+        previewLines.join('\n\n') +
+        moreText +
+        `\n\n_Run \`/rename-issuecalls apply\` to apply these changes._`
+      );
+    } else if (mode === 'apply') {
+      // Apply mode - actually rename the items
+      let renamed = 0;
+      const errors: string[] = [];
+
+      for (const item of toRename) {
+        try {
+          await monday.updateItemName(item.id, item.newName);
+          renamed++;
+
+          // Rate limit - small delay between updates
+          await new Promise(resolve => setTimeout(resolve, 300));
+        } catch (error) {
+          console.error(`Failed to rename item ${item.id}:`, error);
+          errors.push(`• ${item.id}: ${error instanceof Error ? error.message : 'Unknown'}`);
+        }
+      }
+
+      const errorText = errors.length > 0 ? `\n\n*Errors:*\n${errors.join('\n')}` : '';
+
+      await slack.sendResponseUrl(response_url,
+        `✅ *Renamed ${renamed} of ${toRename.length} items*` + errorText
+      );
+    } else {
+      await slack.sendResponseUrl(response_url,
+        `:x: Unknown mode: ${mode}\n\nUsage: \`/rename-issuecalls preview\` or \`/rename-issuecalls apply\``
+      );
+    }
   } catch (error) {
-    console.error('/backfill-sync error:', error);
+    console.error('/rename-issuecalls error:', error);
     await slack.sendResponseUrl(response_url,
-      `:x: Error during backfill: ${error instanceof Error ? error.message : 'Unknown error'}`
+      `:x: Error: ${error instanceof Error ? error.message : 'Unknown error'}`
     );
   }
 });
