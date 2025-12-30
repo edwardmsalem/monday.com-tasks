@@ -22,6 +22,7 @@ import {
 } from './workflow.js';
 import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
+import * as sync from './services/sync.js';
 import { findUserByName, findUserBySlackId } from './services/userResolver.js';
 import { startFollowUpScheduler } from './services/autoFollowUp.js';
 import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
@@ -1139,6 +1140,138 @@ app.post('/webhook/slack/analyze', slackUrlEncodedWithRawBody, async (req: Reque
     console.error('/analyze command error:', error);
     await slack.sendResponseUrl(response_url,
       `:x: Error analyzing items: ${error instanceof Error ? error.message : 'Unknown error'}`
+    );
+  }
+});
+
+// ============================================================================
+// Slack /backfill-sync Command - Retroactively sync Slack messages to Monday
+// ============================================================================
+
+/**
+ * /backfill-sync slash command handler
+ *
+ * Retroactively syncs Slack thread messages to Monday items.
+ * Useful for recovering messages that weren't synced due to bugs.
+ *
+ * Usage: /backfill-sync [item_id|all] [limit]
+ * - /backfill-sync 1234567890 - Sync a specific item
+ * - /backfill-sync all 10 - Sync up to 10 items
+ */
+app.post('/webhook/slack/backfill-sync', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
+  const { text, response_url, user_id } = req.body;
+  const args = (text || '').trim().split(/\s+/);
+  const target = args[0] || 'all';
+  const limit = parseInt(args[1] || '5', 10);
+
+  // Acknowledge immediately
+  res.json({
+    response_type: 'ephemeral',
+    text: `🔄 Starting backfill sync (target: ${target}, limit: ${limit})...`,
+  });
+
+  try {
+    console.log(`/backfill-sync command received from ${user_id}: target=${target}, limit=${limit}`);
+
+    const slackClient = slack.getClient();
+    let itemsToSync: Array<{ id: string; threadInfo: { channelId: string; threadTs: string } }> = [];
+
+    if (target === 'all') {
+      // Get recent items with Slack threads
+      const items = await monday.getItemsForBackfill('all');
+      for (const item of items.slice(0, limit)) {
+        const threadInfo = await monday.getSlackThreadInfo(item.id);
+        if (threadInfo) {
+          itemsToSync.push({ id: item.id, threadInfo });
+        }
+      }
+    } else {
+      // Specific item
+      const threadInfo = await monday.getSlackThreadInfo(target);
+      if (threadInfo) {
+        itemsToSync.push({ id: target, threadInfo });
+      } else {
+        await slack.sendResponseUrl(response_url,
+          `:x: No Slack thread found for Monday item ${target}`
+        );
+        return;
+      }
+    }
+
+    if (itemsToSync.length === 0) {
+      await slack.sendResponseUrl(response_url,
+        `:information_source: No items with Slack threads found to sync.`
+      );
+      return;
+    }
+
+    let totalSynced = 0;
+    const results: string[] = [];
+
+    for (const { id: mondayItemId, threadInfo } of itemsToSync) {
+      try {
+        // Fetch thread messages from Slack
+        const threadResult = await slackClient.conversations.replies({
+          channel: threadInfo.channelId,
+          ts: threadInfo.threadTs,
+          limit: 100,
+        });
+
+        if (!threadResult.messages || threadResult.messages.length <= 1) {
+          results.push(`• Item ${mondayItemId}: No replies in thread`);
+          continue;
+        }
+
+        // Get existing Monday updates to avoid duplicates
+        const existingUpdates = await monday.getItemUpdates(mondayItemId);
+        const existingTexts = new Set(existingUpdates.map(u => u.textBody.toLowerCase().trim()));
+
+        let itemSynced = 0;
+        // Skip first message (parent), process replies
+        for (const msg of threadResult.messages.slice(1)) {
+          if (!msg.text || !msg.user) continue;
+
+          // Skip bot messages
+          if (msg.bot_id || (msg as { subtype?: string }).subtype === 'bot_message') continue;
+
+          // Skip if already synced (check for "(via Slack)" marker or similar content)
+          const msgText = msg.text;
+          const isAlreadySynced = msgText.includes('(via Monday)') ||
+            existingTexts.has(msgText.toLowerCase().trim()) ||
+            Array.from(existingTexts).some(t => t.includes(msgText.toLowerCase().trim().substring(0, 50)));
+
+          if (isAlreadySynced) continue;
+
+          // Sync this message
+          await sync.syncSlackToMonday(threadInfo.threadTs, msgText, msg.user, threadInfo.channelId);
+          itemSynced++;
+          totalSynced++;
+
+          // Rate limit - small delay between syncs
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        results.push(`• Item ${mondayItemId}: Synced ${itemSynced} messages`);
+      } catch (itemError) {
+        console.error(`Failed to backfill item ${mondayItemId}:`, itemError);
+        results.push(`• Item ${mondayItemId}: Error - ${itemError instanceof Error ? itemError.message : 'Unknown'}`);
+      }
+    }
+
+    await slack.sendResponseUrl(response_url,
+      `✅ *Backfill sync complete*\n\n` +
+      `Processed ${itemsToSync.length} items, synced ${totalSynced} total messages.\n\n` +
+      results.join('\n')
+    );
+  } catch (error) {
+    console.error('/backfill-sync error:', error);
+    await slack.sendResponseUrl(response_url,
+      `:x: Error during backfill: ${error instanceof Error ? error.message : 'Unknown error'}`
     );
   }
 });
