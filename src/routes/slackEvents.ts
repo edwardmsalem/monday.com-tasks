@@ -34,6 +34,13 @@ interface SlackEvent {
     reaction?: string;
     bot_id?: string; // Present if message is from a bot
     subtype?: string; // 'bot_message' for bot messages
+    files?: Array<{
+      id: string;
+      name: string;
+      mimetype: string;
+      url_private: string;
+      size?: number;
+    }>;
     item?: {
       type: string;
       ts: string;
@@ -189,9 +196,10 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
               thread_ts: event.thread_ts,
               user: event.user,
               text: event.text.substring(0, 50),
+              fileCount: event.files?.length ?? 0,
             });
             try {
-              await sync.syncSlackToMonday(event.thread_ts, event.text, event.user, event.channel);
+              await sync.syncSlackToMonday(event.thread_ts, event.text, event.user, event.channel, event.files);
             } catch (syncError) {
               console.error('Failed to sync Slack to Monday:', syncError);
             }

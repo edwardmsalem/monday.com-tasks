@@ -615,6 +615,101 @@ export async function createUpdate(itemId: string, body: string): Promise<string
 }
 
 /**
+ * Add a file to an existing Monday update (comment)
+ * Uses multipart form upload with form-data compatible approach
+ */
+export async function addFileToUpdate(
+  updateId: string,
+  fileBuffer: Buffer,
+  filename: string
+): Promise<void> {
+  // Dynamic import of form-data for Node.js compatibility
+  const FormData = (await import('form-data')).default;
+
+  const query = `mutation AddFileToUpdate($updateId: ID!) { add_file_to_update(update_id: $updateId, file: "file") { id } }`;
+
+  const form = new FormData();
+  form.append('query', query);
+  form.append('variables', JSON.stringify({ updateId }));
+  form.append('file', fileBuffer, { filename });
+
+  const response = await fetch('https://api.monday.com/v2/file', {
+    method: 'POST',
+    headers: {
+      Authorization: config.monday.apiToken,
+      ...form.getHeaders(),
+    },
+    body: form as unknown as BodyInit,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Monday file upload failed: ${response.status} - ${text}`);
+  }
+
+  const result = await response.json() as { errors?: unknown[] };
+  if (result.errors) {
+    throw new Error(`Monday file upload error: ${JSON.stringify(result.errors)}`);
+  }
+
+  console.log(`Uploaded file ${filename} to Monday update ${updateId}`);
+}
+
+/**
+ * Get file assets from a Monday update
+ */
+export interface MondayFileAsset {
+  id: string;
+  name: string;
+  url: string;
+  file_extension: string;
+}
+
+export async function getUpdateAssets(updateId: string): Promise<MondayFileAsset[]> {
+  const query = `
+    query GetUpdateAssets($updateId: [ID!]!) {
+      updates(ids: $updateId) {
+        assets {
+          id
+          name
+          url
+          file_extension
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      updates: Array<{ assets: MondayFileAsset[] }>;
+    }>(query, { updateId: [updateId] });
+
+    return result.updates[0]?.assets ?? [];
+  } catch (error) {
+    console.error('Error getting update assets:', error);
+    return [];
+  }
+}
+
+/**
+ * Download a file from Monday.com
+ */
+export async function downloadFile(url: string): Promise<Buffer> {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: config.monday.apiToken,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download Monday file: ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+/**
  * Update the workflow status column on a Monday item
  * (Acknowledged, Working on it, Complete, etc.)
  */

@@ -88,7 +88,8 @@ export async function syncSlackToMonday(
   slackThreadTs: string,
   messageText: string,
   slackUserId: string,
-  channelId?: string
+  channelId?: string,
+  files?: slack.SlackFile[]
 ): Promise<void> {
   console.log(`Looking up Monday item for Slack thread: ${slackThreadTs} in channel: ${channelId || 'unknown'}`);
 
@@ -113,9 +114,24 @@ export async function syncSlackToMonday(
   // Create update in Monday
   // Author is just a name (not @mention), but message content still has translated @mentions
   const formattedUpdate = `<p>💬 <strong>${authorName}</strong> <em>(via Slack)</em></p><p>${translatedText}</p>`;
-  await monday.createUpdate(mondayItemId, formattedUpdate);
+  const updateId = await monday.createUpdate(mondayItemId, formattedUpdate);
 
   console.log(`Synced Slack message to Monday item ${mondayItemId}`);
+
+  // Sync files if present (wrapped in try/catch so text still syncs on file failure)
+  if (files && files.length > 0) {
+    console.log(`Syncing ${files.length} file(s) to Monday update ${updateId}`);
+    for (const file of files) {
+      try {
+        const fileBuffer = await slack.downloadFile(file);
+        await monday.addFileToUpdate(updateId, fileBuffer, file.name);
+        console.log(`Synced file ${file.name} to Monday`);
+      } catch (fileError) {
+        console.error(`Failed to sync file ${file.name} to Monday:`, fileError);
+        // Continue with other files
+      }
+    }
+  }
 }
 
 /**

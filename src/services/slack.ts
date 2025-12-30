@@ -428,20 +428,22 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
  * Wrapped in circuit breaker (TD-05)
  */
 export async function uploadFileToThread(
+  channelId: string,
   threadTs: string,
+  fileBuffer: Buffer,
   filename: string,
-  fileData: Buffer,
-  title?: string
+  initialComment?: string
 ): Promise<void> {
   const client = getClient();
 
   await slackCircuit.execute(() =>
     client.filesUploadV2({
-      channel_id: config.slack.channelId,
+      channel_id: channelId,
       thread_ts: threadTs,
       filename,
-      file: fileData,
-      title: title ?? filename,
+      file: fileBuffer,
+      title: filename,
+      initial_comment: initialComment,
     })
   );
 }
@@ -1429,3 +1431,38 @@ export async function notifySupporterInChannel(
     return false;
   }
 }
+
+// ============================================================================
+// File Sync Functions
+// ============================================================================
+
+/**
+ * Slack file information from message events
+ */
+export interface SlackFile {
+  id: string;
+  name: string;
+  mimetype: string;
+  url_private: string;
+  size?: number;
+}
+
+/**
+ * Download a file from Slack using the bot token
+ * Slack file URLs require authentication
+ */
+export async function downloadFile(file: SlackFile): Promise<Buffer> {
+  const response = await fetch(file.url_private, {
+    headers: {
+      Authorization: `Bearer ${config.slack.botToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download Slack file: ${response.status} ${response.statusText}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
