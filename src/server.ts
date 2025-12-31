@@ -825,10 +825,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     await monday.storeRunId(mondayItem.id, runId);
 
     // Create initial update with account info
+    // Include (via Slack) marker to prevent sync loop back to Slack
     const creator = await findUserBySlackId(user_id);
     const creatorName = creator?.name ?? 'Unknown';
 
-    let updateHtml = `<p><strong>Issue Call Task</strong></p>` +
+    let updateHtml = `<p><strong>Issue Call Task</strong> <em>(via Slack)</em></p>` +
       `<p>Created by: ${creatorName}</p>`;
 
     // Add ACTION REQUIRED prominently at the top
