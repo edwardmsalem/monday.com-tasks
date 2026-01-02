@@ -105,6 +105,7 @@ interface TaskForFollowUp {
   dueDate: string | null;
   owners: Owner[];
   slackThreadTs: string | null;
+  slackChannelId: string | null; // Parsed from channelId:threadTs format
   workflowStatus: string; // "Acknowledged", "Working on it", "Complete", or ""
   createdAt: string;
   taskType: string; // "Issue Call", "General", etc.
@@ -327,12 +328,30 @@ async function getOpenTasks(): Promise<TaskForFollowUp[]> {
       }
     }
 
+    // Parse Slack thread info from "channelId:threadTs" format
+    const slackThreadValue = getValue(config.monday.columns.slackThreadId) || null;
+    let slackThreadTs: string | null = null;
+    let slackChannelId: string | null = null;
+
+    if (slackThreadValue) {
+      if (slackThreadValue.includes(':')) {
+        // New format: channelId:threadTs
+        const [channelId, threadTs] = slackThreadValue.split(':');
+        slackChannelId = channelId;
+        slackThreadTs = threadTs;
+      } else {
+        // Legacy format: just threadTs (use default channel)
+        slackThreadTs = slackThreadValue;
+      }
+    }
+
     return {
       id: item.id,
       name: item.name,
       dueDate: getValue(config.monday.columns.date) || null,
       owners,
-      slackThreadTs: getValue(config.monday.columns.slackThreadId) || null,
+      slackThreadTs,
+      slackChannelId,
       workflowStatus: getValue(config.monday.columns.workflowStatus),
       createdAt: item.created_at,
       taskType: getValue(config.monday.columns.type) || '',
@@ -342,9 +361,15 @@ async function getOpenTasks(): Promise<TaskForFollowUp[]> {
 
 /**
  * Get the correct Slack channel for a task
- * Issue Calls go to the issue call channel, everything else goes to main channel
+ * Uses the stored channel ID from the Slack Thread column, or falls back to task type logic
  */
 function getChannelForTask(task: TaskForFollowUp): string | undefined {
+  // Use the stored channel ID if available (from channelId:threadTs format)
+  if (task.slackChannelId) {
+    return task.slackChannelId;
+  }
+
+  // Fallback for legacy items without channel ID
   if (task.taskType.toLowerCase() === 'issue call') {
     return config.slack.issueCallChannelId || undefined;
   }
