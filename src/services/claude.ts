@@ -675,7 +675,7 @@ export async function analyzeSlackTaskSafe(
 
 export interface IssueCallParseResult {
   team: string;
-  email: string;
+  emails: string[];  // Support multiple email addresses
   issueDescription: string | null;
   actionRequired: string | null;  // Single imperative sentence: what needs to be done
   notes: string | null;  // Full context/details that don't fit in brief description
@@ -706,7 +706,7 @@ Sports teams to recognize:
 
 Rules:
 1. Team name: Required. Extract the sports team mentioned. Can be partial (e.g., "astros") or full (e.g., "houston astros").
-2. Email: Required. Extract the email address from the input.
+2. Emails: Required. Extract ALL email addresses from the input. There may be multiple emails for related accounts.
 3. Issue description: Brief 5-10 word summary of the issue (for the title).
 4. Action required: A single imperative sentence stating exactly what needs to be done.
    - Start with a verb (Call, Email, Confirm, Resolve, Follow up, Check, Verify)
@@ -749,9 +749,10 @@ Be flexible with input formats. Users might say:
           type: 'string',
           description: 'The sports team name (e.g., "astros", "houston astros", "rockets")',
         },
-        email: {
-          type: 'string',
-          description: 'The email address of the account holder',
+        emails: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'All email addresses of the account holders (can be multiple)',
         },
         issueDescription: {
           type: 'string',
@@ -783,7 +784,7 @@ Be flexible with input formats. Users might say:
           description: 'Confidence score 0-1 for the extraction',
         },
       },
-      required: ['team', 'email', 'confidence'],
+      required: ['team', 'emails', 'confidence'],
     },
   };
 
@@ -812,7 +813,7 @@ Be flexible with input formats. Users might say:
 
   const result = toolUse.input as {
     team: string;
-    email: string;
+    emails: string[];
     issueDescription?: string | null;
     actionRequired?: string | null;
     notes?: string | null;
@@ -823,7 +824,7 @@ Be flexible with input formats. Users might say:
 
   return {
     team: result.team,
-    email: result.email,
+    emails: result.emails || [],
     issueDescription: result.issueDescription || null,
     actionRequired: result.actionRequired || null,
     notes: result.notes || null,

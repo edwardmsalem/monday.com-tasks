@@ -716,7 +716,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Use AI to parse the input
     const parseResult = await parseIssueCallInputSafe(trimmedText);
 
-    if (!parseResult || !parseResult.email) {
+    if (!parseResult || !parseResult.emails || parseResult.emails.length === 0) {
       await slack.sendResponseUrl(response_url,
         `:x: Could not find an email address in your request.\n\n` +
         `Please include the account holder's email.\n\n` +
@@ -734,7 +734,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       return;
     }
 
-    const email = parseResult.email;
+    const emails = parseResult.emails;
     const teamName = parseResult.team;
 
     // Check if team name is ambiguous (could refer to multiple leagues)
@@ -763,10 +763,15 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       supporterUser = await findUserByName(parseResult.suggestedSupporter);
     }
 
-    console.log(`Issue call parsed: team=${fullTeamName}, email=${email}, supporter=${supporterUser?.name || 'none'}`);
+    console.log(`Issue call parsed: team=${fullTeamName}, emails=${emails.join(', ')}, supporter=${supporterUser?.name || 'none'}`);
 
-    // Look up the account
-    const accountResult = await lookupAccountForIssueCall(teamName, email);
+    // Look up all accounts
+    const accountResults = await Promise.all(
+      emails.map(email => lookupAccountForIssueCall(teamName, email))
+    );
+
+    // Use the first successful account for naming, or first email if none found
+    const primaryAccount = accountResults.find(r => r.success) || accountResults[0];
 
     // Look up owners: Dayna + Ruzzell Garcia
     const dayna = await findUserByName('Dayna');
@@ -796,8 +801,8 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const issueDescription = parseResult.issueDescription;
 
     // Create Monday item
-    const displayTeam = accountResult.team ? expandTeamName(accountResult.team) : fullTeamName;
-    const accountName = accountResult.success ? accountResult.name || email : email;
+    const displayTeam = primaryAccount.team ? expandTeamName(primaryAccount.team) : fullTeamName;
+    const accountName = primaryAccount.success ? primaryAccount.name || emails[0] : emails[0];
 
     // Clean item name - just account and issue description
     // Team and Type columns already store this info, no need to duplicate in name
@@ -852,25 +857,44 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       updateHtml += `<p><strong>Related Thread:</strong> <a href="${parseResult.slackThreadLink}">${parseResult.slackThreadLink}</a></p>`;
     }
 
-    if (accountResult.success) {
-      updateHtml += `<p><strong>Account Info:</strong></p>` +
-        `<p>Name: ${accountResult.name || 'N/A'}</p>` +
-        `<p>Email: ${accountResult.email}</p>` +
-        `<p>Phone: ${accountResult.phone || 'N/A'}</p>` +
-        `<p>Seats: ${accountResult.seats || 'N/A'}</p>` +
-        `<p>Address: ${accountResult.address || 'N/A'}</p>` +
-        `<p>Card: ${accountResult.cardInfo || 'N/A'}</p>`;
-    } else {
-      updateHtml += `<p><em>Account lookup failed: ${accountResult.error}</em></p>`;
+    // Add account info for all emails
+    for (let i = 0; i < accountResults.length; i++) {
+      const result = accountResults[i];
+      const email = emails[i];
+      const accountLabel = accountResults.length > 1 ? ` #${i + 1}` : '';
+
+      if (result.success) {
+        updateHtml += `<p><strong>Account Info${accountLabel}:</strong></p>` +
+          `<p>Name: ${result.name || 'N/A'}</p>` +
+          `<p>Email: ${result.email}</p>` +
+          `<p>Phone: ${result.phone || 'N/A'}</p>` +
+          `<p>Seats: ${result.seats || 'N/A'}</p>` +
+          `<p>Address: ${result.address || 'N/A'}</p>` +
+          `<p>Card: ${result.cardInfo || 'N/A'}</p>`;
+      } else {
+        updateHtml += `<p><em>Account${accountLabel} lookup failed (${email}): ${result.error}</em></p>`;
+      }
     }
 
     await monday.createUpdate(mondayItem.id, updateHtml);
 
     // Build Slack message
     const mondayUrl = monday.getItemUrl(mondayItem.id);
-    const accountInfo = accountResult.success
-      ? formatIssueCallAccount(accountResult)
-      : `⚠️ Account lookup failed: ${accountResult.error}`;
+
+    // Format all account infos for Slack
+    const accountInfoParts: string[] = [];
+    for (let i = 0; i < accountResults.length; i++) {
+      const result = accountResults[i];
+      const email = emails[i];
+      const accountLabel = accountResults.length > 1 ? `*Account #${i + 1}:*\n` : '';
+
+      if (result.success) {
+        accountInfoParts.push(accountLabel + formatIssueCallAccount(result));
+      } else {
+        accountInfoParts.push(accountLabel + `⚠️ Account lookup failed (${email}): ${result.error}`);
+      }
+    }
+    const accountInfo = accountInfoParts.join('\n\n');
 
     // Build Block Kit message for issue call
     const issueCallBlocks: any[] = [
@@ -1023,10 +1047,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
 
     // Send confirmation via response_url
     const slackThreadUrl = `https://slack.com/app_redirect?channel=${issueCallChannelId}&message_ts=${slackMessage.ts}`;
+    const emailDisplay = emails.length === 1 ? emails[0] : emails.join(', ');
     await slack.sendResponseUrl(response_url,
       `✅ *Issue Call Created*\n\n` +
       `• *Team:* ${displayTeam}\n` +
-      `• *Email:* ${email}\n` +
+      `• *Email${emails.length > 1 ? 's' : ''}:* ${emailDisplay}\n` +
       `• *Due:* ${dueDate}\n` +
       `${supporterUser ? `• *Supporter:* ${supporterUser.name}\n` : ''}` +
       `• *Monday:* <${mondayUrl}|View Item>\n` +
