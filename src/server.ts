@@ -24,7 +24,7 @@ import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
 import * as sync from './services/sync.js';
 import { findUserByName, findUserBySlackId } from './services/userResolver.js';
-import { startFollowUpScheduler } from './services/autoFollowUp.js';
+import { startFollowUpScheduler, checkAndSendFollowUps } from './services/autoFollowUp.js';
 import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
 import { initializeJobQueue } from './services/jobQueue.js';
 import {
@@ -1278,6 +1278,46 @@ app.post('/webhook/slack/rename-issuecalls', slackUrlEncodedWithRawBody, async (
     }
   } catch (error) {
     console.error('/rename-issuecalls error:', error);
+    await slack.sendResponseUrl(response_url,
+      `:x: Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+    );
+  }
+});
+
+// ============================================================================
+// Slack /trigger-followups Command - Manually trigger task reminders
+// ============================================================================
+
+/**
+ * /trigger-followups slash command handler
+ * Manually triggers the follow-up reminder check (bypasses business hours)
+ */
+app.post('/webhook/slack/trigger-followups', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
+  if (!verifySlackSignature(req)) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
+  const { response_url, user_id } = req.body;
+
+  // Acknowledge immediately
+  res.json({
+    response_type: 'ephemeral',
+    text: `🔄 Triggering follow-up reminders...`,
+  });
+
+  try {
+    console.log(`/trigger-followups command received from ${user_id}`);
+
+    // Run with force=true to bypass business hours check
+    const result = await checkAndSendFollowUps(true);
+
+    await slack.sendResponseUrl(response_url,
+      `✅ *Follow-up check complete*\n\nSent ${result.sent} reminders.` +
+      (result.skipped ? `\nSkipped: ${result.skipped}` : '')
+    );
+  } catch (error) {
+    console.error('/trigger-followups error:', error);
     await slack.sendResponseUrl(response_url,
       `:x: Error: ${error instanceof Error ? error.message : 'Unknown error'}`
     );
