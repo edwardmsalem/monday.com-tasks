@@ -176,7 +176,7 @@ export function shouldCreateSheet(subject: string): boolean {
 // Lookup account info from sport-specific Google Sheets workbooks
 // ============================================================================
 
-export type Sport = 'mlb' | 'nfl' | 'nba' | 'nhl' | 'mls' | 'ncaa' | 'other';
+export type Sport = 'mlb' | 'nfl' | 'nba' | 'wnba' | 'nhl' | 'mls' | 'ncaa' | 'other';
 
 /**
  * Team to sport mapping
@@ -278,6 +278,21 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'heat': 'nba', 'miami heat': 'nba',
   'magic': 'nba', 'orlando magic': 'nba',
   'wizards': 'nba', 'washington wizards': 'nba',
+
+  // WNBA Teams
+  'aces': 'wnba', 'las vegas aces': 'wnba', 'lv aces': 'wnba',
+  'dream': 'wnba', 'atlanta dream': 'wnba',
+  'sky': 'wnba', 'chicago sky': 'wnba',
+  'sun': 'wnba', 'connecticut sun': 'wnba',
+  'wings': 'wnba', 'dallas wings': 'wnba',
+  'fever': 'wnba', 'indiana fever': 'wnba',
+  'sparks': 'wnba', 'los angeles sparks': 'wnba', 'la sparks': 'wnba',
+  'lynx': 'wnba', 'minnesota lynx': 'wnba',
+  'liberty': 'wnba', 'new york liberty': 'wnba', 'ny liberty': 'wnba',
+  'mercury': 'wnba', 'phoenix mercury': 'wnba',
+  'storm': 'wnba', 'seattle storm': 'wnba',
+  'mystics': 'wnba', 'washington mystics': 'wnba',
+  'valkyries': 'wnba', 'golden state valkyries': 'wnba',
 
   // NHL Teams
   'stars': 'nhl', 'dallas stars': 'nhl',
