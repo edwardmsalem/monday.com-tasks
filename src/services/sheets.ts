@@ -246,6 +246,7 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'seahawks': 'nfl', 'seattle seahawks': 'nfl',
   'rams': 'nfl', 'los angeles rams': 'nfl', 'la rams': 'nfl',
   'commanders': 'nfl', 'washington commanders': 'nfl',
+  'arizona cardinals': 'nfl', 'az cardinals': 'nfl',  // Explicit to avoid matching St. Louis Cardinals (MLB)
 
   // NBA Teams
   'rockets': 'nba', 'houston rockets': 'nba',
