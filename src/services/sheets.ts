@@ -185,7 +185,7 @@ export type Sport = 'mlb' | 'nfl' | 'nba' | 'wnba' | 'nhl' | 'mls' | 'ncaa' | 'o
 const TEAM_SPORT_MAP: Record<string, Sport> = {
   // MLB Teams
   'astros': 'mlb', 'houston astros': 'mlb',
-  'rangers': 'mlb', 'texas rangers': 'mlb',
+  'texas rangers': 'mlb',  // "rangers" alone is ambiguous with NY Rangers (NHL)
   'yankees': 'mlb', 'new york yankees': 'mlb',
   'mets': 'mlb', 'new york mets': 'mlb',
   'dodgers': 'mlb', 'los angeles dodgers': 'mlb', 'la dodgers': 'mlb',
@@ -195,8 +195,8 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'white sox': 'mlb', 'chicago white sox': 'mlb',
   'braves': 'mlb', 'atlanta braves': 'mlb',
   'phillies': 'mlb', 'philadelphia phillies': 'mlb',
-  'giants': 'mlb', 'san francisco giants': 'mlb', 'sf giants': 'mlb',
-  'cardinals': 'mlb', 'st louis cardinals': 'mlb', 'stl cardinals': 'mlb',
+  'san francisco giants': 'mlb', 'sf giants': 'mlb',  // "giants" alone is ambiguous with NY Giants
+  'st louis cardinals': 'mlb', 'stl cardinals': 'mlb',  // "cardinals" alone is ambiguous with Arizona Cardinals
   'padres': 'mlb', 'san diego padres': 'mlb',
   'mariners': 'mlb', 'seattle mariners': 'mlb',
   'twins': 'mlb', 'minnesota twins': 'mlb',
@@ -224,6 +224,7 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'dolphins': 'nfl', 'miami dolphins': 'nfl',
   'patriots': 'nfl', 'new england patriots': 'nfl',
   'jets': 'nfl', 'new york jets': 'nfl', 'ny jets': 'nfl',
+  'new york giants': 'nfl', 'ny giants': 'nfl',  // "giants" alone is ambiguous with SF Giants
   'ravens': 'nfl', 'baltimore ravens': 'nfl',
   'bengals': 'nfl', 'cincinnati bengals': 'nfl',
   'browns': 'nfl', 'cleveland browns': 'nfl',
@@ -239,7 +240,7 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'packers': 'nfl', 'green bay packers': 'nfl', 'gb packers': 'nfl',
   'vikings': 'nfl', 'minnesota vikings': 'nfl',
   'falcons': 'nfl', 'atlanta falcons': 'nfl',
-  'panthers': 'nfl', 'carolina panthers': 'nfl',
+  'carolina panthers': 'nfl',  // "panthers" alone is ambiguous with Florida Panthers (NHL)
   'saints': 'nfl', 'new orleans saints': 'nfl',
   'buccaneers': 'nfl', 'tampa bay buccaneers': 'nfl', 'bucs': 'nfl',
   '49ers': 'nfl', 'san francisco 49ers': 'nfl', 'niners': 'nfl',
@@ -320,6 +321,7 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'blue jackets': 'nhl', 'columbus blue jackets': 'nhl', 'cbj': 'nhl',
   'devils': 'nhl', 'new jersey devils': 'nhl',
   'islanders': 'nhl', 'new york islanders': 'nhl', 'isles': 'nhl',
+  'new york rangers': 'nhl', 'ny rangers': 'nhl',  // "rangers" alone is ambiguous with Texas Rangers (MLB)
   'flyers': 'nhl', 'philadelphia flyers': 'nhl',
   'penguins': 'nhl', 'pittsburgh penguins': 'nhl', 'pens': 'nhl',
   'capitals': 'nhl', 'washington capitals': 'nhl', 'caps': 'nhl',
@@ -357,25 +359,74 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
 };
 
 /**
- * Get sport from team name
- * Returns undefined if team not found
+ * Result of sport detection - may be ambiguous
  */
-export function getSportFromTeam(teamName: string): Sport | undefined {
+export interface SportDetectionResult {
+  sport?: Sport;
+  isAmbiguous: boolean;
+  matches: Array<{ teamKey: string; sport: Sport }>;
+}
+
+/**
+ * Get sport from team name with ambiguity detection
+ * Returns all matches so caller can handle ambiguous cases
+ */
+export function detectSportFromTeam(teamName: string): SportDetectionResult {
   const normalized = teamName.toLowerCase().trim();
 
-  // Direct match
+  // 1. Check for exact match first
   if (TEAM_SPORT_MAP[normalized]) {
-    return TEAM_SPORT_MAP[normalized];
+    return {
+      sport: TEAM_SPORT_MAP[normalized],
+      isAmbiguous: false,
+      matches: [{ teamKey: normalized, sport: TEAM_SPORT_MAP[normalized] }],
+    };
   }
 
-  // Partial match - check if any key contains or is contained in the input
+  // 2. Find ALL partial matches
+  const matches: Array<{ teamKey: string; sport: Sport }> = [];
+  const seenSports = new Set<Sport>();
+
   for (const [key, sport] of Object.entries(TEAM_SPORT_MAP)) {
     if (normalized.includes(key) || key.includes(normalized)) {
-      return sport;
+      // Avoid duplicates (e.g., "cardinals" and "st louis cardinals" both map to mlb)
+      const alreadyHasSport = matches.some(m => m.sport === sport);
+      if (!alreadyHasSport) {
+        matches.push({ teamKey: key, sport });
+        seenSports.add(sport);
+      }
     }
   }
 
-  return undefined;
+  if (matches.length === 0) {
+    return { isAmbiguous: false, matches: [] };
+  }
+
+  if (matches.length === 1) {
+    return {
+      sport: matches[0].sport,
+      isAmbiguous: false,
+      matches,
+    };
+  }
+
+  // Multiple sports matched - ambiguous!
+  return {
+    isAmbiguous: true,
+    matches,
+  };
+}
+
+/**
+ * Get sport from team name (simple version for backwards compatibility)
+ * Returns undefined if team not found or ambiguous
+ */
+export function getSportFromTeam(teamName: string): Sport | undefined {
+  const result = detectSportFromTeam(teamName);
+  if (result.isAmbiguous) {
+    return undefined; // Let caller handle ambiguity
+  }
+  return result.sport;
 }
 
 /**
@@ -687,16 +738,39 @@ export interface IssueCallAccountResult {
   address: string;
   cardInfo: string;  // "Last 4: XXXX Exp: XX/XX CVC: XXX"
   error?: string;
+  // Ambiguity handling
+  isAmbiguous?: boolean;
+  ambiguousMatches?: Array<{ teamKey: string; sport: Sport }>;
 }
 
 /**
  * Lookup account by team + email for /issuecall
  * Returns formatted account info with concatenated seats if multiple rows
+ * Returns isAmbiguous=true if team name matches multiple sports
  */
 export async function lookupAccountForIssueCall(
   teamName: string,
   email: string
 ): Promise<IssueCallAccountResult> {
+  // Check for ambiguous team name first
+  const sportDetection = detectSportFromTeam(teamName);
+
+  if (sportDetection.isAmbiguous) {
+    return {
+      success: false,
+      team: teamName,
+      name: '',
+      email,
+      phone: '',
+      seats: '',
+      address: '',
+      cardInfo: '',
+      isAmbiguous: true,
+      ambiguousMatches: sportDetection.matches,
+      error: `Ambiguous team name "${teamName}" - matches multiple sports`,
+    };
+  }
+
   // First get all accounts for the team
   const teamResult = await lookupTeamAccounts(teamName);
 

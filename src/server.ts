@@ -770,6 +770,24 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       emails.map(email => lookupAccountForIssueCall(teamName, email))
     );
 
+    // Check if team name is ambiguous (matches multiple sports)
+    const ambiguousResult = accountResults.find(r => r.isAmbiguous);
+    if (ambiguousResult && ambiguousResult.ambiguousMatches) {
+      const options = ambiguousResult.ambiguousMatches
+        .map(m => `• *${m.sport.toUpperCase()}*: ${m.teamKey}`)
+        .join('\n');
+
+      await slack.sendResponseUrl(response_url,
+        `:question: *Which team did you mean?*\n\n` +
+        `"${teamName}" matches teams in multiple leagues:\n${options}\n\n` +
+        `Please be more specific, e.g.:\n` +
+        ambiguousResult.ambiguousMatches
+          .map(m => `• \`/issuecall ${m.teamKey} ${emails[0]}\``)
+          .join('\n')
+      );
+      return;
+    }
+
     // Use the first successful account for naming, or first email if none found
     const primaryAccount = accountResults.find(r => r.success) || accountResults[0];
 
