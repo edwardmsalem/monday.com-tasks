@@ -177,6 +177,7 @@ export const config = {
     mlb: getEnvVarOptional('SHEETS_MLB_ID'),       // MLB workbook spreadsheet ID
     nfl: getEnvVarOptional('SHEETS_NFL_ID'),       // NFL workbook spreadsheet ID
     nba: getEnvVarOptional('SHEETS_NBA_ID'),       // NBA workbook spreadsheet ID
+    wnba: getEnvVarOptional('SHEETS_WNBA_ID'),     // WNBA workbook spreadsheet ID
     nhl: getEnvVarOptional('SHEETS_NHL_ID'),       // NHL workbook spreadsheet ID
     mls: getEnvVarOptional('SHEETS_MLS_ID'),       // MLS workbook spreadsheet ID
     ncaa: getEnvVarOptional('SHEETS_NCAA_ID'),     // NCAA workbook spreadsheet ID (college)
