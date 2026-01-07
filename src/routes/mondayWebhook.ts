@@ -5,6 +5,7 @@
  * - Status changes (mark complete)
  * - Item updates (comments sync to Slack)
  * - Direct item creation detection (send guidance)
+ * - Support column changes (notify new supporters)
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -21,6 +22,14 @@ const router = Router();
 // Types
 // ============================================================================
 
+interface PersonColumnValue {
+  personsAndTeams?: Array<{ id: number; kind: string }>;
+}
+
+interface StatusColumnValue {
+  label?: { text: string };
+}
+
 interface MondayWebhook {
   challenge?: string;
   event?: {
@@ -28,12 +37,8 @@ interface MondayWebhook {
     pulseId?: number;
     pulseName?: string;
     columnId?: string;
-    value?: {
-      label?: { text: string };
-    };
-    previousValue?: {
-      label?: { text: string };
-    };
+    value?: StatusColumnValue | PersonColumnValue;
+    previousValue?: StatusColumnValue | PersonColumnValue;
     userId?: number;
     textBody?: string;
     boardId?: number;
@@ -109,6 +114,96 @@ async function sendDirectCreationGuidance(mondayUserId: number): Promise<void> {
   }
 }
 
+/**
+ * Parse Monday person IDs from a person column value
+ */
+function parsePersonIds(value: PersonColumnValue | StatusColumnValue | undefined): number[] {
+  if (!value) return [];
+  const personValue = value as PersonColumnValue;
+  if (!personValue.personsAndTeams) return [];
+  return personValue.personsAndTeams
+    .filter(p => p.kind === 'person')
+    .map(p => p.id);
+}
+
+/**
+ * Notify newly added supporters via DM
+ * Called when the support column changes on a task
+ */
+async function notifyNewSupporters(
+  pulseId: number,
+  newPersonIds: number[],
+  oldPersonIds: number[]
+): Promise<void> {
+  // Find newly added supporters (in new but not in old)
+  const addedIds = newPersonIds.filter(id => !oldPersonIds.includes(id));
+
+  if (addedIds.length === 0) {
+    console.log(`[SupporterWebhook] No new supporters added to item ${pulseId}`);
+    return;
+  }
+
+  console.log(`[SupporterWebhook] ${addedIds.length} new supporter(s) added to item ${pulseId}: ${addedIds.join(', ')}`);
+
+  // Get task details for the notification
+  const taskDetails = await monday.getTaskDetailsForSupporterNotification(String(pulseId));
+  if (!taskDetails) {
+    console.error(`[SupporterWebhook] Could not get task details for item ${pulseId}`);
+    return;
+  }
+
+  // Map urgency to priority
+  const priorityMap: Record<string, 'high' | 'medium' | 'low'> = {
+    'High': 'high',
+    'Medium': 'medium',
+    'Low': 'low',
+  };
+  const priority = priorityMap[taskDetails.urgency] || 'medium';
+
+  // Get Monday users and Slack users for mapping
+  const { findUserByEmail } = await import('../services/userResolver.js');
+  const mondayUsers = await monday.getAllUsers();
+
+  for (const mondayUserId of addedIds) {
+    try {
+      // Find the Monday user
+      const mondayUser = mondayUsers.find(u => u.id === mondayUserId);
+      if (!mondayUser?.email) {
+        console.log(`[SupporterWebhook] No email for Monday user ${mondayUserId}`);
+        continue;
+      }
+
+      // Find the Slack user
+      const user = await findUserByEmail(mondayUser.email);
+      if (!user?.slackId) {
+        console.log(`[SupporterWebhook] No Slack ID for ${mondayUser.email}`);
+        continue;
+      }
+
+      // Send the notification DM
+      const success = await slack.sendSupporterNotificationDM(
+        user.slackId,
+        user.name,
+        {
+          taskSubject: taskDetails.taskSubject,
+          taskType: taskDetails.taskType,
+          ownerName: taskDetails.ownerName,
+          dueDate: taskDetails.dueDate,
+          priority,
+        },
+        String(pulseId),
+        taskDetails.assigneeSlackIds
+      );
+
+      if (success) {
+        console.log(`[SupporterWebhook] Notified ${user.name} about being added to item ${pulseId}`);
+      }
+    } catch (error) {
+      console.error(`[SupporterWebhook] Error notifying user ${mondayUserId}:`, error);
+    }
+  }
+}
+
 // ============================================================================
 // Route Handler
 // ============================================================================
@@ -167,14 +262,28 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
         event.type === 'change_column_value' &&
         event.columnId === config.monday.columns.workflowStatus
       ) {
-        const newStatus = event.value?.label?.text;
-        const oldStatus = event.previousValue?.label?.text;
+        const statusValue = event.value as StatusColumnValue | undefined;
+        const prevStatusValue = event.previousValue as StatusColumnValue | undefined;
+        const newStatus = statusValue?.label?.text;
+        const oldStatus = prevStatusValue?.label?.text;
 
         if (newStatus === 'Complete' && oldStatus !== 'Complete' && event.pulseId) {
           console.log('Monday item marked as Complete, notifying Slack...');
           const mondayUser = event.userId ? await monday.getUser(event.userId) : null;
           await sync.notifySlackOfCompletion(String(event.pulseId), mondayUser?.name ?? 'Someone');
         }
+      }
+
+      // Handle support column change - notify newly added supporters
+      if (
+        event.type === 'change_column_value' &&
+        event.columnId === config.monday.columns.support &&
+        event.pulseId
+      ) {
+        console.log(`[SupporterWebhook] Support column changed on item ${event.pulseId}`);
+        const newPersonIds = parsePersonIds(event.value);
+        const oldPersonIds = parsePersonIds(event.previousValue);
+        await notifyNewSupporters(event.pulseId, newPersonIds, oldPersonIds);
       }
 
       // Handle item updates (comments)

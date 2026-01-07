@@ -1391,9 +1391,9 @@ async function sendDMToUser(
  * Send a supporter notification via DM
  * Includes full task details with buttons for task management
  *
- * NOTE: This is only called during task CREATION (emailWebhook, slackTaskWorkflow).
- * If a supporter is added later via Monday.com UI, they won't receive a DM notification.
- * Would require a Monday webhook subscription to person column changes to support that case.
+ * Called from:
+ * - Task creation (emailWebhook, slackTaskWorkflow) - notifies supporters at creation time
+ * - Monday webhook (mondayWebhook) - notifies supporters when added via Monday UI
  */
 export async function sendSupporterNotificationDM(
   supporterSlackId: string,
