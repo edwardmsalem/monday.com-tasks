@@ -45,6 +45,7 @@ import {
   verifySlackSignature,
   type SlackRequest,
 } from './routes/index.js';
+import interactivityRouter from './routes/interactivity.js';
 
 // Import middleware
 import { requestLogger } from './middleware/index.js';
@@ -77,6 +78,11 @@ app.use(mondayWebhookRouter);
 
 // Relay events (Slack events via relay proxy, /relay/events)
 app.use(relayEventsRouter);
+
+// Slack interactivity endpoint (/webhook/slack/interactivity) - for button clicks
+// Must use urlencoded parser since Slack sends payload as form-encoded
+app.use('/webhook/slack/interactivity', express.urlencoded({ extended: true }));
+app.use(interactivityRouter);
 
 // ============================================================================
 // Slack Debug Commands
@@ -1403,6 +1409,7 @@ function start() {
     console.log(`  Email webhook:   http://localhost:${config.port}/webhook/email`);
     console.log(`  JSON webhook:    http://localhost:${config.port}/webhook/json`);
     console.log(`  Slack events:    http://localhost:${config.port}/webhook/slack/events`);
+    console.log(`  Slack interactivity: http://localhost:${config.port}/webhook/slack/interactivity`);
     console.log(`  Slack /task:     http://localhost:${config.port}/webhook/slack/task`);
     console.log(`  Slack /taskdebug: http://localhost:${config.port}/webhook/slack/taskdebug`);
     console.log(`  Slack /issuecall: http://localhost:${config.port}/webhook/slack/issuecall`);
