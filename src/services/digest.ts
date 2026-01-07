@@ -80,16 +80,19 @@ interface MondayTask {
   channelId: string;
   ownerIds: string[];
   ownerNames: string[];
+  lastUpdate: Date | null; // Most recent update timestamp
 }
 
 /**
  * Fetch all open tasks from Monday.com
  * Excludes completed/done tasks
+ * Includes the most recent update timestamp for each item
  */
 async function fetchOpenTasks(): Promise<MondayTask[]> {
   // Dynamic import to avoid circular dependency
   const monday = await import('./monday.js');
 
+  // Query includes updates(limit: 1) to get the most recent update timestamp
   const query = `
     query GetOpenTasks($boardId: ID!) {
       boards(ids: [$boardId]) {
@@ -97,10 +100,14 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
           items {
             id
             name
+            updated_at
             column_values {
               id
               text
               value
+            }
+            updates(limit: 1) {
+              created_at
             }
           }
         }
@@ -183,6 +190,17 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
         }
       }
 
+      // Get last update timestamp - prefer update comment timestamp, fall back to item updated_at
+      let lastUpdate: Date | null = null;
+      const latestUpdateComment = item.updates?.[0]?.created_at;
+      const itemUpdatedAt = item.updated_at;
+
+      if (latestUpdateComment) {
+        lastUpdate = new Date(latestUpdateComment);
+      } else if (itemUpdatedAt) {
+        lastUpdate = new Date(itemUpdatedAt);
+      }
+
       tasks.push({
         id: item.id,
         name: item.name,
@@ -193,6 +211,7 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
         channelId,
         ownerIds,
         ownerNames,
+        lastUpdate,
       });
     }
 
@@ -217,6 +236,26 @@ function toDigestTask(task: MondayTask, isConfirmed: boolean = false): blockKit.
     channelId: task.channelId,
     ownerNames: task.ownerNames,
     isConfirmed,
+    lastUpdate: task.lastUpdate,
+  };
+}
+
+/**
+ * Convert Monday task to IssueCall format
+ */
+function toIssueCall(task: MondayTask): blockKit.IssueCall {
+  return {
+    id: task.id,
+    customerName: task.name.split(' - ')[0] ?? task.name,
+    issue: task.name.split(' - ')[1] ?? '',
+    dueDate: task.dueDate ?? new Date(),
+    assignee: task.ownerNames[0] ?? null,
+    assigneeSlackId: null, // Would need to look up
+    slackThreadTs: task.slackThreadTs,
+    channelId: task.channelId,
+    isUnclaimed: task.ownerIds.length === 0,
+    createdAt: new Date(), // Would need to get from Monday
+    lastUpdate: task.lastUpdate,
   };
 }
 
@@ -523,11 +562,12 @@ export async function sendAllMorningDigests(): Promise<number> {
 }
 
 // ============================================================================
-// Team Overview
+// Team Overview - Now with actual tasks
 // ============================================================================
 
 /**
  * Send team overview to channel
+ * Shows actual tasks for each team member, not just counts
  */
 export async function sendTeamOverview(): Promise<boolean> {
   console.log('[Digest] Sending team overview...');
@@ -535,105 +575,115 @@ export async function sendTeamOverview(): Promise<boolean> {
   try {
     // Get all tasks
     const allTasks = await fetchOpenTasks();
-    const categorized = categorizeTasks(allTasks);
+    const today = workingHours.getESTDateString();
 
-    // Build team status by user
-    const userStats = new Map<string, blockKit.TeamMemberStatus>();
+    // Build team member tasks by owner name
+    const memberTasksMap = new Map<string, {
+      overdueTasks: blockKit.DigestTask[];
+      dueTodayTasks: blockKit.DigestTask[];
+      thisWeekTasks: blockKit.DigestTask[];
+    }>();
 
     for (const task of allTasks) {
+      if (!task.dueDate) continue;
+
+      const taskDateStr = workingHours.getESTDateString(task.dueDate);
+      const isConfirmed = digestState.isTaskConfirmed(task.id);
+      const digestTask = toDigestTask(task, isConfirmed);
+
       for (const ownerName of task.ownerNames) {
-        if (!userStats.has(ownerName)) {
-          userStats.set(ownerName, {
-            userId: '',
-            name: ownerName,
-            overdueCount: 0,
-            dueTodayCount: 0,
-            unconfirmedCount: 0,
-            weekCount: 0,
-            oldestOverdueDays: 0,
+        if (!memberTasksMap.has(ownerName)) {
+          memberTasksMap.set(ownerName, {
+            overdueTasks: [],
+            dueTodayTasks: [],
+            thisWeekTasks: [],
           });
         }
 
-        const stat = userStats.get(ownerName)!;
-        stat.weekCount++;
-
-        if (!task.dueDate) continue;
-
-        const today = workingHours.getESTDateString();
-        const taskDateStr = workingHours.getESTDateString(task.dueDate);
+        const memberTasks = memberTasksMap.get(ownerName)!;
 
         if (taskDateStr < today) {
-          stat.overdueCount++;
-          const daysLate = workingHours.getDaysLate(task.dueDate);
-          if (daysLate > stat.oldestOverdueDays) {
-            stat.oldestOverdueDays = daysLate;
-          }
+          memberTasks.overdueTasks.push(digestTask);
         } else if (taskDateStr === today) {
-          stat.dueTodayCount++;
-          if (!digestState.isTaskConfirmed(task.id)) {
-            stat.unconfirmedCount++;
-          }
+          memberTasks.dueTodayTasks.push(digestTask);
+        } else if (workingHours.isWithinDays(task.dueDate, 7)) {
+          memberTasks.thisWeekTasks.push(digestTask);
         }
       }
     }
 
-    // Categorize team members
-    const needsAttention: blockKit.TeamMemberStatus[] = [];
-    const heavyLoad: blockKit.TeamMemberStatus[] = [];
-    const onTrack: blockKit.TeamMemberStatus[] = [];
+    // Convert to TeamMemberTasks array and categorize
+    const needsAttention: blockKit.TeamMemberTasks[] = [];
+    const heavyLoad: blockKit.TeamMemberTasks[] = [];
+    const onTrack: blockKit.TeamMemberTasks[] = [];
 
-    for (const stat of userStats.values()) {
-      if (stat.overdueCount > 0 || stat.unconfirmedCount > 0) {
-        needsAttention.push(stat);
-      } else if (stat.weekCount >= 5) {
-        heavyLoad.push(stat);
+    for (const [name, tasks] of memberTasksMap) {
+      const member: blockKit.TeamMemberTasks = {
+        userId: '',
+        name,
+        overdueTasks: tasks.overdueTasks,
+        dueTodayTasks: tasks.dueTodayTasks,
+        thisWeekTasks: tasks.thisWeekTasks,
+      };
+
+      const unconfirmedCount = tasks.dueTodayTasks.filter(t => !t.isConfirmed).length;
+      const totalWeekTasks = tasks.overdueTasks.length + tasks.dueTodayTasks.length + tasks.thisWeekTasks.length;
+
+      if (tasks.overdueTasks.length > 0 || unconfirmedCount > 0) {
+        needsAttention.push(member);
+      } else if (totalWeekTasks >= 5) {
+        heavyLoad.push(member);
       } else {
-        onTrack.push(stat);
+        onTrack.push(member);
       }
     }
 
-    // Sort
-    needsAttention.sort((a, b) => b.overdueCount - a.overdueCount);
-    heavyLoad.sort((a, b) => b.weekCount - a.weekCount);
+    // Sort - needsAttention by overdue count, heavyLoad by total, onTrack by name
+    needsAttention.sort((a, b) => b.overdueTasks.length - a.overdueTasks.length);
+    heavyLoad.sort((a, b) => {
+      const aTotal = a.overdueTasks.length + a.dueTodayTasks.length + a.thisWeekTasks.length;
+      const bTotal = b.overdueTasks.length + b.dueTodayTasks.length + b.thisWeekTasks.length;
+      return bTotal - aTotal;
+    });
     onTrack.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Issue call summary (simplified - actual implementation would query issue calls)
-    const issueCallSummary = {
-      overdueCount: 0,
-      unclaimedCount: 0,
-      dueTodayCount: 0,
-    };
+    // Get issue calls
+    const issueCalls: blockKit.IssueCall[] = allTasks
+      .filter((t) => t.taskType === 'Issue Call')
+      .map((t) => toIssueCall(t));
 
-    // Count issue calls from tasks with type "Issue Call"
+    // Sort issue calls: overdue first, then by date
+    issueCalls.sort((a, b) => {
+      const aDateStr = workingHours.getESTDateString(a.dueDate);
+      const bDateStr = workingHours.getESTDateString(b.dueDate);
+      const aOverdue = aDateStr < today;
+      const bOverdue = bDateStr < today;
+
+      if (aOverdue && !bOverdue) return -1;
+      if (!aOverdue && bOverdue) return 1;
+      return a.dueDate.getTime() - b.dueDate.getTime();
+    });
+
+    // Count totals
+    let totalOverdue = 0;
+    let totalDueToday = 0;
+
     for (const task of allTasks) {
-      if (task.taskType === 'Issue Call') {
-        if (!task.dueDate) continue;
-
-        const today = workingHours.getESTDateString();
-        const taskDateStr = workingHours.getESTDateString(task.dueDate);
-
-        if (taskDateStr < today) {
-          issueCallSummary.overdueCount++;
-        } else if (taskDateStr === today) {
-          issueCallSummary.dueTodayCount++;
-        }
-
-        // Check if unclaimed (no owners)
-        if (task.ownerIds.length === 0) {
-          issueCallSummary.unclaimedCount++;
-        }
-      }
+      if (!task.dueDate) continue;
+      const taskDateStr = workingHours.getESTDateString(task.dueDate);
+      if (taskDateStr < today) totalOverdue++;
+      else if (taskDateStr === today) totalDueToday++;
     }
 
     const teamStatus: blockKit.TeamStatus = {
       needsAttention,
       heavyLoad,
       onTrack,
-      issueCallSummary,
+      issueCalls,
       totals: {
         total: allTasks.length,
-        overdue: categorized.overdue.length,
-        dueToday: categorized.dueToday.length,
+        overdue: totalOverdue,
+        dueToday: totalDueToday,
       },
     };
 
@@ -677,18 +727,7 @@ export async function sendIssueCallDigest(): Promise<boolean> {
     const issueCalls = allTasks.filter((t) => t.taskType === 'Issue Call');
 
     // Convert to IssueCall format
-    const issueCallData: blockKit.IssueCall[] = issueCalls.map((task) => ({
-      id: task.id,
-      customerName: task.name.split(' - ')[0] ?? task.name,
-      issue: task.name.split(' - ')[1] ?? '',
-      dueDate: task.dueDate ?? new Date(),
-      assignee: task.ownerNames[0] ?? null,
-      assigneeSlackId: null, // Would need to look up
-      slackThreadTs: task.slackThreadTs,
-      channelId: task.channelId,
-      isUnclaimed: task.ownerIds.length === 0,
-      createdAt: new Date(), // Would need to get from Monday
-    }));
+    const issueCallData: blockKit.IssueCall[] = issueCalls.map((task) => toIssueCall(task));
 
     // Categorize
     const today = workingHours.getESTDateString();
@@ -878,19 +917,7 @@ export async function sendIssueCallEOD(): Promise<boolean> {
     const unclaimed: blockKit.IssueCall[] = [];
 
     for (const task of issueCalls) {
-      const ic: blockKit.IssueCall = {
-        id: task.id,
-        customerName: task.name.split(' - ')[0] ?? task.name,
-        issue: task.name.split(' - ')[1] ?? '',
-        dueDate: task.dueDate ?? new Date(),
-        assignee: task.ownerNames[0] ?? null,
-        assigneeSlackId: null,
-        slackThreadTs: task.slackThreadTs,
-        channelId: task.channelId,
-        isUnclaimed: task.ownerIds.length === 0,
-        createdAt: new Date(),
-      };
-
+      const ic = toIssueCall(task);
       const status = task.workflowStatus?.toLowerCase() ?? '';
 
       if (status === 'done' || status === 'complete') {
@@ -1034,18 +1061,7 @@ export async function checkIssueCallEscalations(): Promise<void> {
     }
 
     // Convert to IssueCall format for blocks
-    const ic: blockKit.IssueCall = {
-      id: task.id,
-      customerName: task.name.split(' - ')[0] ?? task.name,
-      issue: task.name.split(' - ')[1] ?? '',
-      dueDate: task.dueDate ?? new Date(),
-      assignee: task.ownerNames[0] ?? null,
-      assigneeSlackId: null, // Would need lookup
-      slackThreadTs: task.slackThreadTs,
-      channelId: task.channelId,
-      isUnclaimed,
-      createdAt: new Date(), // Would need actual creation time
-    };
+    const ic = toIssueCall(task);
 
     if (isUnclaimed) {
       // Claiming escalation
