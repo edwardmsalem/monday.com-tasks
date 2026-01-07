@@ -166,8 +166,13 @@ async function notifyNewSupporters(
 
   for (const mondayUserId of addedIds) {
     try {
-      // Find the Monday user
-      const mondayUser = mondayUsers.find(u => u.id === mondayUserId);
+      // Find the Monday user - try cached list first, then direct lookup
+      let mondayUser = mondayUsers.find(u => u.id === mondayUserId);
+      if (!mondayUser?.email) {
+        // Fallback: fetch user directly from Monday API
+        console.log(`[SupporterWebhook] User ${mondayUserId} not in cache, fetching directly...`);
+        mondayUser = await monday.getUser(mondayUserId) ?? undefined;
+      }
       if (!mondayUser?.email) {
         console.log(`[SupporterWebhook] No email for Monday user ${mondayUserId}`);
         continue;
