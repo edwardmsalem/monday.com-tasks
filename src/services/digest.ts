@@ -239,8 +239,19 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
 
 /**
  * Convert Monday tasks to DigestTask format
+ * @param task The Monday task
+ * @param isConfirmed Whether the task is confirmed for today
+ * @param assigneeSlackIds Optional array of assignee Slack IDs for acknowledgment tracking
+ * @param assigneeNames Optional array of assignee names with IDs
+ * @param acknowledgmentStatus Optional pre-computed acknowledgment status text
  */
-function toDigestTask(task: MondayTask, isConfirmed: boolean = false): blockKit.DigestTask {
+function toDigestTask(
+  task: MondayTask,
+  isConfirmed: boolean = false,
+  assigneeSlackIds?: string[],
+  assigneeNames?: { id: string; name: string }[],
+  acknowledgmentStatus?: string | null
+): blockKit.DigestTask {
   return {
     id: task.id,
     name: task.name,
@@ -252,6 +263,9 @@ function toDigestTask(task: MondayTask, isConfirmed: boolean = false): blockKit.
     ownerNames: task.ownerNames,
     isConfirmed,
     lastUpdate: task.lastUpdate,
+    assigneeSlackIds,
+    assigneeNames,
+    acknowledgmentStatus,
   };
 }
 
@@ -275,10 +289,71 @@ function toIssueCall(task: MondayTask): blockKit.IssueCall {
 }
 
 /**
+ * Pre-computed assignee information for a task
+ */
+interface TaskAssigneeInfo {
+  slackIds: string[];
+  names: { id: string; name: string }[];
+  acknowledgmentStatus: string | null;
+}
+
+/**
+ * Build assignee info for tasks (converts Monday IDs to Slack IDs)
+ */
+async function buildAssigneeInfo(
+  tasks: MondayTask[]
+): Promise<Map<string, TaskAssigneeInfo>> {
+  const infoMap = new Map<string, TaskAssigneeInfo>();
+
+  for (const task of tasks) {
+    // Combine owner and supporter IDs
+    const allMondayIds = [...task.ownerIds, ...task.supporterIds];
+
+    // Convert to Slack IDs
+    const slackIds: string[] = [];
+    const names: { id: string; name: string }[] = [];
+
+    for (let i = 0; i < allMondayIds.length; i++) {
+      const mondayId = allMondayIds[i];
+      const slackId = await getSlackUserIdFromMondayId(mondayId);
+
+      if (slackId) {
+        slackIds.push(slackId);
+
+        // Get name - use owner names for owners, would need to look up supporters
+        const nameIndex = task.ownerIds.indexOf(mondayId);
+        const name = nameIndex >= 0 && task.ownerNames[nameIndex]
+          ? task.ownerNames[nameIndex]
+          : `User ${slackId.slice(-4)}`;
+
+        names.push({ id: slackId, name });
+      }
+    }
+
+    // Get acknowledgment status
+    const acknowledgmentStatus = slackIds.length > 1
+      ? digestState.getAcknowledgmentStatusText(task.id, names)
+      : null;
+
+    infoMap.set(task.id, {
+      slackIds,
+      names,
+      acknowledgmentStatus,
+    });
+  }
+
+  return infoMap;
+}
+
+/**
  * Categorize tasks by due date
+ * @param tasks Tasks to categorize
+ * @param assigneeInfo Optional pre-computed assignee info
+ * @param now Current time for date comparisons
  */
 function categorizeTasks(
   tasks: MondayTask[],
+  assigneeInfo?: Map<string, TaskAssigneeInfo>,
   now: Date = new Date()
 ): blockKit.TasksByCategory {
   const today = workingHours.getESTDateString(now);
@@ -292,15 +367,36 @@ function categorizeTasks(
     const taskDateStr = workingHours.getESTDateString(task.dueDate);
     const isConfirmed = digestState.isTaskConfirmed(task.id);
 
+    // Get assignee info if available
+    const info = assigneeInfo?.get(task.id);
+
     if (taskDateStr < today) {
       // Overdue
-      overdue.push(toDigestTask(task, isConfirmed));
+      overdue.push(toDigestTask(
+        task,
+        isConfirmed,
+        info?.slackIds,
+        info?.names,
+        info?.acknowledgmentStatus
+      ));
     } else if (taskDateStr === today) {
       // Due today
-      dueToday.push(toDigestTask(task, isConfirmed));
+      dueToday.push(toDigestTask(
+        task,
+        isConfirmed,
+        info?.slackIds,
+        info?.names,
+        info?.acknowledgmentStatus
+      ));
     } else if (workingHours.isWithinDays(task.dueDate, 7, now)) {
       // This week (next 7 days)
-      thisWeek.push(toDigestTask(task, isConfirmed));
+      thisWeek.push(toDigestTask(
+        task,
+        isConfirmed,
+        info?.slackIds,
+        info?.names,
+        info?.acknowledgmentStatus
+      ));
     }
   }
 
@@ -495,8 +591,11 @@ export async function sendPersonalDigest(slackUserId: string): Promise<boolean> 
       return true;
     }
 
-    // Categorize tasks
-    const categorized = categorizeTasks(userTasks);
+    // Build assignee info for acknowledgment tracking
+    const assigneeInfo = await buildAssigneeInfo(userTasks);
+
+    // Categorize tasks with assignee info
+    const categorized = categorizeTasks(userTasks, assigneeInfo);
 
     // Get user's first name
     const firstName = await getFirstName(slackUserId);

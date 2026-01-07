@@ -25,6 +25,10 @@ export interface DigestTask {
   ownerNames?: string[]; // For team overview
   isConfirmed?: boolean;
   lastUpdate: Date | null; // When the task was last updated
+  // Assignee info for acknowledgment tracking
+  assigneeSlackIds?: string[]; // All assignees (owners + supporters) Slack IDs
+  assigneeNames?: { id: string; name: string }[]; // For displaying who has/hasn't acknowledged
+  acknowledgmentStatus?: string | null; // Pre-computed acknowledgment status text
 }
 
 export interface TasksByCategory {
@@ -185,10 +189,21 @@ function sectionBlock(text: string): any {
 // ============================================================================
 
 /**
+ * Encode acknowledge button value with task ID and all assignee Slack IDs
+ * Format: taskId|slackId1,slackId2,slackId3
+ */
+function encodeAcknowledgeValue(taskId: string, assigneeSlackIds?: string[]): string {
+  if (!assigneeSlackIds || assigneeSlackIds.length === 0) {
+    return taskId;
+  }
+  return `${taskId}|${assigneeSlackIds.join(',')}`;
+}
+
+/**
  * Build action buttons for overdue tasks
  * [Acknowledge] [Complete] [Stuck]
  */
-function buildOverdueTaskActions(taskId: string): any {
+function buildOverdueTaskActions(taskId: string, assigneeSlackIds?: string[]): any {
   return {
     type: 'actions',
     block_id: `task_${taskId}_overdue`,
@@ -197,7 +212,7 @@ function buildOverdueTaskActions(taskId: string): any {
         type: 'button',
         text: { type: 'plain_text', text: '👀 Acknowledge', emoji: true },
         action_id: 'task_acknowledge',
-        value: taskId,
+        value: encodeAcknowledgeValue(taskId, assigneeSlackIds),
       },
       {
         type: 'button',
@@ -289,12 +304,15 @@ export function buildPersonalDigestBlocks(
       const dayText = daysLate === 1 ? 'day' : 'days';
       const lastUpdateText = formatLastUpdate(task.lastUpdate);
 
+      // Show acknowledgment status if partial acknowledgment exists
+      const ackStatus = task.acknowledgmentStatus ? `\n  ${task.acknowledgmentStatus}` : '';
+
       blocks.push(
         sectionBlock(
-          `• ${truncate(task.name, 50)} (${daysLate} ${dayText} late, last update ${lastUpdateText}) <${viewLink}|[View]>`
+          `• ${truncate(task.name, 50)} (${daysLate} ${dayText} late, last update ${lastUpdateText}) <${viewLink}|[View]>${ackStatus}`
         )
       );
-      blocks.push(buildOverdueTaskActions(task.id));
+      blocks.push(buildOverdueTaskActions(task.id, task.assigneeSlackIds));
     }
 
     blocks.push(dividerBlock());
@@ -937,8 +955,10 @@ export function buildIssueCallCompletionEscalationBlocks(
 /**
  * Build button blocks to append to existing task threads
  * These are the standard workflow buttons for task management
+ * @param taskId - Monday item ID
+ * @param assigneeSlackIds - Optional array of all assignee Slack IDs for acknowledgment tracking
  */
-export function buildTaskThreadButtons(taskId: string): any[] {
+export function buildTaskThreadButtons(taskId: string, assigneeSlackIds?: string[]): any[] {
   return [
     dividerBlock(),
     {
@@ -949,7 +969,7 @@ export function buildTaskThreadButtons(taskId: string): any[] {
           type: 'button',
           text: { type: 'plain_text', text: '👀 Acknowledge', emoji: true },
           action_id: 'task_acknowledge',
-          value: taskId,
+          value: encodeAcknowledgeValue(taskId, assigneeSlackIds),
         },
         {
           type: 'button',

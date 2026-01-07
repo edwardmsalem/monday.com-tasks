@@ -15,6 +15,10 @@ import { WebClient } from '@slack/web-api';
 import { config } from '../config/environment.js';
 import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
+import {
+  recordTaskAcknowledgment,
+  setTaskStatus,
+} from '../services/digestState.js';
 
 const router = Router();
 const slackClient = new WebClient(config.slack.botToken);
@@ -155,24 +159,70 @@ async function handleBlockAction(
 // Task Action Handlers
 // ============================================================================
 
+/**
+ * Parse acknowledge button value to extract task ID and assignee Slack IDs
+ * Format: taskId|slackId1,slackId2,slackId3 or just taskId (legacy)
+ */
+function parseAcknowledgeValue(value: string): { taskId: string; assigneeSlackIds: string[] } {
+  const parts = value.split('|');
+  const taskId = parts[0];
+  const assigneeSlackIds = parts[1] ? parts[1].split(',').filter((id) => id) : [];
+  return { taskId, assigneeSlackIds };
+}
+
 async function handleTaskAcknowledge(
-  mondayItemId: string,
+  value: string,
   userId: string,
   channelId?: string,
   threadTs?: string
 ): Promise<void> {
   try {
-    // Update Monday.com status
-    await monday.updateWorkflowStatus(mondayItemId, 'Acknowledged');
+    const { taskId, assigneeSlackIds } = parseAcknowledgeValue(value);
 
-    // Post confirmation to thread
-    if (channelId && threadTs) {
-      await slack.postToThread(threadTs, `👀 Acknowledged by <@${userId}>`, channelId);
+    // If we have assignee info, use per-user acknowledgment tracking
+    if (assigneeSlackIds.length > 0) {
+      // Record this user's acknowledgment
+      const result = recordTaskAcknowledgment(taskId, userId, assigneeSlackIds);
+
+      if (result.fullyAcknowledged) {
+        // All assignees have acknowledged - update Monday status
+        await monday.updateWorkflowStatus(taskId, 'Acknowledged');
+
+        if (channelId && threadTs) {
+          await slack.postToThread(
+            threadTs,
+            `👀 Fully acknowledged - all assignees confirmed`,
+            channelId
+          );
+        }
+        console.log(`[Interactivity] Task ${taskId} fully acknowledged by all assignees`);
+      } else {
+        // Partial acknowledgment - show who's still waiting
+        const waitingMentions = result.waitingOn.map((id) => `<@${id}>`).join(', ');
+
+        if (channelId && threadTs) {
+          await slack.postToThread(
+            threadTs,
+            `👀 <@${userId}> acknowledged, waiting on ${waitingMentions}`,
+            channelId
+          );
+        }
+        console.log(
+          `[Interactivity] Task ${taskId} acknowledged by ${userId}, waiting on ${result.waitingOn.length} more`
+        );
+      }
+    } else {
+      // Legacy behavior - no assignee info, just acknowledge
+      await monday.updateWorkflowStatus(taskId, 'Acknowledged');
+
+      if (channelId && threadTs) {
+        await slack.postToThread(threadTs, `👀 Acknowledged by <@${userId}>`, channelId);
+      }
+
+      console.log(`[Interactivity] Task ${taskId} acknowledged by ${userId} (legacy)`);
     }
-
-    console.log(`[Interactivity] Task ${mondayItemId} acknowledged by ${userId}`);
   } catch (error) {
-    console.error(`[Interactivity] Failed to acknowledge task ${mondayItemId}:`, error);
+    console.error(`[Interactivity] Failed to acknowledge task:`, error);
   }
 }
 
@@ -183,13 +233,33 @@ async function handleTaskWorking(
   threadTs?: string
 ): Promise<void> {
   try {
-    await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
+    // First-one-wins: check if status already set
+    const statusResult = setTaskStatus(mondayItemId, 'working', userId);
 
-    if (channelId && threadTs) {
-      await slack.postToThread(threadTs, `🟡 Working on it - <@${userId}>`, channelId);
+    if (statusResult.success) {
+      // This user is the first to set status
+      await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
+
+      if (channelId && threadTs) {
+        await slack.postToThread(threadTs, `🟡 Working on it - <@${userId}>`, channelId);
+      }
+
+      console.log(`[Interactivity] Task ${mondayItemId} marked working by ${userId}`);
+    } else {
+      // Status was already set by someone else
+      const existing = statusResult.existingStatus!;
+      console.log(
+        `[Interactivity] Task ${mondayItemId} already has status ${existing.status} set by ${existing.setBy}`
+      );
+
+      if (channelId && threadTs) {
+        await slack.postToThread(
+          threadTs,
+          `ℹ️ Status already set to ${existing.status} by <@${existing.setBy}>`,
+          channelId
+        );
+      }
     }
-
-    console.log(`[Interactivity] Task ${mondayItemId} marked working by ${userId}`);
   } catch (error) {
     console.error(`[Interactivity] Failed to mark task ${mondayItemId} working:`, error);
   }
@@ -202,13 +272,33 @@ async function handleTaskComplete(
   threadTs?: string
 ): Promise<void> {
   try {
-    await monday.updateWorkflowStatus(mondayItemId, 'Done');
+    // First-one-wins: check if status already set
+    const statusResult = setTaskStatus(mondayItemId, 'complete', userId);
 
-    if (channelId && threadTs) {
-      await slack.postToThread(threadTs, `✅ Completed by <@${userId}>`, channelId);
+    if (statusResult.success) {
+      // This user is the first to set status
+      await monday.updateWorkflowStatus(mondayItemId, 'Done');
+
+      if (channelId && threadTs) {
+        await slack.postToThread(threadTs, `✅ Completed by <@${userId}>`, channelId);
+      }
+
+      console.log(`[Interactivity] Task ${mondayItemId} completed by ${userId}`);
+    } else {
+      // Status was already set by someone else
+      const existing = statusResult.existingStatus!;
+      console.log(
+        `[Interactivity] Task ${mondayItemId} already has status ${existing.status} set by ${existing.setBy}`
+      );
+
+      if (channelId && threadTs) {
+        await slack.postToThread(
+          threadTs,
+          `ℹ️ Status already set to ${existing.status} by <@${existing.setBy}>`,
+          channelId
+        );
+      }
     }
-
-    console.log(`[Interactivity] Task ${mondayItemId} completed by ${userId}`);
   } catch (error) {
     console.error(`[Interactivity] Failed to complete task ${mondayItemId}:`, error);
   }
@@ -221,13 +311,33 @@ async function handleTaskStuck(
   threadTs?: string
 ): Promise<void> {
   try {
-    await monday.updateWorkflowStatus(mondayItemId, 'Stuck');
+    // First-one-wins: check if status already set
+    const statusResult = setTaskStatus(mondayItemId, 'stuck', userId);
 
-    if (channelId && threadTs) {
-      await slack.postToThread(threadTs, `🔴 Stuck - <@${userId}> needs help`, channelId);
+    if (statusResult.success) {
+      // This user is the first to set status
+      await monday.updateWorkflowStatus(mondayItemId, 'Stuck');
+
+      if (channelId && threadTs) {
+        await slack.postToThread(threadTs, `🔴 Stuck - <@${userId}> needs help`, channelId);
+      }
+
+      console.log(`[Interactivity] Task ${mondayItemId} marked stuck by ${userId}`);
+    } else {
+      // Status was already set by someone else
+      const existing = statusResult.existingStatus!;
+      console.log(
+        `[Interactivity] Task ${mondayItemId} already has status ${existing.status} set by ${existing.setBy}`
+      );
+
+      if (channelId && threadTs) {
+        await slack.postToThread(
+          threadTs,
+          `ℹ️ Status already set to ${existing.status} by <@${existing.setBy}>`,
+          channelId
+        );
+      }
     }
-
-    console.log(`[Interactivity] Task ${mondayItemId} marked stuck by ${userId}`);
   } catch (error) {
     console.error(`[Interactivity] Failed to mark task ${mondayItemId} stuck:`, error);
   }
