@@ -121,13 +121,6 @@ export const config = {
       .split(',')
       .map(id => id.trim())
       .filter(id => id.length > 0),
-    // Supporter notification channels (check in order: primary first, then secondaries)
-    // Posts to the first channel where the supporter is a member
-    supporterPrimaryChannel: getEnvVarOptional('SLACK_SUPPORTER_PRIMARY_CHANNEL'),  // e.g., #operations
-    supporterSecondaryChannels: (getEnvVar('SLACK_SUPPORTER_SECONDARY_CHANNELS', '')
-      .split(',')
-      .map(id => id.trim())
-      .filter(id => id.length > 0)),  // e.g., #QuickTix-team, #ticket-associates
     // Issue Call channel - separate channel for issue call tasks (syncs to Monday)
     issueCallChannelId: getEnvVarOptional('SLACK_ISSUE_CALL_CHANNEL_ID'),
   },

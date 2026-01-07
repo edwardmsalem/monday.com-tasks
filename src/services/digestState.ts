@@ -22,6 +22,19 @@ export interface ConfirmedTask {
   newDueDate?: string;
 }
 
+// Per-user acknowledgment tracking (requires ALL assignees to ack)
+export interface TaskAcknowledgment {
+  acknowledgedBy: string[]; // List of user IDs who have acknowledged
+  acknowledgedAt: { [userId: string]: number }; // Timestamp per user
+}
+
+// Task status tracking (first one wins for complete/working/stuck)
+export interface TaskStatus {
+  status: 'complete' | 'working' | 'stuck';
+  setBy: string;
+  setAt: number;
+}
+
 export interface DigestAck {
   date: string;
   ackedAt: number;
@@ -34,6 +47,16 @@ export interface DigestState {
   // Track user confirmations for due-today tasks
   confirmedTasks: {
     [taskId: string]: ConfirmedTask;
+  };
+
+  // Track per-user task acknowledgments (requires ALL assignees to ack)
+  taskAcknowledgments: {
+    [taskId: string]: TaskAcknowledgment;
+  };
+
+  // Track task statuses (complete/working/stuck - first one wins)
+  taskStatuses: {
+    [taskId: string]: TaskStatus;
   };
 
   // Track escalations sent (prevent duplicates)
@@ -75,6 +98,8 @@ function createDefaultState(): DigestState {
   return {
     lastDigestDate: '',
     confirmedTasks: {},
+    taskAcknowledgments: {},
+    taskStatuses: {},
     escalationsSent: {},
     digestAcks: {},
     issueCallEscalations: {},
@@ -159,6 +184,8 @@ export function checkAndResetForNewDay(): void {
 
     // Reset daily tracking
     state.confirmedTasks = {};
+    state.taskAcknowledgments = {};
+    state.taskStatuses = {};
     state.escalationsSent = {};
     state.digestAcks = {};
     state.digestMessages = {};
@@ -217,6 +244,174 @@ export function getTaskConfirmation(taskId: string): ConfirmedTask | null {
 export function getUnconfirmedTaskIds(taskIds: string[]): string[] {
   const state = getState();
   return taskIds.filter((id) => !(id in state.confirmedTasks));
+}
+
+// ============================================================================
+// Task Acknowledgment (per-user tracking - requires ALL assignees to ack)
+// ============================================================================
+
+/**
+ * Record a user's acknowledgment of a task
+ * Returns true if ALL assignees have now acknowledged
+ */
+export function recordTaskAcknowledgment(
+  taskId: string,
+  userId: string,
+  allAssigneeIds: string[]
+): { acknowledged: boolean; fullyAcknowledged: boolean; acknowledgedBy: string[]; waitingOn: string[] } {
+  const state = getState();
+
+  // Initialize if not exists
+  if (!state.taskAcknowledgments[taskId]) {
+    state.taskAcknowledgments[taskId] = {
+      acknowledgedBy: [],
+      acknowledgedAt: {},
+    };
+  }
+
+  const ack = state.taskAcknowledgments[taskId];
+
+  // Check if user already acknowledged
+  if (ack.acknowledgedBy.includes(userId)) {
+    // Already acknowledged, return current state
+    const waitingOn = allAssigneeIds.filter((id) => !ack.acknowledgedBy.includes(id));
+    return {
+      acknowledged: true,
+      fullyAcknowledged: waitingOn.length === 0,
+      acknowledgedBy: [...ack.acknowledgedBy],
+      waitingOn,
+    };
+  }
+
+  // Add acknowledgment
+  ack.acknowledgedBy.push(userId);
+  ack.acknowledgedAt[userId] = Date.now();
+
+  saveDigestState(state);
+
+  // Calculate who is still waiting
+  const waitingOn = allAssigneeIds.filter((id) => !ack.acknowledgedBy.includes(id));
+  const fullyAcknowledged = waitingOn.length === 0;
+
+  console.log(
+    `[DigestState] Task ${taskId} acknowledged by ${userId}. ` +
+      `Fully acknowledged: ${fullyAcknowledged}, Waiting on: ${waitingOn.length} users`
+  );
+
+  return {
+    acknowledged: true,
+    fullyAcknowledged,
+    acknowledgedBy: [...ack.acknowledgedBy],
+    waitingOn,
+  };
+}
+
+/**
+ * Get acknowledgment status for a task
+ */
+export function getTaskAcknowledgment(taskId: string): TaskAcknowledgment | null {
+  const state = getState();
+  return state.taskAcknowledgments[taskId] ?? null;
+}
+
+/**
+ * Check if a specific user has acknowledged a task
+ */
+export function hasUserAcknowledged(taskId: string, userId: string): boolean {
+  const state = getState();
+  const ack = state.taskAcknowledgments[taskId];
+  return ack?.acknowledgedBy.includes(userId) ?? false;
+}
+
+/**
+ * Check if a task is fully acknowledged by all assignees
+ */
+export function isTaskFullyAcknowledged(taskId: string, allAssigneeIds: string[]): boolean {
+  const state = getState();
+  const ack = state.taskAcknowledgments[taskId];
+  if (!ack) return false;
+
+  return allAssigneeIds.every((id) => ack.acknowledgedBy.includes(id));
+}
+
+/**
+ * Get acknowledgment status text for a task
+ * Returns something like "👀 Jerry, waiting on Dayna" or "👀 All acknowledged"
+ */
+export function getAcknowledgmentStatusText(
+  taskId: string,
+  assigneeNames: { id: string; name: string }[]
+): string | null {
+  const state = getState();
+  const ack = state.taskAcknowledgments[taskId];
+  if (!ack || ack.acknowledgedBy.length === 0) return null;
+
+  const acknowledgedNames = assigneeNames
+    .filter((a) => ack.acknowledgedBy.includes(a.id))
+    .map((a) => a.name);
+
+  const waitingNames = assigneeNames
+    .filter((a) => !ack.acknowledgedBy.includes(a.id))
+    .map((a) => a.name);
+
+  if (waitingNames.length === 0) {
+    return '👀 All acknowledged';
+  }
+
+  return `👀 ${acknowledgedNames.join(', ')}, waiting on ${waitingNames.join(', ')}`;
+}
+
+// ============================================================================
+// Task Status (first one wins for complete/working/stuck)
+// ============================================================================
+
+/**
+ * Set a task's status (complete/working/stuck) - first one wins
+ * Returns true if this was the first status set, false if already set
+ */
+export function setTaskStatus(
+  taskId: string,
+  status: 'complete' | 'working' | 'stuck',
+  userId: string
+): { success: boolean; existingStatus?: TaskStatus } {
+  const state = getState();
+
+  // Check if already set
+  if (state.taskStatuses[taskId]) {
+    console.log(
+      `[DigestState] Task ${taskId} already has status ${state.taskStatuses[taskId].status} ` +
+        `set by ${state.taskStatuses[taskId].setBy}`
+    );
+    return { success: false, existingStatus: state.taskStatuses[taskId] };
+  }
+
+  // Set the status
+  state.taskStatuses[taskId] = {
+    status,
+    setBy: userId,
+    setAt: Date.now(),
+  };
+
+  saveDigestState(state);
+  console.log(`[DigestState] Task ${taskId} status set to ${status} by ${userId}`);
+
+  return { success: true };
+}
+
+/**
+ * Get task status
+ */
+export function getTaskStatus(taskId: string): TaskStatus | null {
+  const state = getState();
+  return state.taskStatuses[taskId] ?? null;
+}
+
+/**
+ * Check if a task has any status set (complete/working/stuck)
+ */
+export function hasTaskStatus(taskId: string): boolean {
+  const state = getState();
+  return taskId in state.taskStatuses;
 }
 
 // ============================================================================

@@ -1329,74 +1329,8 @@ export async function getQuietHoursStatus(threadTs: string): Promise<QuietHoursS
 }
 
 // ============================================================================
-// Supporter Channel Notifications
+// Supporter DM Notifications
 // ============================================================================
-
-/**
- * Check if a user is a member of a specific Slack channel
- * Wrapped in circuit breaker (TD-05)
- */
-export async function isUserInChannel(userId: string, channelId: string): Promise<boolean> {
-  const client = getClient();
-
-  try {
-    // Use conversations.members to get channel members
-    // This may need pagination for large channels, but for most teams it's fine
-    const response = await slackCircuit.execute(() =>
-      client.conversations.members({
-        channel: channelId,
-        limit: 1000,  // Should cover most team channels
-      })
-    );
-
-    if (!response.ok || !response.members) {
-      console.warn(`Failed to get members for channel ${channelId}`);
-      return false;
-    }
-
-    return response.members.includes(userId);
-  } catch (error) {
-    console.error(`Error checking channel membership for ${userId} in ${channelId}:`, error);
-    return false;
-  }
-}
-
-/**
- * Find which notification channel a supporter should receive notifications in
- * Checks primary channel first, then secondaries in order
- * Returns null if supporter is not in any configured channel
- */
-export async function findSupporterNotificationChannel(supporterSlackId: string): Promise<string | null> {
-  const { supporterPrimaryChannel, supporterSecondaryChannels } = config.slack;
-
-  // Build ordered list of channels to check
-  const channelsToCheck: string[] = [];
-
-  if (supporterPrimaryChannel) {
-    channelsToCheck.push(supporterPrimaryChannel);
-  }
-
-  channelsToCheck.push(...supporterSecondaryChannels);
-
-  if (channelsToCheck.length === 0) {
-    console.log('No supporter notification channels configured');
-    return null;
-  }
-
-  console.log(`Checking ${channelsToCheck.length} channels for supporter ${supporterSlackId}...`);
-
-  // Check channels in order until we find one the supporter is in
-  for (const channelId of channelsToCheck) {
-    const isMember = await isUserInChannel(supporterSlackId, channelId);
-    if (isMember) {
-      console.log(`Supporter ${supporterSlackId} found in channel ${channelId}`);
-      return channelId;
-    }
-  }
-
-  console.log(`Supporter ${supporterSlackId} not found in any configured channel`);
-  return null;
-}
 
 /**
  * Task details for supporter notification
@@ -1411,32 +1345,70 @@ export interface SupporterNotificationDetails {
 }
 
 /**
- * Send a notification to a supporter's channel
- * Includes full task details so supporter has context without leaving Slack
- * Links to Monday for updates (thread replies sync to Monday automatically)
+ * Send a DM to a user (opens conversation if needed)
  */
-export async function notifySupporterInChannel(
+async function sendDMToUser(
+  userId: string,
+  text: string,
+  blocks?: any[]
+): Promise<{ success: boolean; ts?: string; channel?: string }> {
+  const client = getClient();
+
+  try {
+    // Open DM channel
+    const openResponse = await client.conversations.open({ users: userId });
+
+    if (!openResponse.ok || !openResponse.channel?.id) {
+      console.error(`Failed to open DM with ${userId}`);
+      return { success: false };
+    }
+
+    const dmChannel = openResponse.channel.id;
+
+    // Send message
+    const msgResponse = await slackCircuit.execute(() =>
+      client.chat.postMessage({
+        channel: dmChannel,
+        text,
+        blocks,
+        unfurl_links: false,
+        unfurl_media: false,
+      })
+    );
+
+    if (msgResponse.ok && msgResponse.ts) {
+      return { success: true, ts: msgResponse.ts, channel: dmChannel };
+    }
+
+    return { success: false };
+  } catch (error) {
+    console.error(`Error sending DM to ${userId}:`, error);
+    return { success: false };
+  }
+}
+
+/**
+ * Send a supporter notification via DM
+ * Includes full task details with buttons for task management
+ *
+ * Called from:
+ * - Task creation (emailWebhook, slackTaskWorkflow) - notifies supporters at creation time
+ * - Monday webhook (mondayWebhook) - notifies supporters when added via Monday UI
+ */
+export async function sendSupporterNotificationDM(
   supporterSlackId: string,
   supporterName: string,
   details: SupporterNotificationDetails,
-  mainThreadTs: string,
-  mondayItemId: string
+  mondayItemId: string,
+  assigneeSlackIds: string[]  // All assignees for button encoding
 ): Promise<boolean> {
-  const channelId = await findSupporterNotificationChannel(supporterSlackId);
-
-  if (!channelId) {
-    console.log(`No notification channel found for supporter ${supporterName}`);
-    return false;
-  }
-
-  const client = getClient();
   const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
 
   // Priority emoji
   const priorityEmoji = details.priority === 'high' ? '🔴' : details.priority === 'low' ? '🟢' : '🟡';
 
   // Build the message with all relevant details
-  let message = `🤝 <@${supporterSlackId}> you've been added as a supporter on:\n\n`;
+  let message = `🤝 You've been added as a supporter on:\n\n`;
   message += `*${details.taskSubject}*\n\n`;
   message += `📋 *Type:* ${details.taskType}\n`;
   message += `👤 *Owner:* ${details.ownerName}\n`;
@@ -1447,28 +1419,132 @@ export async function notifySupporterInChannel(
     message += `📝 *Notes:* ${details.notes}\n`;
   }
 
-  message += `\n<${mondayLink}|View Monday task>\n\n💬 _Add any updates or comments on Monday - this channel is not synced._\n\n[supporter-notification:${mondayItemId}]`;
+  // Encode assignee IDs in button value for acknowledgment tracking
+  const ackValue = assigneeSlackIds.length > 0
+    ? `${mondayItemId}|${assigneeSlackIds.join(',')}`
+    : mondayItemId;
 
-  try {
-    const response = await slackCircuit.execute(() =>
-      client.chat.postMessage({
-        channel: channelId,
-        text: message,
-        unfurl_links: false,
-        unfurl_media: false,
-      })
-    );
+  const blocks: any[] = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: message },
+    },
+    { type: 'divider' },
+    {
+      type: 'actions',
+      block_id: `task_${mondayItemId}_supporter`,
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '👀 Acknowledge', emoji: true },
+          action_id: 'task_acknowledge',
+          value: ackValue,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🟡 Working', emoji: true },
+          action_id: 'task_working',
+          value: mondayItemId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '✅ Done', emoji: true },
+          style: 'primary',
+          action_id: 'task_complete',
+          value: mondayItemId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🔴 Stuck', emoji: true },
+          style: 'danger',
+          action_id: 'task_stuck',
+          value: mondayItemId,
+        },
+      ],
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `<${mondayLink}|View in Monday>`,
+        },
+      ],
+    },
+  ];
 
-    if (response.ok) {
-      console.log(`Sent supporter notification to channel ${channelId} for ${supporterName}`);
-      return true;
-    } else {
-      console.error(`Failed to send supporter notification: ${response.error}`);
-      return false;
-    }
-  } catch (error) {
-    console.error(`Error sending supporter notification:`, error);
+  const result = await sendDMToUser(supporterSlackId, message, blocks);
+
+  if (result.success) {
+    console.log(`Sent supporter notification DM to ${supporterName} (${supporterSlackId})`);
+    return true;
+  } else {
+    console.error(`Failed to send supporter notification DM to ${supporterName}`);
     return false;
+  }
+}
+
+/**
+ * Legacy function name - redirects to DM version
+ * @deprecated Use sendSupporterNotificationDM instead
+ */
+export async function notifySupporterInChannel(
+  supporterSlackId: string,
+  supporterName: string,
+  details: SupporterNotificationDetails,
+  mainThreadTs: string,
+  mondayItemId: string
+): Promise<boolean> {
+  // Now sends DM instead of posting to channel
+  // Default to single assignee (no multi-person acknowledgment tracking)
+  return sendSupporterNotificationDM(
+    supporterSlackId,
+    supporterName,
+    details,
+    mondayItemId,
+    [supporterSlackId]  // Just the supporter for now
+  );
+}
+
+// ============================================================================
+// Cross-Notification DMs (Complete/Stuck notifications to other assignees)
+// ============================================================================
+
+/**
+ * Send a cross-notification DM when owner or supporter marks task Complete or Stuck
+ * Notifies the OTHER party about the status change
+ */
+export async function sendCrossNotificationDM(
+  mondayItemId: string,
+  action: 'complete' | 'stuck',
+  actorSlackId: string,
+  otherAssigneeSlackIds: string[],
+  taskName: string
+): Promise<void> {
+  if (otherAssigneeSlackIds.length === 0) {
+    return;  // No one else to notify
+  }
+
+  const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
+
+  for (const slackId of otherAssigneeSlackIds) {
+    // Don't notify the person who did the action
+    if (slackId === actorSlackId) continue;
+
+    let message: string;
+    if (action === 'complete') {
+      message = `✅ *${taskName}* was completed by <@${actorSlackId}>\n\n<${mondayLink}|View in Monday>`;
+    } else {
+      message = `🔴 <@${actorSlackId}> needs help on *${taskName}*\n\n<${mondayLink}|View in Monday>`;
+    }
+
+    const result = await sendDMToUser(slackId, message);
+
+    if (result.success) {
+      console.log(`[CrossNotify] Sent ${action} notification to ${slackId} for task ${mondayItemId}`);
+    } else {
+      console.error(`[CrossNotify] Failed to notify ${slackId} about ${action} on task ${mondayItemId}`);
+    }
   }
 }
 

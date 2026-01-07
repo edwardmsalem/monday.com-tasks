@@ -80,16 +80,20 @@ interface MondayTask {
   channelId: string;
   ownerIds: string[];
   ownerNames: string[];
+  supporterIds: string[]; // Support users (secondary assignees)
+  lastUpdate: Date | null; // Most recent update timestamp
 }
 
 /**
  * Fetch all open tasks from Monday.com
  * Excludes completed/done tasks
+ * Includes the most recent update timestamp for each item
  */
 async function fetchOpenTasks(): Promise<MondayTask[]> {
   // Dynamic import to avoid circular dependency
   const monday = await import('./monday.js');
 
+  // Query includes updates(limit: 1) to get the most recent update timestamp
   const query = `
     query GetOpenTasks($boardId: ID!) {
       boards(ids: [$boardId]) {
@@ -97,10 +101,14 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
           items {
             id
             name
+            updated_at
             column_values {
               id
               text
               value
+            }
+            updates(limit: 1) {
+              created_at
             }
           }
         }
@@ -170,6 +178,19 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
         ownerNames = ownerText.split(',').map((n: string) => n.trim());
       }
 
+      // Parse supporters (secondary assignees)
+      let supporterIds: string[] = [];
+      const supportRaw = getRawValue(config.monday.columns.support);
+
+      if (supportRaw) {
+        try {
+          const parsed = JSON.parse(supportRaw);
+          supporterIds = parsed?.personsAndTeams?.map((p: { id: number }) => String(p.id)) ?? [];
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
       // Parse Slack thread info
       const slackThreadRaw = getValue(config.monday.columns.slackThreadId);
       let slackThreadTs: string | null = null;
@@ -183,6 +204,17 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
         }
       }
 
+      // Get last update timestamp - prefer update comment timestamp, fall back to item updated_at
+      let lastUpdate: Date | null = null;
+      const latestUpdateComment = item.updates?.[0]?.created_at;
+      const itemUpdatedAt = item.updated_at;
+
+      if (latestUpdateComment) {
+        lastUpdate = new Date(latestUpdateComment);
+      } else if (itemUpdatedAt) {
+        lastUpdate = new Date(itemUpdatedAt);
+      }
+
       tasks.push({
         id: item.id,
         name: item.name,
@@ -193,6 +225,8 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
         channelId,
         ownerIds,
         ownerNames,
+        supporterIds,
+        lastUpdate,
       });
     }
 
@@ -205,8 +239,19 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
 
 /**
  * Convert Monday tasks to DigestTask format
+ * @param task The Monday task
+ * @param isConfirmed Whether the task is confirmed for today
+ * @param assigneeSlackIds Optional array of assignee Slack IDs for acknowledgment tracking
+ * @param assigneeNames Optional array of assignee names with IDs
+ * @param acknowledgmentStatus Optional pre-computed acknowledgment status text
  */
-function toDigestTask(task: MondayTask, isConfirmed: boolean = false): blockKit.DigestTask {
+function toDigestTask(
+  task: MondayTask,
+  isConfirmed: boolean = false,
+  assigneeSlackIds?: string[],
+  assigneeNames?: { id: string; name: string }[],
+  acknowledgmentStatus?: string | null
+): blockKit.DigestTask {
   return {
     id: task.id,
     name: task.name,
@@ -217,14 +262,98 @@ function toDigestTask(task: MondayTask, isConfirmed: boolean = false): blockKit.
     channelId: task.channelId,
     ownerNames: task.ownerNames,
     isConfirmed,
+    lastUpdate: task.lastUpdate,
+    assigneeSlackIds,
+    assigneeNames,
+    acknowledgmentStatus,
   };
 }
 
 /**
+ * Convert Monday task to IssueCall format
+ */
+function toIssueCall(task: MondayTask): blockKit.IssueCall {
+  return {
+    id: task.id,
+    customerName: task.name.split(' - ')[0] ?? task.name,
+    issue: task.name.split(' - ')[1] ?? '',
+    dueDate: task.dueDate ?? new Date(),
+    assignee: task.ownerNames[0] ?? null,
+    assigneeSlackId: null, // Would need to look up
+    slackThreadTs: task.slackThreadTs,
+    channelId: task.channelId,
+    isUnclaimed: task.ownerIds.length === 0,
+    createdAt: new Date(), // Would need to get from Monday
+    lastUpdate: task.lastUpdate,
+  };
+}
+
+/**
+ * Pre-computed assignee information for a task
+ */
+interface TaskAssigneeInfo {
+  slackIds: string[];
+  names: { id: string; name: string }[];
+  acknowledgmentStatus: string | null;
+}
+
+/**
+ * Build assignee info for tasks (converts Monday IDs to Slack IDs)
+ */
+async function buildAssigneeInfo(
+  tasks: MondayTask[]
+): Promise<Map<string, TaskAssigneeInfo>> {
+  const infoMap = new Map<string, TaskAssigneeInfo>();
+
+  for (const task of tasks) {
+    // Combine owner and supporter IDs
+    const allMondayIds = [...task.ownerIds, ...task.supporterIds];
+
+    // Convert to Slack IDs
+    const slackIds: string[] = [];
+    const names: { id: string; name: string }[] = [];
+
+    for (let i = 0; i < allMondayIds.length; i++) {
+      const mondayId = allMondayIds[i];
+      const slackId = await getSlackUserIdFromMondayId(mondayId);
+
+      if (slackId) {
+        slackIds.push(slackId);
+
+        // Get name - use owner names for owners, would need to look up supporters
+        const nameIndex = task.ownerIds.indexOf(mondayId);
+        const name = nameIndex >= 0 && task.ownerNames[nameIndex]
+          ? task.ownerNames[nameIndex]
+          : `User ${slackId.slice(-4)}`;
+
+        names.push({ id: slackId, name });
+      }
+    }
+
+    // Get acknowledgment status
+    const acknowledgmentStatus = slackIds.length > 1
+      ? digestState.getAcknowledgmentStatusText(task.id, names)
+      : null;
+
+    infoMap.set(task.id, {
+      slackIds,
+      names,
+      acknowledgmentStatus,
+    });
+  }
+
+  return infoMap;
+}
+
+/**
  * Categorize tasks by due date
+ * @param tasks Tasks to categorize
+ * @param assigneeInfo Optional pre-computed assignee info
+ * @param now Current time for date comparisons
  */
 function categorizeTasks(
   tasks: MondayTask[],
+  assigneeInfo?: Map<string, TaskAssigneeInfo>,
   now: Date = new Date()
 ): blockKit.TasksByCategory {
   const today = workingHours.getESTDateString(now);
@@ -238,15 +367,36 @@ function categorizeTasks(
     const taskDateStr = workingHours.getESTDateString(task.dueDate);
     const isConfirmed = digestState.isTaskConfirmed(task.id);
 
+    // Get assignee info if available
+    const info = assigneeInfo?.get(task.id);
+
     if (taskDateStr < today) {
       // Overdue
-      overdue.push(toDigestTask(task, isConfirmed));
+      overdue.push(toDigestTask(
+        task,
+        isConfirmed,
+        info?.slackIds,
+        info?.names,
+        info?.acknowledgmentStatus
+      ));
     } else if (taskDateStr === today) {
       // Due today
-      dueToday.push(toDigestTask(task, isConfirmed));
+      dueToday.push(toDigestTask(
+        task,
+        isConfirmed,
+        info?.slackIds,
+        info?.names,
+        info?.acknowledgmentStatus
+      ));
     } else if (workingHours.isWithinDays(task.dueDate, 7, now)) {
       // This week (next 7 days)
-      thisWeek.push(toDigestTask(task, isConfirmed));
+      thisWeek.push(toDigestTask(
+        task,
+        isConfirmed,
+        info?.slackIds,
+        info?.names,
+        info?.acknowledgmentStatus
+      ));
     }
   }
 
@@ -429,8 +579,10 @@ export async function sendPersonalDigest(slackUserId: string): Promise<boolean> 
       }
     }
 
+    // Include tasks where user is owner OR supporter
     const userTasks = allTasks.filter((task) =>
-      task.ownerIds.some((id) => userMondayIds.includes(id))
+      task.ownerIds.some((id) => userMondayIds.includes(id)) ||
+      task.supporterIds.some((id) => userMondayIds.includes(id))
     );
 
     // Skip if user has no tasks
@@ -439,8 +591,11 @@ export async function sendPersonalDigest(slackUserId: string): Promise<boolean> 
       return true;
     }
 
-    // Categorize tasks
-    const categorized = categorizeTasks(userTasks);
+    // Build assignee info for acknowledgment tracking
+    const assigneeInfo = await buildAssigneeInfo(userTasks);
+
+    // Categorize tasks with assignee info
+    const categorized = categorizeTasks(userTasks, assigneeInfo);
 
     // Get user's first name
     const firstName = await getFirstName(slackUserId);
@@ -482,11 +637,19 @@ export async function sendAllMorningDigests(): Promise<number> {
   // Get all tasks
   const allTasks = await fetchOpenTasks();
 
-  // Get unique Slack user IDs from task owners
+  // Get unique Slack user IDs from task owners AND supporters
   const userSlackIds = new Set<string>();
 
   for (const task of allTasks) {
+    // Add owners
     for (const mondayId of task.ownerIds) {
+      const slackId = await getSlackUserIdFromMondayId(mondayId);
+      if (slackId) {
+        userSlackIds.add(slackId);
+      }
+    }
+    // Add supporters
+    for (const mondayId of task.supporterIds) {
       const slackId = await getSlackUserIdFromMondayId(mondayId);
       if (slackId) {
         userSlackIds.add(slackId);
@@ -494,7 +657,7 @@ export async function sendAllMorningDigests(): Promise<number> {
     }
   }
 
-  console.log(`[Digest] Found ${userSlackIds.size} users with tasks`);
+  console.log(`[Digest] Found ${userSlackIds.size} users with tasks (owners + supporters)`);
 
   let sent = 0;
   const currentHour = workingHours.getESTHour();
@@ -523,11 +686,12 @@ export async function sendAllMorningDigests(): Promise<number> {
 }
 
 // ============================================================================
-// Team Overview
+// Team Overview - Now with actual tasks
 // ============================================================================
 
 /**
  * Send team overview to channel
+ * Shows actual tasks for each team member, not just counts
  */
 export async function sendTeamOverview(): Promise<boolean> {
   console.log('[Digest] Sending team overview...');
@@ -535,105 +699,115 @@ export async function sendTeamOverview(): Promise<boolean> {
   try {
     // Get all tasks
     const allTasks = await fetchOpenTasks();
-    const categorized = categorizeTasks(allTasks);
+    const today = workingHours.getESTDateString();
 
-    // Build team status by user
-    const userStats = new Map<string, blockKit.TeamMemberStatus>();
+    // Build team member tasks by owner name
+    const memberTasksMap = new Map<string, {
+      overdueTasks: blockKit.DigestTask[];
+      dueTodayTasks: blockKit.DigestTask[];
+      thisWeekTasks: blockKit.DigestTask[];
+    }>();
 
     for (const task of allTasks) {
+      if (!task.dueDate) continue;
+
+      const taskDateStr = workingHours.getESTDateString(task.dueDate);
+      const isConfirmed = digestState.isTaskConfirmed(task.id);
+      const digestTask = toDigestTask(task, isConfirmed);
+
       for (const ownerName of task.ownerNames) {
-        if (!userStats.has(ownerName)) {
-          userStats.set(ownerName, {
-            userId: '',
-            name: ownerName,
-            overdueCount: 0,
-            dueTodayCount: 0,
-            unconfirmedCount: 0,
-            weekCount: 0,
-            oldestOverdueDays: 0,
+        if (!memberTasksMap.has(ownerName)) {
+          memberTasksMap.set(ownerName, {
+            overdueTasks: [],
+            dueTodayTasks: [],
+            thisWeekTasks: [],
           });
         }
 
-        const stat = userStats.get(ownerName)!;
-        stat.weekCount++;
-
-        if (!task.dueDate) continue;
-
-        const today = workingHours.getESTDateString();
-        const taskDateStr = workingHours.getESTDateString(task.dueDate);
+        const memberTasks = memberTasksMap.get(ownerName)!;
 
         if (taskDateStr < today) {
-          stat.overdueCount++;
-          const daysLate = workingHours.getDaysLate(task.dueDate);
-          if (daysLate > stat.oldestOverdueDays) {
-            stat.oldestOverdueDays = daysLate;
-          }
+          memberTasks.overdueTasks.push(digestTask);
         } else if (taskDateStr === today) {
-          stat.dueTodayCount++;
-          if (!digestState.isTaskConfirmed(task.id)) {
-            stat.unconfirmedCount++;
-          }
+          memberTasks.dueTodayTasks.push(digestTask);
+        } else if (workingHours.isWithinDays(task.dueDate, 7)) {
+          memberTasks.thisWeekTasks.push(digestTask);
         }
       }
     }
 
-    // Categorize team members
-    const needsAttention: blockKit.TeamMemberStatus[] = [];
-    const heavyLoad: blockKit.TeamMemberStatus[] = [];
-    const onTrack: blockKit.TeamMemberStatus[] = [];
+    // Convert to TeamMemberTasks array and categorize
+    const needsAttention: blockKit.TeamMemberTasks[] = [];
+    const heavyLoad: blockKit.TeamMemberTasks[] = [];
+    const onTrack: blockKit.TeamMemberTasks[] = [];
 
-    for (const stat of userStats.values()) {
-      if (stat.overdueCount > 0 || stat.unconfirmedCount > 0) {
-        needsAttention.push(stat);
-      } else if (stat.weekCount >= 5) {
-        heavyLoad.push(stat);
+    for (const [name, tasks] of memberTasksMap) {
+      const member: blockKit.TeamMemberTasks = {
+        userId: '',
+        name,
+        overdueTasks: tasks.overdueTasks,
+        dueTodayTasks: tasks.dueTodayTasks,
+        thisWeekTasks: tasks.thisWeekTasks,
+      };
+
+      const unconfirmedCount = tasks.dueTodayTasks.filter(t => !t.isConfirmed).length;
+      const totalWeekTasks = tasks.overdueTasks.length + tasks.dueTodayTasks.length + tasks.thisWeekTasks.length;
+
+      if (tasks.overdueTasks.length > 0 || unconfirmedCount > 0) {
+        needsAttention.push(member);
+      } else if (totalWeekTasks >= 5) {
+        heavyLoad.push(member);
       } else {
-        onTrack.push(stat);
+        onTrack.push(member);
       }
     }
 
-    // Sort
-    needsAttention.sort((a, b) => b.overdueCount - a.overdueCount);
-    heavyLoad.sort((a, b) => b.weekCount - a.weekCount);
+    // Sort - needsAttention by overdue count, heavyLoad by total, onTrack by name
+    needsAttention.sort((a, b) => b.overdueTasks.length - a.overdueTasks.length);
+    heavyLoad.sort((a, b) => {
+      const aTotal = a.overdueTasks.length + a.dueTodayTasks.length + a.thisWeekTasks.length;
+      const bTotal = b.overdueTasks.length + b.dueTodayTasks.length + b.thisWeekTasks.length;
+      return bTotal - aTotal;
+    });
     onTrack.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Issue call summary (simplified - actual implementation would query issue calls)
-    const issueCallSummary = {
-      overdueCount: 0,
-      unclaimedCount: 0,
-      dueTodayCount: 0,
-    };
+    // Get issue calls
+    const issueCalls: blockKit.IssueCall[] = allTasks
+      .filter((t) => t.taskType === 'Issue Call')
+      .map((t) => toIssueCall(t));
 
-    // Count issue calls from tasks with type "Issue Call"
+    // Sort issue calls: overdue first, then by date
+    issueCalls.sort((a, b) => {
+      const aDateStr = workingHours.getESTDateString(a.dueDate);
+      const bDateStr = workingHours.getESTDateString(b.dueDate);
+      const aOverdue = aDateStr < today;
+      const bOverdue = bDateStr < today;
+
+      if (aOverdue && !bOverdue) return -1;
+      if (!aOverdue && bOverdue) return 1;
+      return a.dueDate.getTime() - b.dueDate.getTime();
+    });
+
+    // Count totals
+    let totalOverdue = 0;
+    let totalDueToday = 0;
+
     for (const task of allTasks) {
-      if (task.taskType === 'Issue Call') {
-        if (!task.dueDate) continue;
-
-        const today = workingHours.getESTDateString();
-        const taskDateStr = workingHours.getESTDateString(task.dueDate);
-
-        if (taskDateStr < today) {
-          issueCallSummary.overdueCount++;
-        } else if (taskDateStr === today) {
-          issueCallSummary.dueTodayCount++;
-        }
-
-        // Check if unclaimed (no owners)
-        if (task.ownerIds.length === 0) {
-          issueCallSummary.unclaimedCount++;
-        }
-      }
+      if (!task.dueDate) continue;
+      const taskDateStr = workingHours.getESTDateString(task.dueDate);
+      if (taskDateStr < today) totalOverdue++;
+      else if (taskDateStr === today) totalDueToday++;
     }
 
     const teamStatus: blockKit.TeamStatus = {
       needsAttention,
       heavyLoad,
       onTrack,
-      issueCallSummary,
+      issueCalls,
       totals: {
         total: allTasks.length,
-        overdue: categorized.overdue.length,
-        dueToday: categorized.dueToday.length,
+        overdue: totalOverdue,
+        dueToday: totalDueToday,
       },
     };
 
@@ -677,18 +851,7 @@ export async function sendIssueCallDigest(): Promise<boolean> {
     const issueCalls = allTasks.filter((t) => t.taskType === 'Issue Call');
 
     // Convert to IssueCall format
-    const issueCallData: blockKit.IssueCall[] = issueCalls.map((task) => ({
-      id: task.id,
-      customerName: task.name.split(' - ')[0] ?? task.name,
-      issue: task.name.split(' - ')[1] ?? '',
-      dueDate: task.dueDate ?? new Date(),
-      assignee: task.ownerNames[0] ?? null,
-      assigneeSlackId: null, // Would need to look up
-      slackThreadTs: task.slackThreadTs,
-      channelId: task.channelId,
-      isUnclaimed: task.ownerIds.length === 0,
-      createdAt: new Date(), // Would need to get from Monday
-    }));
+    const issueCallData: blockKit.IssueCall[] = issueCalls.map((task) => toIssueCall(task));
 
     // Categorize
     const today = workingHours.getESTDateString();
@@ -761,8 +924,10 @@ export async function sendTomorrowPrep(slackUserId: string): Promise<boolean> {
       }
     }
 
+    // Include tasks where user is owner OR supporter
     const userTasks = allTasks.filter((task) =>
-      task.ownerIds.some((id) => userMondayIds.includes(id))
+      task.ownerIds.some((id) => userMondayIds.includes(id)) ||
+      task.supporterIds.some((id) => userMondayIds.includes(id))
     );
 
     // Get tomorrow's tasks
@@ -829,11 +994,19 @@ export async function sendAllTomorrowPrep(): Promise<number> {
   // Get all tasks
   const allTasks = await fetchOpenTasks();
 
-  // Get unique Slack user IDs from task owners
+  // Get unique Slack user IDs from task owners AND supporters
   const userSlackIds = new Set<string>();
 
   for (const task of allTasks) {
+    // Add owners
     for (const mondayId of task.ownerIds) {
+      const slackId = await getSlackUserIdFromMondayId(mondayId);
+      if (slackId) {
+        userSlackIds.add(slackId);
+      }
+    }
+    // Add supporters
+    for (const mondayId of task.supporterIds) {
       const slackId = await getSlackUserIdFromMondayId(mondayId);
       if (slackId) {
         userSlackIds.add(slackId);
@@ -878,19 +1051,7 @@ export async function sendIssueCallEOD(): Promise<boolean> {
     const unclaimed: blockKit.IssueCall[] = [];
 
     for (const task of issueCalls) {
-      const ic: blockKit.IssueCall = {
-        id: task.id,
-        customerName: task.name.split(' - ')[0] ?? task.name,
-        issue: task.name.split(' - ')[1] ?? '',
-        dueDate: task.dueDate ?? new Date(),
-        assignee: task.ownerNames[0] ?? null,
-        assigneeSlackId: null,
-        slackThreadTs: task.slackThreadTs,
-        channelId: task.channelId,
-        isUnclaimed: task.ownerIds.length === 0,
-        createdAt: new Date(),
-      };
-
+      const ic = toIssueCall(task);
       const status = task.workflowStatus?.toLowerCase() ?? '';
 
       if (status === 'done' || status === 'complete') {
@@ -1034,18 +1195,7 @@ export async function checkIssueCallEscalations(): Promise<void> {
     }
 
     // Convert to IssueCall format for blocks
-    const ic: blockKit.IssueCall = {
-      id: task.id,
-      customerName: task.name.split(' - ')[0] ?? task.name,
-      issue: task.name.split(' - ')[1] ?? '',
-      dueDate: task.dueDate ?? new Date(),
-      assignee: task.ownerNames[0] ?? null,
-      assigneeSlackId: null, // Would need lookup
-      slackThreadTs: task.slackThreadTs,
-      channelId: task.channelId,
-      isUnclaimed,
-      createdAt: new Date(), // Would need actual creation time
-    };
+    const ic = toIssueCall(task);
 
     if (isUnclaimed) {
       // Claiming escalation
