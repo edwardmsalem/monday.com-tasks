@@ -216,6 +216,8 @@ async function notifyNewSupporters(
  */
 router.post('/webhook/monday', express.json(), async (req: Request, res: Response): Promise<void> => {
   try {
+    console.log('[Monday Webhook] Received:', JSON.stringify(req.body, null, 2));
+
     const body = req.body as MondayWebhook;
 
     // Handle challenge verification
