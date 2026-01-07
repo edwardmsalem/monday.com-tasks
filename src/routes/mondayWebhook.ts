@@ -278,7 +278,7 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
 
       // Handle support column change - notify newly added supporters
       if (
-        event.type === 'change_column_value' &&
+        event.type === 'update_column_value' &&
         event.columnId === config.monday.columns.support &&
         event.pulseId
       ) {
