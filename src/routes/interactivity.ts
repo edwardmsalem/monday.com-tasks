@@ -23,7 +23,7 @@ const slackClient = new WebClient(config.slack.botToken);
 // Types
 // ============================================================================
 
-interface InteractivityPayload {
+export interface InteractivityPayload {
   type: 'block_actions' | 'view_submission' | 'shortcut';
   user: {
     id: string;
@@ -31,7 +31,7 @@ interface InteractivityPayload {
     name: string;
   };
   trigger_id: string;
-  response_url: string;
+  response_url?: string;
   actions?: Array<{
     action_id: string;
     block_id: string;
@@ -408,6 +408,30 @@ async function handleRescheduleSubmission(payload: InteractivityPayload): Promis
     console.log(`[Interactivity] Task ${mondayItemId} rescheduled to ${newDate}`);
   } catch (error) {
     console.error('[Interactivity] Failed to process reschedule:', error);
+  }
+}
+
+// ============================================================================
+// Exported Handler for Relay Events
+// ============================================================================
+
+/**
+ * Handle interactivity payload from relay (already parsed JSON)
+ * Used by relayEvents.ts when receiving forwarded interactivity events
+ */
+export async function handleInteractivityPayload(payload: InteractivityPayload): Promise<void> {
+  console.log('[Interactivity] Received (via relay):', {
+    type: payload.type,
+    user: payload.user.id,
+    actions: payload.actions?.map((a) => a.action_id),
+  });
+
+  if (payload.type === 'block_actions' && payload.actions) {
+    for (const action of payload.actions) {
+      await handleBlockAction(payload, action);
+    }
+  } else if (payload.type === 'view_submission' && payload.view) {
+    await handleViewSubmission(payload);
   }
 }
 
