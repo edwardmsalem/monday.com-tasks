@@ -1505,6 +1505,159 @@ app.post('/admin/migrate/thread-buttons', express.json(), async (_req: Request, 
 });
 
 // ============================================================================
+// Digest System Manual Triggers
+// ============================================================================
+
+import * as digestScheduler from './services/digestScheduler.js';
+
+/**
+ * Get digest scheduler status
+ * Usage: GET /admin/digest/status
+ */
+app.get('/admin/digest/status', (_req: Request, res: Response): void => {
+  const status = digestScheduler.getSchedulerStatus();
+  res.json(status);
+});
+
+/**
+ * Manually trigger morning digests for all users
+ * Usage: POST /admin/digest/morning
+ */
+app.post('/admin/digest/morning', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerMorningDigests();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('[DigestTrigger] Morning digest failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger personal digest for a specific user
+ * Usage: POST /admin/digest/personal/:slackUserId
+ */
+app.post('/admin/digest/personal/:slackUserId', express.json(), async (req: Request, res: Response): Promise<void> => {
+  const { slackUserId } = req.params;
+
+  try {
+    const result = await digestScheduler.triggerPersonalDigest(slackUserId);
+    res.json({ ...result, slackUserId });
+  } catch (error) {
+    console.error(`[DigestTrigger] Personal digest for ${slackUserId} failed:`, error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger issue call digest
+ * Usage: POST /admin/digest/issue-calls
+ */
+app.post('/admin/digest/issue-calls', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerIssueCallDigest();
+    res.json(result);
+  } catch (error) {
+    console.error('[DigestTrigger] Issue call digest failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger team overview
+ * Usage: POST /admin/digest/team-overview
+ */
+app.post('/admin/digest/team-overview', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerTeamOverview();
+    res.json(result);
+  } catch (error) {
+    console.error('[DigestTrigger] Team overview failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger tomorrow prep for all users
+ * Usage: POST /admin/digest/tomorrow-prep
+ */
+app.post('/admin/digest/tomorrow-prep', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerTomorrowPrep();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('[DigestTrigger] Tomorrow prep failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger issue call EOD
+ * Usage: POST /admin/digest/issue-call-eod
+ */
+app.post('/admin/digest/issue-call-eod', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerIssueCallEOD();
+    res.json(result);
+  } catch (error) {
+    console.error('[DigestTrigger] Issue call EOD failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger escalation checks
+ * Usage: POST /admin/digest/escalations
+ */
+app.post('/admin/digest/escalations', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerEscalationCheck();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('[DigestTrigger] Escalation check failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Reset today's digest tracking (for testing)
+ * Usage: POST /admin/digest/reset
+ */
+app.post('/admin/digest/reset', express.json(), (_req: Request, res: Response): void => {
+  try {
+    digestScheduler.resetTodayTracking();
+    res.json({ success: true, message: 'Digest tracking reset' });
+  } catch (error) {
+    console.error('[DigestTrigger] Reset failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -1556,6 +1709,12 @@ function start() {
     // Start after-hours scheduler (8 AM release, 11 AM reminder)
     startAfterHoursScheduler();
     console.log('After-hours scheduler started (8 AM release, 11 AM reminder)');
+
+    // Start digest scheduler (Phase 4 - Digest Notification System)
+    // Disabled by default during development - enable when ready for production
+    // digestScheduler.startDigestScheduler();
+    // console.log('Digest scheduler started (morning digests, escalations, EOD)');
+    console.log('Digest scheduler available (manual triggers via /admin/digest/*)');
   });
 }
 
