@@ -1374,6 +1374,117 @@ app.post('/webhook/slack/trigger-followups', slackUrlEncodedWithRawBody, async (
 });
 
 // ============================================================================
+// Admin Test Endpoints
+// ============================================================================
+
+/**
+ * Test endpoint for Phase 2 button testing
+ * Posts a message with all 4 task buttons to Edward's DM
+ *
+ * Usage: POST /admin/test/buttons/:mondayItemId
+ */
+app.post('/admin/test/buttons/:mondayItemId', express.json(), async (req: Request, res: Response): Promise<void> => {
+  const { mondayItemId } = req.params;
+  const testUserId = 'U0144K906KA'; // Edward's Slack ID
+
+  try {
+    // Optionally fetch task name from Monday
+    let taskName = `Test Task (${mondayItemId})`;
+    try {
+      const item = await monday.getItem(mondayItemId);
+      if (item) {
+        taskName = item.name;
+      }
+    } catch {
+      // Use default name if fetch fails
+    }
+
+    const client = slack.getClient();
+
+    const result = await client.chat.postMessage({
+      channel: testUserId,
+      text: `Button test for task ${mondayItemId}`,
+      blocks: [
+        {
+          type: 'header',
+          text: {
+            type: 'plain_text',
+            text: '🧪 Button Test',
+            emoji: true,
+          },
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*Task:* ${taskName}\n*Monday ID:* \`${mondayItemId}\`\n*URL:* <https://edwardsalem.monday.com/boards/7150646315/pulses/${mondayItemId}|View in Monday>`,
+          },
+        },
+        {
+          type: 'divider',
+        },
+        {
+          type: 'actions',
+          block_id: `test_task_${mondayItemId}_controls`,
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '👀 Acknowledge', emoji: true },
+              action_id: 'task_acknowledge',
+              value: mondayItemId,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '🟡 Working', emoji: true },
+              action_id: 'task_working',
+              value: mondayItemId,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '✅ Complete', emoji: true },
+              style: 'primary',
+              action_id: 'task_complete',
+              value: mondayItemId,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '🔴 Stuck', emoji: true },
+              style: 'danger',
+              action_id: 'task_stuck',
+              value: mondayItemId,
+            },
+          ],
+        },
+        {
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: '_Click any button to test interactivity. Check server logs for `[Interactivity]` entries._',
+            },
+          ],
+        },
+      ],
+    });
+
+    res.json({
+      success: true,
+      message: `Test message sent to <@${testUserId}>`,
+      ts: result.ts,
+      mondayItemId,
+    });
+
+    console.log(`[Test] Button test message sent for item ${mondayItemId}`);
+  } catch (error) {
+    console.error('[Test] Failed to send button test:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
