@@ -127,8 +127,8 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
         }
       }
 
-      // Handle reaction added - 👀 = acknowledged, ✅ = complete
-      if (event.type === 'reaction_added' && event.reaction && event.item) {
+      // Handle reaction added - 👀 = acknowledged, ✅ = complete, 🟡 = working, 🔴 = stuck
+      if (event.type === 'reaction_added' && event.reaction && event.item && event.user) {
         // Use thread_ts if available (reaction on a reply), otherwise item.ts (reaction on parent)
         // Monday items are linked to the parent thread timestamp
         const threadTs = event.item.thread_ts || event.item.ts;
@@ -140,6 +140,7 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
           threadTs,
           itemTs: event.item.ts,
           itemThreadTs: event.item.thread_ts,
+          user: event.user,
         });
 
         if (event.reaction === 'eyes') {
@@ -161,7 +162,7 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
           ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check'].includes(event.reaction)
         ) {
           console.log(`Checkmark reaction added in channel ${channelId}, marking Monday item complete...`);
-          await sync.markCompleteFromSlack(threadTs, channelId);
+          await sync.markCompleteFromSlack(threadTs, channelId, event.user);
 
           // Also handle after-hours done tracking
           try {
@@ -169,6 +170,22 @@ router.post('/webhook/slack/events', async (req: Request, res: Response): Promis
             console.log(`After-hours done tracked for thread ${threadTs}`);
           } catch (doneError) {
             console.log('After-hours done tracking skipped (not a deferred task or already done)');
+          }
+        } else if (event.reaction === 'large_yellow_circle') {
+          // 🟡 = Working on it
+          console.log(`Yellow circle reaction added in channel ${channelId}, marking Monday item as Working on it...`);
+          try {
+            await sync.markWorkingFromSlack(threadTs, channelId, event.user);
+          } catch (err) {
+            console.error('Failed to mark working from yellow circle reaction:', err);
+          }
+        } else if (event.reaction === 'red_circle') {
+          // 🔴 = Stuck
+          console.log(`Red circle reaction added in channel ${channelId}, marking Monday item as Stuck...`);
+          try {
+            await sync.markStuckFromSlack(threadTs, channelId, event.user);
+          } catch (err) {
+            console.error('Failed to mark stuck from red circle reaction:', err);
           }
         }
       }

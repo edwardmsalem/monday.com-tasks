@@ -23,6 +23,7 @@ import {
   generateConfirmationBlocks,
   type PendingTask,
 } from './conversationState.js';
+import { setTaskStatus } from './digestState.js';
 
 /**
  * Translate @ mentions from Slack format to Monday format
@@ -213,8 +214,13 @@ export async function markAcknowledgedFromSlack(slackThreadTs: string, channelId
 
 /**
  * Mark Monday item as complete when checkmark reaction added in Slack
+ * Uses first-one-wins logic and sends cross-notification DMs
  */
-export async function markCompleteFromSlack(slackThreadTs: string, channelId?: string): Promise<void> {
+export async function markCompleteFromSlack(
+  slackThreadTs: string,
+  channelId?: string,
+  userId?: string
+): Promise<void> {
   console.log(`Looking up Monday item for completion: ${slackThreadTs} in channel: ${channelId || 'unknown'}`);
   const mondayItemId = await monday.findItemBySlackThread(slackThreadTs, channelId);
 
@@ -223,8 +229,37 @@ export async function markCompleteFromSlack(slackThreadTs: string, channelId?: s
     return;
   }
 
+  // Use first-one-wins logic if we have a userId
+  if (userId) {
+    const statusResult = setTaskStatus(mondayItemId, 'complete', userId);
+
+    if (!statusResult.success) {
+      console.log(`Task ${mondayItemId} already has status ${statusResult.existingStatus?.status}`);
+      return;
+    }
+  }
+
   await monday.updateWorkflowStatus(mondayItemId, 'Done');
   console.log(`Marked Monday item ${mondayItemId} as Done from Slack reaction`);
+
+  // Post to thread
+  if (channelId && userId) {
+    await slack.postToThread(slackThreadTs, `✅ Completed by <@${userId}>`, channelId);
+  }
+
+  // Send cross-notification DMs
+  if (userId) {
+    const taskInfo = await monday.getTaskAssignees(mondayItemId);
+    if (taskInfo && taskInfo.assigneeSlackIds.length > 1) {
+      await slack.sendCrossNotificationDM(
+        mondayItemId,
+        'complete',
+        userId,
+        taskInfo.assigneeSlackIds,
+        taskInfo.name
+      );
+    }
+  }
 }
 
 /**
@@ -244,23 +279,48 @@ export async function unmarkCompleteFromSlack(slackThreadTs: string): Promise<vo
 
 /**
  * Mark Monday item as "Working on it" when 🟡 reaction added in Slack
+ * Uses first-one-wins logic
  */
-export async function markWorkingFromSlack(slackThreadTs: string, channelId?: string): Promise<void> {
+export async function markWorkingFromSlack(
+  slackThreadTs: string,
+  channelId?: string,
+  userId?: string
+): Promise<void> {
   const mondayItemId = await monday.findItemBySlackThread(slackThreadTs, channelId);
 
   if (!mondayItemId) {
     console.warn(`No Monday item found for Slack thread ${slackThreadTs}`);
     return;
+  }
+
+  // Use first-one-wins logic if we have a userId
+  if (userId) {
+    const statusResult = setTaskStatus(mondayItemId, 'working', userId);
+
+    if (!statusResult.success) {
+      console.log(`Task ${mondayItemId} already has status ${statusResult.existingStatus?.status}`);
+      return;
+    }
   }
 
   await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
   console.log(`Marked Monday item ${mondayItemId} as "Working on it" from Slack 🟡 reaction`);
+
+  // Post to thread
+  if (channelId && userId) {
+    await slack.postToThread(slackThreadTs, `🟡 Working on it - <@${userId}>`, channelId);
+  }
 }
 
 /**
  * Mark Monday item as "Stuck" when 🔴 reaction added in Slack
+ * Uses first-one-wins logic and sends cross-notification DMs
  */
-export async function markStuckFromSlack(slackThreadTs: string, channelId?: string): Promise<void> {
+export async function markStuckFromSlack(
+  slackThreadTs: string,
+  channelId?: string,
+  userId?: string
+): Promise<void> {
   const mondayItemId = await monday.findItemBySlackThread(slackThreadTs, channelId);
 
   if (!mondayItemId) {
@@ -268,8 +328,37 @@ export async function markStuckFromSlack(slackThreadTs: string, channelId?: stri
     return;
   }
 
+  // Use first-one-wins logic if we have a userId
+  if (userId) {
+    const statusResult = setTaskStatus(mondayItemId, 'stuck', userId);
+
+    if (!statusResult.success) {
+      console.log(`Task ${mondayItemId} already has status ${statusResult.existingStatus?.status}`);
+      return;
+    }
+  }
+
   await monday.updateWorkflowStatus(mondayItemId, 'Stuck');
   console.log(`Marked Monday item ${mondayItemId} as "Stuck" from Slack 🔴 reaction`);
+
+  // Post to thread
+  if (channelId && userId) {
+    await slack.postToThread(slackThreadTs, `🔴 Stuck - <@${userId}> needs help`, channelId);
+  }
+
+  // Send cross-notification DMs
+  if (userId) {
+    const taskInfo = await monday.getTaskAssignees(mondayItemId);
+    if (taskInfo && taskInfo.assigneeSlackIds.length > 1) {
+      await slack.sendCrossNotificationDM(
+        mondayItemId,
+        'stuck',
+        userId,
+        taskInfo.assigneeSlackIds,
+        taskInfo.name
+      );
+    }
+  }
 }
 
 /**

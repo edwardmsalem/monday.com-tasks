@@ -182,7 +182,7 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
           ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check', 'large_green_circle'].includes(event.reaction)
         ) {
           console.log(`Complete reaction added (via relay) in channel ${channelId}, marking Monday item complete...`);
-          await sync.markCompleteFromSlack(threadTs, channelId);
+          await sync.markCompleteFromSlack(threadTs, channelId, event.user);
 
           // Handle issue call completion
           if (isIssueCall(threadTs)) {
@@ -197,7 +197,7 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
           // 🟡 = Working on it
           console.log(`Yellow circle reaction added (via relay) in channel ${channelId}, marking Monday item as Working on it...`);
           try {
-            await sync.markWorkingFromSlack(threadTs, channelId);
+            await sync.markWorkingFromSlack(threadTs, channelId, event.user);
           } catch (err) {
             console.error('Failed to mark working from yellow circle reaction:', err);
           }
@@ -205,7 +205,7 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
           // 🔴 = Stuck
           console.log(`Red circle reaction added (via relay) in channel ${channelId}, marking Monday item as Stuck...`);
           try {
-            await sync.markStuckFromSlack(threadTs, channelId);
+            await sync.markStuckFromSlack(threadTs, channelId, event.user);
           } catch (err) {
             console.error('Failed to mark stuck from red circle reaction:', err);
           }
