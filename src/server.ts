@@ -1484,6 +1484,26 @@ app.post('/admin/test/buttons/:mondayItemId', express.json(), async (req: Reques
   }
 });
 
+/**
+ * Migration endpoint: Add buttons to existing task threads
+ * Safe to re-run (skips threads that already have buttons)
+ *
+ * Usage: POST /admin/migrate/thread-buttons
+ */
+app.post('/admin/migrate/thread-buttons', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const { runMigration } = await import('./scripts/migrateThreadButtons.js');
+    const result = await runMigration();
+    res.json(result);
+  } catch (error) {
+    console.error('[Migration] Failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 // ============================================================================
 // Error Handling
 // ============================================================================
