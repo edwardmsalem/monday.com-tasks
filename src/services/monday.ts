@@ -736,6 +736,31 @@ export async function updateWorkflowStatus(itemId: string, status: string): Prom
 }
 
 /**
+ * Update a task's due date
+ */
+export async function updateDueDate(itemId: string, date: string): Promise<void> {
+  const query = `
+    mutation UpdateDueDate($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  await executeQuery(query, {
+    boardId: config.monday.boardId,
+    itemId,
+    columnValues: JSON.stringify({
+      [config.monday.columns.date]: { date },
+    }),
+  });
+}
+
+/**
  * Update the item name
  */
 export async function updateItemName(itemId: string, newName: string): Promise<void> {

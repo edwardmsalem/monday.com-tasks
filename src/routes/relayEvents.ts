@@ -11,6 +11,7 @@ import * as sync from '../services/sync.js';
 import * as slack from '../services/slack.js';
 import { config } from '../config/environment.js';
 import { isPendingIssueCall, claimIssueCall, isIssueCall, completeIssueCall } from '../services/issueCallTracker.js';
+import { handleInteractivityPayload, type InteractivityPayload } from './interactivity.js';
 
 const router = Router();
 
@@ -139,7 +140,7 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
     return;
   }
 
-  const body = req.body as SlackEvent;
+  const body = req.body;
 
   try {
     console.log('Relay event type:', body.type, body.event?.type);
@@ -150,11 +151,26 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
       return;
     }
 
+    // Handle interactivity payloads (block_actions, view_submission)
+    if (body.type === 'block_actions' || body.type === 'view_submission') {
+      // Acknowledge immediately
+      res.status(200).send();
+
+      // Process interactivity asynchronously
+      try {
+        await handleInteractivityPayload(body as InteractivityPayload);
+      } catch (error) {
+        console.error('[Relay] Error handling interactivity:', error);
+      }
+      return;
+    }
+
     // Acknowledge receipt immediately (return 200, process async)
     res.status(200).send();
 
-    // Process event asynchronously
+    // Process Slack events asynchronously
     if (body.type === 'event_callback' && body.event) {
+      const slackEvent = body as SlackEvent;
       const event = body.event;
 
       // Handle thread replies - sync to Monday (main channel) or remind about Monday (supporter channels)
