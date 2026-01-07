@@ -19,6 +19,7 @@ import {
   recordTaskAcknowledgment,
   setTaskStatus,
 } from '../services/digestState.js';
+import { sendCrossNotificationDM } from '../services/slack.js';
 
 const router = Router();
 const slackClient = new WebClient(config.slack.botToken);
@@ -170,6 +171,27 @@ function parseAcknowledgeValue(value: string): { taskId: string; assigneeSlackId
   return { taskId, assigneeSlackIds };
 }
 
+/**
+ * Get task info from Monday for cross-notifications
+ * Returns task name and all assignee Slack IDs
+ */
+async function getTaskInfoForCrossNotify(
+  mondayItemId: string
+): Promise<{ taskName: string; assigneeSlackIds: string[] } | null> {
+  try {
+    const taskInfo = await monday.getTaskAssignees(mondayItemId);
+    if (!taskInfo) return null;
+
+    return {
+      taskName: taskInfo.name,
+      assigneeSlackIds: taskInfo.assigneeSlackIds,
+    };
+  } catch (error) {
+    console.error(`[Interactivity] Failed to get task info for ${mondayItemId}:`, error);
+    return null;
+  }
+}
+
 async function handleTaskAcknowledge(
   value: string,
   userId: string,
@@ -284,6 +306,18 @@ async function handleTaskComplete(
       }
 
       console.log(`[Interactivity] Task ${mondayItemId} completed by ${userId}`);
+
+      // Send cross-notification DMs to other assignees
+      const taskInfo = await getTaskInfoForCrossNotify(mondayItemId);
+      if (taskInfo && taskInfo.assigneeSlackIds.length > 1) {
+        await sendCrossNotificationDM(
+          mondayItemId,
+          'complete',
+          userId,
+          taskInfo.assigneeSlackIds,
+          taskInfo.taskName
+        );
+      }
     } else {
       // Status was already set by someone else
       const existing = statusResult.existingStatus!;
@@ -323,6 +357,18 @@ async function handleTaskStuck(
       }
 
       console.log(`[Interactivity] Task ${mondayItemId} marked stuck by ${userId}`);
+
+      // Send cross-notification DMs to other assignees
+      const taskInfo = await getTaskInfoForCrossNotify(mondayItemId);
+      if (taskInfo && taskInfo.assigneeSlackIds.length > 1) {
+        await sendCrossNotificationDM(
+          mondayItemId,
+          'stuck',
+          userId,
+          taskInfo.assigneeSlackIds,
+          taskInfo.taskName
+        );
+      }
     } else {
       // Status was already set by someone else
       const existing = statusResult.existingStatus!;

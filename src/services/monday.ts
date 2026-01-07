@@ -959,6 +959,89 @@ export async function getItem(itemId: string): Promise<{
 }
 
 /**
+ * Get task name and all assignee Slack IDs for cross-notifications
+ * Returns both owner and supporter Slack IDs
+ */
+export async function getTaskAssignees(itemId: string): Promise<{
+  name: string;
+  assigneeSlackIds: string[];
+} | null> {
+  const query = `
+    query GetTaskAssignees($itemId: ID!) {
+      items(ids: [$itemId]) {
+        name
+        column_values(ids: ["${config.monday.columns.owner}", "${config.monday.columns.support}"]) {
+          id
+          value
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items: Array<{
+        name: string;
+        column_values: Array<{ id: string; value: string | null }>;
+      }>;
+    }>(query, { itemId });
+
+    const item = result.items[0];
+    if (!item) return null;
+
+    const mondayIds: string[] = [];
+
+    // Parse owner column
+    const ownerCol = item.column_values.find(c => c.id === config.monday.columns.owner);
+    if (ownerCol?.value) {
+      try {
+        const parsed = JSON.parse(ownerCol.value);
+        const ownerIds = parsed?.personsAndTeams?.map((p: { id: number }) => String(p.id)) ?? [];
+        mondayIds.push(...ownerIds);
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Parse support column
+    const supportCol = item.column_values.find(c => c.id === config.monday.columns.support);
+    if (supportCol?.value) {
+      try {
+        const parsed = JSON.parse(supportCol.value);
+        const supportIds = parsed?.personsAndTeams?.map((p: { id: number }) => String(p.id)) ?? [];
+        mondayIds.push(...supportIds);
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Convert Monday IDs to Slack IDs
+    const slackModule = await import('./slack.js');
+    const slackUsers = await slackModule.getAllUsers();
+    const mondayUsers = await getAllUsers();
+
+    const slackIds: string[] = [];
+    for (const mondayId of mondayIds) {
+      const mondayUser = mondayUsers.find(u => String(u.id) === mondayId);
+      if (mondayUser?.email) {
+        const slackUser = slackUsers.find(u => u.email?.toLowerCase() === mondayUser.email?.toLowerCase());
+        if (slackUser) {
+          slackIds.push(slackUser.id);
+        }
+      }
+    }
+
+    return {
+      name: item.name,
+      assigneeSlackIds: slackIds,
+    };
+  } catch (error) {
+    console.error('Error getting task assignees:', error);
+    return null;
+  }
+}
+
+/**
  * Check if an item has a Run ID (indicating automated creation)
  */
 export async function hasRunId(itemId: string): Promise<boolean> {
