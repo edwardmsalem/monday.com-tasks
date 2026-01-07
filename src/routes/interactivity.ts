@@ -202,7 +202,7 @@ async function handleTaskComplete(
   threadTs?: string
 ): Promise<void> {
   try {
-    await monday.updateWorkflowStatus(mondayItemId, 'Complete');
+    await monday.updateWorkflowStatus(mondayItemId, 'Done');
 
     if (channelId && threadTs) {
       await slack.postToThread(threadTs, `✅ Completed by <@${userId}>`, channelId);
