@@ -80,6 +80,7 @@ interface MondayTask {
   channelId: string;
   ownerIds: string[];
   ownerNames: string[];
+  supporterIds: string[]; // Support users (secondary assignees)
   lastUpdate: Date | null; // Most recent update timestamp
 }
 
@@ -177,6 +178,19 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
         ownerNames = ownerText.split(',').map((n: string) => n.trim());
       }
 
+      // Parse supporters (secondary assignees)
+      let supporterIds: string[] = [];
+      const supportRaw = getRawValue(config.monday.columns.support);
+
+      if (supportRaw) {
+        try {
+          const parsed = JSON.parse(supportRaw);
+          supporterIds = parsed?.personsAndTeams?.map((p: { id: number }) => String(p.id)) ?? [];
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
       // Parse Slack thread info
       const slackThreadRaw = getValue(config.monday.columns.slackThreadId);
       let slackThreadTs: string | null = null;
@@ -211,6 +225,7 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
         channelId,
         ownerIds,
         ownerNames,
+        supporterIds,
         lastUpdate,
       });
     }
@@ -468,8 +483,10 @@ export async function sendPersonalDigest(slackUserId: string): Promise<boolean> 
       }
     }
 
+    // Include tasks where user is owner OR supporter
     const userTasks = allTasks.filter((task) =>
-      task.ownerIds.some((id) => userMondayIds.includes(id))
+      task.ownerIds.some((id) => userMondayIds.includes(id)) ||
+      task.supporterIds.some((id) => userMondayIds.includes(id))
     );
 
     // Skip if user has no tasks
@@ -521,11 +538,19 @@ export async function sendAllMorningDigests(): Promise<number> {
   // Get all tasks
   const allTasks = await fetchOpenTasks();
 
-  // Get unique Slack user IDs from task owners
+  // Get unique Slack user IDs from task owners AND supporters
   const userSlackIds = new Set<string>();
 
   for (const task of allTasks) {
+    // Add owners
     for (const mondayId of task.ownerIds) {
+      const slackId = await getSlackUserIdFromMondayId(mondayId);
+      if (slackId) {
+        userSlackIds.add(slackId);
+      }
+    }
+    // Add supporters
+    for (const mondayId of task.supporterIds) {
       const slackId = await getSlackUserIdFromMondayId(mondayId);
       if (slackId) {
         userSlackIds.add(slackId);
@@ -533,7 +558,7 @@ export async function sendAllMorningDigests(): Promise<number> {
     }
   }
 
-  console.log(`[Digest] Found ${userSlackIds.size} users with tasks`);
+  console.log(`[Digest] Found ${userSlackIds.size} users with tasks (owners + supporters)`);
 
   let sent = 0;
   const currentHour = workingHours.getESTHour();
@@ -800,8 +825,10 @@ export async function sendTomorrowPrep(slackUserId: string): Promise<boolean> {
       }
     }
 
+    // Include tasks where user is owner OR supporter
     const userTasks = allTasks.filter((task) =>
-      task.ownerIds.some((id) => userMondayIds.includes(id))
+      task.ownerIds.some((id) => userMondayIds.includes(id)) ||
+      task.supporterIds.some((id) => userMondayIds.includes(id))
     );
 
     // Get tomorrow's tasks
@@ -868,11 +895,19 @@ export async function sendAllTomorrowPrep(): Promise<number> {
   // Get all tasks
   const allTasks = await fetchOpenTasks();
 
-  // Get unique Slack user IDs from task owners
+  // Get unique Slack user IDs from task owners AND supporters
   const userSlackIds = new Set<string>();
 
   for (const task of allTasks) {
+    // Add owners
     for (const mondayId of task.ownerIds) {
+      const slackId = await getSlackUserIdFromMondayId(mondayId);
+      if (slackId) {
+        userSlackIds.add(slackId);
+      }
+    }
+    // Add supporters
+    for (const mondayId of task.supporterIds) {
       const slackId = await getSlackUserIdFromMondayId(mondayId);
       if (slackId) {
         userSlackIds.add(slackId);
