@@ -36,6 +36,7 @@ export interface ExclusivityCheckResult {
   confidence: number;
   reason: string;
   presaleType: PresaleType;
+  eventName: string | null;    // The event/artist name (e.g., "Bruno Mars", "Playoff Round 1")
   presaleDate: string | null;  // For registration/upcoming: when presale starts (e.g., "Wed, Jan 14 at 12 PM")
   presaleCode: string | null;  // For upcoming/live: the presale code to use
   deadline: string | null;     // When the presale expires
@@ -88,6 +89,7 @@ PRESALE TYPES:
 - Example: "Your exclusive presale begins NOW! Use code: STHG5L8Q"
 
 EXTRACT:
+- **Event Name**: The artist, show, or event (e.g., "Bruno Mars", "Playoff Round 1", "Taylor Swift"). Use short, recognizable names.
 - For REGISTRATION: The presale start date/time (e.g., "Wed, Jan 14 at 12 PM")
 - For UPCOMING: Both the presale date AND the code
 - For LIVE: The presale code (e.g., "STHG5L8Q")
@@ -120,6 +122,10 @@ const EXCLUSIVITY_TOOL: Anthropic.Tool = {
         enum: ['registration', 'upcoming', 'live'],
         description: 'Type: "registration" (must sign up), "upcoming" (code provided, wait for date), "live" (active now)',
       },
+      eventName: {
+        type: 'string',
+        description: 'The event/artist name (e.g., "Bruno Mars", "Playoff Round 1", "Taylor Swift"). Short, recognizable name.',
+      },
       presaleDate: {
         type: 'string',
         description: 'For registration/upcoming: when presale starts (e.g., "Wed, Jan 14 at 12 PM"). Null for live.',
@@ -133,7 +139,7 @@ const EXCLUSIVITY_TOOL: Anthropic.Tool = {
         description: 'Presale deadline/expiration if mentioned (e.g., "Friday 10 PM EST"). Null if not found.',
       },
     },
-    required: ['isExclusive', 'confidence', 'reason', 'presaleType'],
+    required: ['isExclusive', 'confidence', 'reason', 'presaleType', 'eventName'],
   },
 };
 
@@ -196,6 +202,7 @@ ${bodySnippet.slice(0, 3000)}`;
         confidence: 0,
         reason: 'Failed to analyze email',
         presaleType: 'live',
+        eventName: null,
         presaleDate: null,
         presaleCode: null,
         deadline: null,
@@ -207,6 +214,7 @@ ${bodySnippet.slice(0, 3000)}`;
       confidence: number;
       reason: string;
       presaleType: PresaleType;
+      eventName?: string;
       presaleDate?: string;
       presaleCode?: string;
       deadline?: string;
@@ -223,6 +231,7 @@ ${bodySnippet.slice(0, 3000)}`;
       confidence: input.confidence,
       reason: input.reason,
       presaleType: input.presaleType,
+      eventName: input.eventName ?? null,
       presaleDate: input.presaleDate ?? null,
       presaleCode: input.presaleCode ?? null,
       deadline: input.deadline ?? null,
@@ -234,6 +243,7 @@ ${bodySnippet.slice(0, 3000)}`;
       confidence: 0,
       reason: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
       presaleType: 'live',
+      eventName: null,
       presaleDate: null,
       presaleCode: null,
       deadline: null,
@@ -257,6 +267,7 @@ export async function checkPresaleExclusivitySafe(
       confidence: 0,
       reason: `Unexpected error: ${error instanceof Error ? error.message : 'Unknown'}`,
       presaleType: 'live',
+      eventName: null,
       presaleDate: null,
       presaleCode: null,
       deadline: null,

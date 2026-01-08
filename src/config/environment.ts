@@ -180,6 +180,7 @@ export const config = {
   // Presale Scanner Configuration
   presale: {
     slackChannel: getEnvVar('SLACK_PRESALE_CHANNEL', ''),
+    operationsChannel: getEnvVar('SLACK_OPERATIONS_CHANNEL', ''),  // Channel for "Interested" notifications
     scanIntervalMs: 60 * 60 * 1000, // 1 hour
     lookbackMinutes: 60,
     sportsLabelPrefixes: ['NBA/', 'MLB/', 'NFL/', 'NHL/', 'MLS/', 'NCAA/'],

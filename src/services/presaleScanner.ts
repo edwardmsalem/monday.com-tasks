@@ -26,6 +26,7 @@ import {
   markPresaleSeen,
   updateLastScan,
   cleanupOldEntries,
+  isOpportunityDeclined,
 } from './presaleState.js';
 import { checkPresaleExclusivitySafe, type ExclusivityCheckResult } from './presaleAI.js';
 import { convertHtmlToPdf } from './convertApi.js';
@@ -563,6 +564,47 @@ async function postPresaleToSlack(
     ],
   });
 
+  // Add action buttons (Interested / Not Interested)
+  const interestedPayload = JSON.stringify({
+    dedupKey: group.dedupKey,
+    team: group.team,
+    eventName: exclusivity.eventName ?? group.subject,
+    subject: group.subject,
+  });
+
+  const declinePayload = JSON.stringify({
+    domain: group.senderDomain,
+    eventName: exclusivity.eventName ?? group.subject,
+    team: group.team,
+  });
+
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '✅ Interested',
+          emoji: true,
+        },
+        style: 'primary',
+        action_id: 'presale_interested',
+        value: interestedPayload,
+      },
+      {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '❌ Not Interested',
+          emoji: true,
+        },
+        action_id: 'presale_decline',
+        value: declinePayload,
+      },
+    ],
+  });
+
   // Post the initial message
   const messageResult = await slackCircuit.execute(() =>
     slack.chat.postMessage({
@@ -682,6 +724,14 @@ export async function scanPresales(
       if (!exclusivity.isExclusive) {
         console.log(`[PresaleScanner] SKIPPED: "${group.subject}" - not exclusive (${exclusivity.reason})`);
         // Still mark as seen to avoid rechecking
+        markPresaleSeen(group.dedupKey, '', group.emailCount, group.team, group.subject);
+        skippedCount++;
+        continue;
+      }
+
+      // Check if opportunity was previously declined
+      if (exclusivity.eventName && isOpportunityDeclined(group.senderDomain, exclusivity.eventName)) {
+        console.log(`[PresaleScanner] SKIPPED: "${group.subject}" - previously declined (${exclusivity.eventName})`);
         markPresaleSeen(group.dedupKey, '', group.emailCount, group.team, group.subject);
         skippedCount++;
         continue;

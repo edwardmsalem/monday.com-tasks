@@ -14,12 +14,16 @@
 import express, { type Request, type Response } from 'express';
 import { config } from './config/environment.js';
 import { scanPresales } from './services/presaleScanner.js';
-import { getFullState, getLastScan, reloadState, clearSeenPresales } from './services/presaleState.js';
+import { getFullState, getLastScan, reloadState, clearSeenPresales, declineOpportunity } from './services/presaleState.js';
+import { getClient as getSlackClient } from './services/slack.js';
 
 const app = express();
 
 // Parse JSON bodies
 app.use(express.json());
+
+// Parse URL-encoded bodies (for Slack interactivity)
+app.use('/webhook/slack', express.urlencoded({ extended: true }));
 
 // ============================================================================
 // Health Endpoint
@@ -101,6 +105,129 @@ app.post('/admin/presale/state/reload', (_req: Request, res: Response): void => 
 app.post('/admin/presale/reset', (_req: Request, res: Response): void => {
   const cleared = clearSeenPresales();
   res.json({ success: true, cleared, message: `Cleared ${cleared} seen presales` });
+});
+
+// ============================================================================
+// Slack Interactivity Endpoint
+// ============================================================================
+
+/**
+ * POST /webhook/slack/presale-action
+ *
+ * Handle button clicks from presale notifications
+ * - presale_interested: Post to operations channel
+ * - presale_decline: Mark opportunity as declined
+ */
+app.post('/webhook/slack/presale-action', async (req: Request, res: Response): Promise<void> => {
+  try {
+    // Slack sends payload as form-encoded with "payload" field containing JSON
+    const payloadStr = req.body?.payload;
+    if (!payloadStr) {
+      res.status(400).json({ error: 'Missing payload' });
+      return;
+    }
+
+    const payload = JSON.parse(payloadStr);
+    const actionId = payload.actions?.[0]?.action_id;
+    const actionValue = payload.actions?.[0]?.value;
+    const userId = payload.user?.id;
+    const channelId = payload.channel?.id;
+    const messageTs = payload.message?.ts;
+
+    // Acknowledge immediately (Slack times out after 3 seconds)
+    res.status(200).send();
+
+    if (!actionId || !actionValue) {
+      console.error('[PresaleServer] Invalid action payload');
+      return;
+    }
+
+    const slack = getSlackClient();
+
+    if (actionId === 'presale_interested') {
+      // Parse the interested payload
+      const data = JSON.parse(actionValue) as {
+        dedupKey: string;
+        team: string;
+        eventName: string;
+        subject: string;
+      };
+
+      console.log(`[PresaleServer] User ${userId} interested in: ${data.eventName}`);
+
+      // Post to operations channel
+      const operationsChannel = config.presale.operationsChannel;
+      if (operationsChannel) {
+        await slack.chat.postMessage({
+          channel: operationsChannel,
+          text: `✅ *Interested in presale*\n*Team:* ${data.team}\n*Event:* ${data.eventName}\n*Subject:* ${data.subject}`,
+        });
+      }
+
+      // Update the original message to show status
+      if (channelId && messageTs) {
+        const originalBlocks = payload.message?.blocks ?? [];
+        // Remove the actions block and add status
+        const updatedBlocks = originalBlocks.filter((b: any) => b.type !== 'actions');
+        updatedBlocks.push({
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: `✅ *Interested* • Posted to operations channel`,
+            },
+          ],
+        });
+
+        await slack.chat.update({
+          channel: channelId,
+          ts: messageTs,
+          blocks: updatedBlocks,
+          text: payload.message?.text ?? '',
+        });
+      }
+
+    } else if (actionId === 'presale_decline') {
+      // Parse the decline payload
+      const data = JSON.parse(actionValue) as {
+        domain: string;
+        eventName: string;
+        team: string;
+      };
+
+      console.log(`[PresaleServer] User ${userId} declined: ${data.eventName} from ${data.domain}`);
+
+      // Mark as declined in state
+      declineOpportunity(data.domain, data.eventName, data.team);
+
+      // Update the original message to show status
+      if (channelId && messageTs) {
+        const originalBlocks = payload.message?.blocks ?? [];
+        // Remove the actions block and add status
+        const updatedBlocks = originalBlocks.filter((b: any) => b.type !== 'actions');
+        updatedBlocks.push({
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: `❌ *Not Interested* • Future emails for "${data.eventName}" will be skipped`,
+            },
+          ],
+        });
+
+        await slack.chat.update({
+          channel: channelId,
+          ts: messageTs,
+          blocks: updatedBlocks,
+          text: payload.message?.text ?? '',
+        });
+      }
+    }
+
+  } catch (error) {
+    console.error('[PresaleServer] Interactivity error:', error);
+    // Don't send error response - already acknowledged
+  }
 });
 
 // ============================================================================
@@ -194,6 +321,7 @@ function start(): void {
     console.log(`    GET  /admin/presale/state`);
     console.log(`    POST /admin/presale/state/reload`);
     console.log(`    POST /admin/presale/reset`);
+    console.log(`    POST /webhook/slack/presale-action`);
     console.log('============================================');
     console.log('');
 
