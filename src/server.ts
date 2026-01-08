@@ -382,7 +382,7 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
       });
 
       const mondayUrl = monday.getItemUrl(result.mondayItemId);
-      const slackThreadUrl = `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${result.slackThreadTs}`;
+      const slackThreadUrl = `https://slack.com/archives/${config.slack.channelId}/p${result.slackThreadTs.replace('.', '')}`;
 
       // Post creator attribution to thread
       await slack.postToThread(
@@ -1069,7 +1069,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
 
     // Send confirmation via response_url
-    const slackThreadUrl = `https://slack.com/app_redirect?channel=${issueCallChannelId}&message_ts=${slackMessage.ts}`;
+    const slackThreadUrl = `https://slack.com/archives/${issueCallChannelId}/p${slackMessage.ts.replace('.', '')}`;
     const emailDisplay = emails.length === 1 ? emails[0] : emails.join(', ');
     await slack.sendResponseUrl(response_url,
       `✅ *Issue Call Created*\n\n` +

@@ -28,8 +28,8 @@ const SCHEDULE = {
   dailyReports: { hour: 18, minute: 0 }, // 6:00 PM - supervisor & executive reports
 };
 
-// Track what's been sent today to avoid duplicates
-const sentToday = new Map<string, boolean>();
+// Note: Sent tracking is now persisted in digestState.scheduledTasksSent
+// to survive server reboots
 
 // Scheduler state
 let schedulerInterval: NodeJS.Timeout | null = null;
@@ -53,6 +53,13 @@ export interface SchedulerStatus {
 
 export function getSchedulerStatus(): SchedulerStatus {
   const now = new Date();
+  const state = digestState.getFullState();
+  const todayPrefix = workingHours.getESTDateString();
+
+  // Get sent tasks for today from persisted state
+  const sentTodayList = Object.keys(state.scheduledTasksSent || {})
+    .filter(k => k.startsWith(todayPrefix) && state.scheduledTasksSent[k]);
+
   return {
     isRunning,
     lastCheckTime,
@@ -60,34 +67,13 @@ export function getSchedulerStatus(): SchedulerStatus {
     currentTimeEST: workingHours.formatDateEST(now, true),
     isBusinessDay: workingHours.isBusinessDay(now),
     isWorkingHours: workingHours.isWorkingHours(now),
-    sentToday: Array.from(sentToday.keys()).filter((k) => sentToday.get(k)),
+    sentToday: sentTodayList,
   };
 }
 
 // ============================================================================
 // Schedule Checking
 // ============================================================================
-
-/**
- * Get a unique key for today's date
- */
-function getTodayKey(): string {
-  return workingHours.getESTDateString();
-}
-
-/**
- * Reset sent tracking at midnight
- */
-function checkDayReset(): void {
-  const todayKey = getTodayKey();
-  const firstKey = sentToday.keys().next().value;
-
-  if (firstKey && !firstKey.startsWith(todayKey)) {
-    console.log('[Scheduler] New day detected, resetting tracking');
-    sentToday.clear();
-    digestState.checkAndResetForNewDay();
-  }
-}
 
 /**
  * Check if a specific time slot matches current time
@@ -105,22 +91,6 @@ function isTimeToRun(schedule: { hour: number; minute: number }): boolean {
   );
 }
 
-/**
- * Mark a job as sent for today
- */
-function markSent(jobName: string): void {
-  const key = `${getTodayKey()}-${jobName}`;
-  sentToday.set(key, true);
-}
-
-/**
- * Check if a job has been sent today
- */
-function hasSentToday(jobName: string): boolean {
-  const key = `${getTodayKey()}-${jobName}`;
-  return sentToday.get(key) === true;
-}
-
 // ============================================================================
 // Scheduler Loop
 // ============================================================================
@@ -133,8 +103,8 @@ async function runSchedulerCheck(): Promise<void> {
   lastCheckTime = now;
 
   try {
-    // Reset tracking if it's a new day
-    checkDayReset();
+    // Reset state if it's a new day (persisted to disk)
+    digestState.checkAndResetForNewDay();
 
     // Skip if not a business day
     if (!workingHours.isBusinessDay(now)) {
@@ -145,47 +115,47 @@ async function runSchedulerCheck(): Promise<void> {
     const tasks: string[] = [];
 
     // Morning Digests (10:00 AM)
-    if (isTimeToRun(SCHEDULE.morningDigest) && !hasSentToday('morning-digest')) {
+    if (isTimeToRun(SCHEDULE.morningDigest) && !digestState.hasScheduledTaskBeenSent('morning-digest')) {
       tasks.push('morning-digest');
     }
 
     // Issue Call Digest (10:00 AM)
-    if (isTimeToRun(SCHEDULE.issueCallDigest) && !hasSentToday('issue-call-digest')) {
+    if (isTimeToRun(SCHEDULE.issueCallDigest) && !digestState.hasScheduledTaskBeenSent('issue-call-digest')) {
       tasks.push('issue-call-digest');
     }
 
     // Team Overview (10:00 AM)
-    if (isTimeToRun(SCHEDULE.teamOverview) && !hasSentToday('team-overview')) {
+    if (isTimeToRun(SCHEDULE.teamOverview) && !digestState.hasScheduledTaskBeenSent('team-overview')) {
       tasks.push('team-overview');
     }
 
     // Dayna's Digest (12:00 PM)
-    if (isTimeToRun(SCHEDULE.daynaDigest) && !hasSentToday('dayna-digest')) {
+    if (isTimeToRun(SCHEDULE.daynaDigest) && !digestState.hasScheduledTaskBeenSent('dayna-digest')) {
       tasks.push('dayna-digest');
     }
 
     // First Escalation Check (12:00 PM)
-    if (isTimeToRun(SCHEDULE.firstEscalation) && !hasSentToday('first-escalation')) {
+    if (isTimeToRun(SCHEDULE.firstEscalation) && !digestState.hasScheduledTaskBeenSent('first-escalation')) {
       tasks.push('first-escalation');
     }
 
     // Final Escalation Check (1:30 PM)
-    if (isTimeToRun(SCHEDULE.finalEscalation) && !hasSentToday('final-escalation')) {
+    if (isTimeToRun(SCHEDULE.finalEscalation) && !digestState.hasScheduledTaskBeenSent('final-escalation')) {
       tasks.push('final-escalation');
     }
 
     // Tomorrow Prep (5:30 PM)
-    if (isTimeToRun(SCHEDULE.tomorrowPrep) && !hasSentToday('tomorrow-prep')) {
+    if (isTimeToRun(SCHEDULE.tomorrowPrep) && !digestState.hasScheduledTaskBeenSent('tomorrow-prep')) {
       tasks.push('tomorrow-prep');
     }
 
     // Issue Call EOD (5:30 PM)
-    if (isTimeToRun(SCHEDULE.issueCallEOD) && !hasSentToday('issue-call-eod')) {
+    if (isTimeToRun(SCHEDULE.issueCallEOD) && !digestState.hasScheduledTaskBeenSent('issue-call-eod')) {
       tasks.push('issue-call-eod');
     }
 
     // Daily Reports (6:00 PM) - supervisor and executive reports
-    if (isTimeToRun(SCHEDULE.dailyReports) && !hasSentToday('daily-reports')) {
+    if (isTimeToRun(SCHEDULE.dailyReports) && !digestState.hasScheduledTaskBeenSent('daily-reports')) {
       tasks.push('daily-reports');
     }
 
@@ -197,9 +167,9 @@ async function runSchedulerCheck(): Promise<void> {
     console.log(`[Scheduler] Running tasks: ${tasks.join(', ')}`);
 
     // Mark all tasks as sent BEFORE executing to prevent duplicate runs
-    // if tasks take longer than the scheduler interval
+    // if tasks take longer than the scheduler interval (persisted to disk)
     for (const task of tasks) {
-      markSent(task);
+      digestState.markScheduledTaskSent(task);
     }
 
     // Execute tasks
@@ -410,7 +380,7 @@ export async function triggerEscalationCheck(): Promise<{ checked: boolean }> {
  */
 export function resetTodayTracking(): void {
   console.log('[Scheduler] Resetting today tracking');
-  sentToday.clear();
+  digestState.clearScheduledTasksSent();
   digestState.clearAllState();
 }
 
