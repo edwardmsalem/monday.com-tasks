@@ -25,6 +25,7 @@ const SCHEDULE = {
   finalEscalation: { hour: 13, minute: 30 }, // 1:30 PM
   tomorrowPrep: { hour: 17, minute: 30 }, // 5:30 PM
   issueCallEOD: { hour: 17, minute: 30 }, // 5:30 PM
+  dailyReports: { hour: 18, minute: 0 }, // 6:00 PM - supervisor & executive reports
 };
 
 // Track what's been sent today to avoid duplicates
@@ -183,6 +184,11 @@ async function runSchedulerCheck(): Promise<void> {
       tasks.push('issue-call-eod');
     }
 
+    // Daily Reports (6:00 PM) - supervisor and executive reports
+    if (isTimeToRun(SCHEDULE.dailyReports) && !hasSentToday('daily-reports')) {
+      tasks.push('daily-reports');
+    }
+
     if (tasks.length === 0) {
       lastCheckStatus = 'No tasks to run';
       return;
@@ -229,6 +235,11 @@ async function runSchedulerCheck(): Promise<void> {
           case 'issue-call-eod':
             await digest.sendIssueCallEOD();
             markSent('issue-call-eod');
+            break;
+
+          case 'daily-reports':
+            await digest.sendAllDailyReports();
+            markSent('daily-reports');
             break;
         }
 
@@ -403,4 +414,39 @@ export function resetTodayTracking(): void {
   console.log('[Scheduler] Resetting today tracking');
   sentToday.clear();
   digestState.clearAllState();
+}
+
+/**
+ * Manually trigger all daily reports (supervisor + executive)
+ */
+export async function triggerDailyReports(): Promise<{ garet: boolean; ruzzell: boolean; executive: boolean }> {
+  console.log('[Scheduler] Manual trigger: daily reports');
+  return await digest.sendAllDailyReports();
+}
+
+/**
+ * Manually trigger Garet's supervisor report
+ */
+export async function triggerGaretReport(): Promise<{ success: boolean }> {
+  console.log('[Scheduler] Manual trigger: Garet report');
+  const success = await digest.sendSupervisorReportGaret();
+  return { success };
+}
+
+/**
+ * Manually trigger Ruzzell's supervisor report
+ */
+export async function triggerRuzzellReport(): Promise<{ success: boolean }> {
+  console.log('[Scheduler] Manual trigger: Ruzzell report');
+  const success = await digest.sendSupervisorReportRuzzell();
+  return { success };
+}
+
+/**
+ * Manually trigger executive report
+ */
+export async function triggerExecutiveReport(): Promise<{ success: boolean }> {
+  console.log('[Scheduler] Manual trigger: executive report');
+  const success = await digest.sendExecutiveReport();
+  return { success };
 }

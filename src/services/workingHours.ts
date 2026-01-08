@@ -282,6 +282,15 @@ export function isWithinDays(date: Date, days: number, now: Date = new Date()): 
 }
 
 /**
+ * Check if a date is in the past (overdue)
+ */
+export function isOverdue(dueDate: Date, now: Date = new Date()): boolean {
+  const dueDateString = getESTDateString(dueDate);
+  const nowDateString = getESTDateString(now);
+  return dueDateString < nowDateString;
+}
+
+/**
  * Get the number of days late a task is
  * Returns 0 if not overdue
  */
