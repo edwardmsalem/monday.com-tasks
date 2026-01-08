@@ -196,50 +196,48 @@ async function runSchedulerCheck(): Promise<void> {
 
     console.log(`[Scheduler] Running tasks: ${tasks.join(', ')}`);
 
+    // Mark all tasks as sent BEFORE executing to prevent duplicate runs
+    // if tasks take longer than the scheduler interval
+    for (const task of tasks) {
+      markSent(task);
+    }
+
     // Execute tasks
     for (const task of tasks) {
       try {
         switch (task) {
           case 'morning-digest':
             await digest.sendAllMorningDigests();
-            markSent('morning-digest');
             break;
 
           case 'issue-call-digest':
             await digest.sendIssueCallDigest();
-            markSent('issue-call-digest');
             break;
 
           case 'team-overview':
             await digest.sendTeamOverview();
-            markSent('team-overview');
             break;
 
           case 'dayna-digest':
             // Dayna's custom digest time
             await digest.sendPersonalDigest('U05BRER83HT');
-            markSent('dayna-digest');
             break;
 
           case 'first-escalation':
           case 'final-escalation':
             await digest.checkRegularTaskEscalations();
-            markSent(task);
             break;
 
           case 'tomorrow-prep':
             await digest.sendAllTomorrowPrep();
-            markSent('tomorrow-prep');
             break;
 
           case 'issue-call-eod':
             await digest.sendIssueCallEOD();
-            markSent('issue-call-eod');
             break;
 
           case 'daily-reports':
             await digest.sendAllDailyReports();
-            markSent('daily-reports');
             break;
         }
 
