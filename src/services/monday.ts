@@ -1637,9 +1637,14 @@ export async function getTaskDebugInfo(itemId: string): Promise<TaskDebugInfo | 
 
     // Build Slack thread URL if we have the thread ID
     const slackThreadId = getValue(columns.slackThreadId);
-    const slackThreadUrl = slackThreadId
-      ? `https://slack.com/app_redirect?channel=${config.slack.channelId}&message_ts=${slackThreadId}`
-      : null;
+    let slackThreadUrl: string | null = null;
+    if (slackThreadId) {
+      // Parse channelId:threadTs format or just threadTs
+      const [channelId, threadTs] = slackThreadId.includes(':')
+        ? slackThreadId.split(':')
+        : [config.slack.channelId, slackThreadId];
+      slackThreadUrl = `https://slack.com/archives/${channelId}/p${threadTs.replace('.', '')}`;
+    }
 
     return {
       mondayItemId: item.id,
