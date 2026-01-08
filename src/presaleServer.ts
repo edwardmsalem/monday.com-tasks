@@ -14,7 +14,7 @@
 import express, { type Request, type Response } from 'express';
 import { config } from './config/environment.js';
 import { scanPresales } from './services/presaleScanner.js';
-import { getFullState, getLastScan, reloadState } from './services/presaleState.js';
+import { getFullState, getLastScan, reloadState, clearSeenPresales } from './services/presaleState.js';
 
 const app = express();
 
@@ -91,6 +91,16 @@ app.get('/admin/presale/state', (_req: Request, res: Response): void => {
 app.post('/admin/presale/state/reload', (_req: Request, res: Response): void => {
   reloadState();
   res.json({ success: true, message: 'State reloaded from disk' });
+});
+
+/**
+ * POST /admin/presale/reset
+ *
+ * Clear all seen presales (for testing)
+ */
+app.post('/admin/presale/reset', (_req: Request, res: Response): void => {
+  const cleared = clearSeenPresales();
+  res.json({ success: true, cleared, message: `Cleared ${cleared} seen presales` });
 });
 
 // ============================================================================
@@ -183,6 +193,7 @@ function start(): void {
     console.log(`    POST /admin/presale/scan`);
     console.log(`    GET  /admin/presale/state`);
     console.log(`    POST /admin/presale/state/reload`);
+    console.log(`    POST /admin/presale/reset`);
     console.log('============================================');
     console.log('');
 

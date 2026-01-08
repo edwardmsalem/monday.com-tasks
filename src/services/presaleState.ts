@@ -250,6 +250,18 @@ export function cleanupOldEntries(daysToKeep: number = 7): number {
   return removedCount;
 }
 
+/**
+ * Clear all seen presales (for testing)
+ */
+export function clearSeenPresales(): number {
+  const state = getState();
+  const count = Object.keys(state.seenPresales).length;
+  state.seenPresales = {};
+  savePresaleState(state);
+  console.log(`[PresaleState] Cleared ${count} seen presales`);
+  return count;
+}
+
 // ============================================================================
 // Debug / Admin
 // ============================================================================
