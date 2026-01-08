@@ -88,6 +88,11 @@ export interface DigestState {
       sentAt: number;
     };
   };
+
+  // Track which scheduled tasks have been sent today (survives reboot)
+  scheduledTasksSent: {
+    [key: string]: boolean; // "2026-01-08-morning-digest" -> true
+  };
 }
 
 // ============================================================================
@@ -104,6 +109,7 @@ function createDefaultState(): DigestState {
     digestAcks: {},
     issueCallEscalations: {},
     digestMessages: {},
+    scheduledTasksSent: {},
   };
 }
 
@@ -189,6 +195,7 @@ export function checkAndResetForNewDay(): void {
     state.escalationsSent = {};
     state.digestAcks = {};
     state.digestMessages = {};
+    state.scheduledTasksSent = {};
     state.lastDigestDate = today;
 
     // Keep issue call escalations (they span days until resolved)
@@ -637,6 +644,44 @@ export function clearAllState(): void {
 export function reloadState(): DigestState {
   cachedState = null;
   return loadDigestState();
+}
+
+// ============================================================================
+// Scheduled Task Tracking (survives reboot)
+// ============================================================================
+
+/**
+ * Mark a scheduled task as sent for today
+ */
+export function markScheduledTaskSent(taskName: string): void {
+  const state = getState();
+  const key = `${getESTDateString()}-${taskName}`;
+
+  if (!state.scheduledTasksSent) {
+    state.scheduledTasksSent = {};
+  }
+
+  state.scheduledTasksSent[key] = true;
+  saveDigestState(state);
+  console.log(`[DigestState] Scheduled task marked as sent: ${key}`);
+}
+
+/**
+ * Check if a scheduled task has been sent today
+ */
+export function hasScheduledTaskBeenSent(taskName: string): boolean {
+  const state = getState();
+  const key = `${getESTDateString()}-${taskName}`;
+  return state.scheduledTasksSent?.[key] === true;
+}
+
+/**
+ * Clear scheduled task tracking (called on new day)
+ */
+export function clearScheduledTasksSent(): void {
+  const state = getState();
+  state.scheduledTasksSent = {};
+  saveDigestState(state);
 }
 
 // ============================================================================
