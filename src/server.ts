@@ -24,8 +24,9 @@ import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
 import * as sync from './services/sync.js';
 import { findUserByName, findUserBySlackId } from './services/userResolver.js';
-import { startFollowUpScheduler, checkAndSendFollowUps } from './services/autoFollowUp.js';
-import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
+// Old notification system - disabled, replaced by digestScheduler
+// import { startFollowUpScheduler, checkAndSendFollowUps } from './services/autoFollowUp.js';
+// import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
 import { initializeJobQueue } from './services/jobQueue.js';
 import {
   checkIdempotency,
@@ -418,10 +419,11 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 
 import { lookupAccountForIssueCall, formatIssueCallAccount, logSheetsConfiguration } from './services/sheets.js';
 import { parseIssueCallInputSafe } from './services/claude.js';
-import {
-  registerIssueCall,
-  CLOSERS_GROUP_ID,
-} from './services/issueCallTracker.js';
+// Old notification system - disabled, replaced by digestScheduler
+// import {
+//   registerIssueCall,
+//   CLOSERS_GROUP_ID,
+// } from './services/issueCallTracker.js';
 
 /**
  * Expand short team names to full official names for Monday.com
@@ -1053,19 +1055,16 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Pass the issue call channel ID so syncs go to the right channel
     await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts, issueCallChannelId);
 
-    // Register this issue call for monitoring (20-min pings until claimed)
-    // If supporter already assigned, mark as claimed so no pings are sent
-    const supporterSlackId = supporterUser?.slackId ?? undefined;  // Convert null to undefined
-    registerIssueCall({
-      mondayItemId: mondayItem.id,
-      slackThreadTs: slackMessage.ts,
-      channelId: issueCallChannelId,
-      createdAt: Date.now(),
-      ownerSlackIds: [dayna.slackId, ruzzell.slackId].filter((id): id is string => !!id),
-      suggestedSupporterSlackId: supporterSlackId,
-      // If supporter already assigned, mark as pre-claimed
-      ...(supporterSlackId ? { claimed: true, claimedBy: supporterSlackId } : {}),
-    });
+    // Old notification system - disabled, replaced by digestScheduler
+    // registerIssueCall({
+    //   mondayItemId: mondayItem.id,
+    //   slackThreadTs: slackMessage.ts,
+    //   channelId: issueCallChannelId,
+    //   createdAt: Date.now(),
+    //   ownerSlackIds: [dayna.slackId, ruzzell.slackId].filter((id): id is string => !!id),
+    //   suggestedSupporterSlackId: supporterUser?.slackId,
+    //   ...(supporterUser?.slackId ? { claimed: true, claimedBy: supporterUser.slackId } : {}),
+    // });
 
     console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
 
@@ -1334,44 +1333,9 @@ app.post('/webhook/slack/rename-issuecalls', slackUrlEncodedWithRawBody, async (
 });
 
 // ============================================================================
-// Slack /trigger-followups Command - Manually trigger task reminders
+// Slack /trigger-followups Command - DISABLED (replaced by digest system)
 // ============================================================================
-
-/**
- * /trigger-followups slash command handler
- * Manually triggers the follow-up reminder check (bypasses business hours)
- */
-app.post('/webhook/slack/trigger-followups', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
-  if (!verifySlackSignature(req)) {
-    res.status(401).send('Invalid signature');
-    return;
-  }
-
-  const { response_url, user_id } = req.body;
-
-  // Acknowledge immediately
-  res.json({
-    response_type: 'ephemeral',
-    text: `🔄 Triggering follow-up reminders...`,
-  });
-
-  try {
-    console.log(`/trigger-followups command received from ${user_id}`);
-
-    // Run with force=true to bypass business hours check
-    const result = await checkAndSendFollowUps(true);
-
-    await slack.sendResponseUrl(response_url,
-      `✅ *Follow-up check complete*\n\nSent ${result.sent} reminders.` +
-      (result.skipped ? `\nSkipped: ${result.skipped}` : '')
-    );
-  } catch (error) {
-    console.error('/trigger-followups error:', error);
-    await slack.sendResponseUrl(response_url,
-      `:x: Error: ${error instanceof Error ? error.message : 'Unknown error'}`
-    );
-  }
-});
+// Use /admin/digest/escalations instead for manual triggering
 
 // ============================================================================
 // Admin Test Endpoints
@@ -1702,19 +1666,13 @@ function start() {
     console.log(`  Relay events:    http://localhost:${config.port}/relay/events`);
     console.log('');
 
-    // Start auto follow-up scheduler (checks every hour)
-    startFollowUpScheduler();
-    console.log('Auto follow-up scheduler started (hourly)');
-
-    // Start after-hours scheduler (8 AM release, 11 AM reminder)
-    startAfterHoursScheduler();
-    console.log('After-hours scheduler started (8 AM release, 11 AM reminder)');
+    // Old notification system - disabled, replaced by digestScheduler
+    // startFollowUpScheduler();
+    // startAfterHoursScheduler();
 
     // Start digest scheduler (Phase 4 - Digest Notification System)
-    // Disabled by default during development - enable when ready for production
-    // digestScheduler.startDigestScheduler();
-    // console.log('Digest scheduler started (morning digests, escalations, EOD)');
-    console.log('Digest scheduler available (manual triggers via /admin/digest/*)');
+    digestScheduler.startDigestScheduler();
+    console.log('Digest scheduler started (morning digests, escalations, EOD)');
   });
 }
 
