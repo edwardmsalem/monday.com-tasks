@@ -638,3 +638,65 @@ export function reloadState(): DigestState {
   cachedState = null;
   return loadDigestState();
 }
+
+// ============================================================================
+// Weekly Escalation Tracking (for supervisor reports)
+// ============================================================================
+
+/**
+ * Get weekly escalation counts by user name (regular tasks)
+ * Looks at escalations sent in the past 7 days
+ */
+export function getWeeklyEscalationCounts(): Map<string, number> {
+  const state = getState();
+  const counts = new Map<string, number>();
+
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  for (const [key, timestamp] of Object.entries(state.escalationsSent)) {
+    // Only count regular task escalations (not issue calls)
+    if (!key.startsWith('regular-')) continue;
+
+    // Only count if within last 7 days
+    if (timestamp < sevenDaysAgo.getTime()) continue;
+
+    // Extract user ID from key format: "regular-{level}-{userId}-{date}"
+    const parts = key.split('-');
+    if (parts.length >= 4) {
+      const userId = parts[2];
+      counts.set(userId, (counts.get(userId) || 0) + 1);
+    }
+  }
+
+  return counts;
+}
+
+/**
+ * Get weekly issue call escalation counts by user name
+ * Looks at issue call escalations in the past 7 days
+ */
+export function getWeeklyIssueCallEscalationCounts(): Map<string, number> {
+  const state = getState();
+  const counts = new Map<string, number>();
+
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  for (const [key, timestamp] of Object.entries(state.escalationsSent)) {
+    // Only count issue call escalations
+    if (!key.startsWith('issue-claim-') && !key.startsWith('issue-completion-')) continue;
+
+    // Only count if within last 7 days
+    if (timestamp < sevenDaysAgo.getTime()) continue;
+
+    // Extract issue call ID from key format: "issue-{type}-{level}-{issueCallId}-{date}"
+    const parts = key.split('-');
+    if (parts.length >= 5) {
+      const issueCallId = parts[3];
+      counts.set(issueCallId, (counts.get(issueCallId) || 0) + 1);
+    }
+  }
+
+  return counts;
+}

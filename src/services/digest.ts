@@ -1268,3 +1268,616 @@ export async function checkIssueCallEscalations(): Promise<void> {
     }
   }
 }
+
+// ============================================================================
+// Daily Supervisor Reports (6 PM EST)
+// ============================================================================
+
+// Supervisor IDs
+const SUPERVISOR_IDS = {
+  garet: 'U04CFCNAN4Q',      // Garet - non-issue call tasks
+  ruzzell: 'U072TG6N57A',    // Ruzzell - issue calls
+  executive: 'U0144K906KA',  // Edward - executive (everything)
+};
+
+/**
+ * Fetch all tasks (including completed) for today's activity report
+ */
+async function fetchAllTasksForReport(): Promise<MondayTask[]> {
+  const monday = await import('./monday.js');
+
+  const query = `
+    query GetAllTasksForReport($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(limit: 500) {
+          items {
+            id
+            name
+            created_at
+            updated_at
+            column_values {
+              id
+              text
+              value
+            }
+            updates(limit: 1) {
+              created_at
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await fetch('https://api.monday.com/v2', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: config.monday.apiToken,
+        'API-Version': '2024-10',
+      },
+      body: JSON.stringify({
+        query,
+        variables: { boardId: config.monday.boardId },
+      }),
+    });
+
+    const result = (await response.json()) as any;
+    const items = result.data?.boards?.[0]?.items_page?.items ?? [];
+    const tasks: MondayTask[] = [];
+
+    for (const item of items) {
+      const getValue = (colId: string): string | null => {
+        const col = item.column_values.find((c: any) => c.id === colId);
+        return col?.text || null;
+      };
+
+      const getRawValue = (colId: string): string | null => {
+        const col = item.column_values.find((c: any) => c.id === colId);
+        return col?.value || null;
+      };
+
+      // Parse due date
+      const dueDateStr = getValue(config.monday.columns.date);
+      let dueDate: Date | null = null;
+      if (dueDateStr) {
+        dueDate = workingHours.parseDate(dueDateStr);
+      }
+
+      // Parse owners
+      let ownerIds: string[] = [];
+      let ownerNames: string[] = [];
+      const ownerRaw = getRawValue(config.monday.columns.owner);
+      const ownerText = getValue(config.monday.columns.owner);
+
+      if (ownerRaw) {
+        try {
+          const parsed = JSON.parse(ownerRaw);
+          ownerIds = parsed?.personsAndTeams?.map((p: { id: number }) => String(p.id)) ?? [];
+        } catch {
+          // Ignore
+        }
+      }
+      if (ownerText) {
+        ownerNames = ownerText.split(',').map((n: string) => n.trim());
+      }
+
+      // Parse supporters
+      let supporterIds: string[] = [];
+      const supportRaw = getRawValue(config.monday.columns.support);
+      if (supportRaw) {
+        try {
+          const parsed = JSON.parse(supportRaw);
+          supporterIds = parsed?.personsAndTeams?.map((p: { id: number }) => String(p.id)) ?? [];
+        } catch {
+          // Ignore
+        }
+      }
+
+      // Parse Slack thread info
+      const slackThreadRaw = getValue(config.monday.columns.slackThreadId);
+      let slackThreadTs: string | null = null;
+      let channelId = config.slack.channelId;
+      if (slackThreadRaw) {
+        const parsed = monday.parseSlackThreadValue(slackThreadRaw);
+        if (parsed) {
+          slackThreadTs = parsed.threadTs;
+          channelId = parsed.channelId;
+        }
+      }
+
+      // Get last update
+      let lastUpdate: Date | null = null;
+      const latestUpdateComment = item.updates?.[0]?.created_at;
+      if (latestUpdateComment) {
+        lastUpdate = new Date(latestUpdateComment);
+      } else if (item.updated_at) {
+        lastUpdate = new Date(item.updated_at);
+      }
+
+      tasks.push({
+        id: item.id,
+        name: item.name,
+        dueDate,
+        workflowStatus: getValue(config.monday.columns.workflowStatus),
+        taskType: getValue(config.monday.columns.type),
+        slackThreadTs,
+        channelId,
+        ownerIds,
+        ownerNames,
+        supporterIds,
+        lastUpdate,
+      });
+    }
+
+    return tasks;
+  } catch (error) {
+    console.error('[Report] Error fetching tasks:', error);
+    return [];
+  }
+}
+
+/**
+ * Build supervisor report blocks for Garet (non-issue call tasks)
+ */
+function buildGaretReportBlocks(
+  tasks: MondayTask[],
+  escalationCounts: Map<string, number>
+): any[] {
+  const today = workingHours.getESTDateString();
+  const nonIssueCalls = tasks.filter(t => t.taskType !== 'Issue Call');
+
+  // Categorize tasks
+  const completedToday = nonIssueCalls.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    const updatedToday = t.lastUpdate && workingHours.formatDateEST(t.lastUpdate).startsWith(today);
+    return (status === 'done' || status === 'complete') && updatedToday;
+  });
+
+  const stillOpen = nonIssueCalls.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    return status !== 'done' && status !== 'complete';
+  });
+
+  const confirmedOnTime = stillOpen.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    return status === 'acknowledged' || status === 'working on it';
+  });
+
+  const unconfirmed = stillOpen.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    return !status || status === 'new' || status === 'pending';
+  });
+
+  const overdue = stillOpen.filter(t => {
+    if (!t.dueDate) return false;
+    return workingHours.isOverdue(t.dueDate);
+  });
+
+  // Tomorrow's tasks
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = workingHours.formatDateEST(tomorrow).split(' ')[0];
+  const dueTomorrow = nonIssueCalls.filter(t => {
+    if (!t.dueDate) return false;
+    const dueStr = workingHours.formatDateEST(t.dueDate).split(' ')[0];
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    return dueStr === tomorrowStr && status !== 'done' && status !== 'complete';
+  });
+
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '📊 Daily Task Report', emoji: true },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `*${workingHours.formatDateEST(new Date(), true)}*` }],
+    },
+    { type: 'divider' },
+  ];
+
+  // Summary stats
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*Today's Summary*\n` +
+        `✅ Completed: ${completedToday.length}\n` +
+        `👀 Confirmed/Working: ${confirmedOnTime.length}\n` +
+        `⏳ Unconfirmed: ${unconfirmed.length}\n` +
+        `🔴 Overdue: ${overdue.length}`,
+    },
+  });
+
+  // Completed tasks
+  if (completedToday.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*✅ Completed Today (${completedToday.length})*\n` +
+          completedToday.slice(0, 10).map(t =>
+            `• ${t.name} - ${t.ownerNames.join(', ') || 'Unassigned'}`
+          ).join('\n') +
+          (completedToday.length > 10 ? `\n_...and ${completedToday.length - 10} more_` : ''),
+      },
+    });
+  }
+
+  // Overdue/escalated
+  if (overdue.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*🔴 Overdue/Needs Attention (${overdue.length})*\n` +
+          overdue.slice(0, 10).map(t =>
+            `• ${t.name} - ${t.ownerNames.join(', ') || 'Unassigned'} (due ${t.dueDate ? workingHours.formatDateEST(t.dueDate) : 'N/A'})`
+          ).join('\n') +
+          (overdue.length > 10 ? `\n_...and ${overdue.length - 10} more_` : ''),
+      },
+    });
+  }
+
+  // Weekly escalation counts
+  if (escalationCounts.size > 0) {
+    blocks.push({ type: 'divider' });
+    const escLines = Array.from(escalationCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => `• ${name}: ${count} escalations`);
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*📈 This Week's Escalations*\n${escLines.join('\n') || '_None_'}`,
+      },
+    });
+  }
+
+  // Tomorrow preview
+  if (dueTomorrow.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*📅 Due Tomorrow (${dueTomorrow.length})*\n` +
+          dueTomorrow.slice(0, 10).map(t =>
+            `• ${t.name} - ${t.ownerNames.join(', ') || 'Unassigned'}`
+          ).join('\n') +
+          (dueTomorrow.length > 10 ? `\n_...and ${dueTomorrow.length - 10} more_` : ''),
+      },
+    });
+  }
+
+  return blocks;
+}
+
+/**
+ * Build supervisor report blocks for Ruzzell (issue calls only)
+ */
+function buildRuzzellReportBlocks(
+  tasks: MondayTask[],
+  escalationCounts: Map<string, number>
+): any[] {
+  const today = workingHours.getESTDateString();
+  const issueCalls = tasks.filter(t => t.taskType === 'Issue Call');
+
+  // Categorize
+  const closedToday = issueCalls.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    const updatedToday = t.lastUpdate && workingHours.formatDateEST(t.lastUpdate).startsWith(today);
+    return (status === 'done' || status === 'complete') && updatedToday;
+  });
+
+  const stillOpen = issueCalls.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    return status !== 'done' && status !== 'complete';
+  });
+
+  const claimed = stillOpen.filter(t => t.supporterIds.length > 0 || t.ownerIds.length > 2);
+  const unclaimed = stillOpen.filter(t => t.supporterIds.length === 0 && t.ownerIds.length <= 2);
+
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '📞 Daily Issue Call Report', emoji: true },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `*${workingHours.formatDateEST(new Date(), true)}*` }],
+    },
+    { type: 'divider' },
+  ];
+
+  // Summary
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*Today's Summary*\n` +
+        `✅ Closed: ${closedToday.length}\n` +
+        `🟢 Claimed & Open: ${claimed.length}\n` +
+        `⏳ Unclaimed: ${unclaimed.length}\n` +
+        `📊 Total Open: ${stillOpen.length}`,
+    },
+  });
+
+  // Closed today
+  if (closedToday.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*✅ Closed Today (${closedToday.length})*\n` +
+          closedToday.slice(0, 10).map(t =>
+            `• ${t.name.split(' - ')[0]} - ${t.ownerNames.join(', ')}`
+          ).join('\n') +
+          (closedToday.length > 10 ? `\n_...and ${closedToday.length - 10} more_` : ''),
+      },
+    });
+  }
+
+  // Unclaimed
+  if (unclaimed.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*⏳ Unclaimed (${unclaimed.length})*\n` +
+          unclaimed.slice(0, 10).map(t =>
+            `• ${t.name.split(' - ')[0]} (due ${t.dueDate ? workingHours.formatDateEST(t.dueDate) : 'N/A'})`
+          ).join('\n') +
+          (unclaimed.length > 10 ? `\n_...and ${unclaimed.length - 10} more_` : ''),
+      },
+    });
+  }
+
+  // Still open
+  if (claimed.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*🟢 Claimed & Open (${claimed.length})*\n` +
+          claimed.slice(0, 10).map(t =>
+            `• ${t.name.split(' - ')[0]} - ${t.ownerNames.join(', ')}`
+          ).join('\n') +
+          (claimed.length > 10 ? `\n_...and ${claimed.length - 10} more_` : ''),
+      },
+    });
+  }
+
+  // Weekly patterns
+  if (escalationCounts.size > 0) {
+    blocks.push({ type: 'divider' });
+    const escLines = Array.from(escalationCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => `• ${name}: ${count}`);
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*📈 This Week's Issue Call Escalations*\n${escLines.join('\n') || '_None_'}`,
+      },
+    });
+  }
+
+  return blocks;
+}
+
+/**
+ * Build executive report blocks (everything)
+ */
+function buildExecutiveReportBlocks(
+  tasks: MondayTask[],
+  taskEscalations: Map<string, number>,
+  issueCallEscalations: Map<string, number>
+): any[] {
+  const today = workingHours.getESTDateString();
+
+  const issueCalls = tasks.filter(t => t.taskType === 'Issue Call');
+  const regularTasks = tasks.filter(t => t.taskType !== 'Issue Call');
+
+  // Regular task stats
+  const regularCompleted = regularTasks.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    const updatedToday = t.lastUpdate && workingHours.formatDateEST(t.lastUpdate).startsWith(today);
+    return (status === 'done' || status === 'complete') && updatedToday;
+  });
+
+  const regularOpen = regularTasks.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    return status !== 'done' && status !== 'complete';
+  });
+
+  const regularOverdue = regularOpen.filter(t => t.dueDate && workingHours.isOverdue(t.dueDate));
+
+  // Issue call stats
+  const icClosed = issueCalls.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    const updatedToday = t.lastUpdate && workingHours.formatDateEST(t.lastUpdate).startsWith(today);
+    return (status === 'done' || status === 'complete') && updatedToday;
+  });
+
+  const icOpen = issueCalls.filter(t => {
+    const status = t.workflowStatus?.toLowerCase() ?? '';
+    return status !== 'done' && status !== 'complete';
+  });
+
+  const icUnclaimed = icOpen.filter(t => t.supporterIds.length === 0 && t.ownerIds.length <= 2);
+
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '📋 Executive Daily Report', emoji: true },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `*${workingHours.formatDateEST(new Date(), true)}*` }],
+    },
+    { type: 'divider' },
+  ];
+
+  // Overall summary
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*📊 Overall Summary*\n` +
+        `*Regular Tasks:* ${regularCompleted.length} completed, ${regularOpen.length} open, ${regularOverdue.length} overdue\n` +
+        `*Issue Calls:* ${icClosed.length} closed, ${icOpen.length} open, ${icUnclaimed.length} unclaimed`,
+    },
+  });
+
+  // Attention needed
+  const attentionItems: string[] = [];
+  if (regularOverdue.length > 0) {
+    attentionItems.push(`🔴 ${regularOverdue.length} overdue tasks`);
+  }
+  if (icUnclaimed.length > 0) {
+    attentionItems.push(`⏳ ${icUnclaimed.length} unclaimed issue calls`);
+  }
+
+  if (attentionItems.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*⚠️ Needs Attention*\n${attentionItems.join('\n')}`,
+      },
+    });
+  }
+
+  // Top escalations this week
+  const allEscalations = new Map<string, number>();
+  taskEscalations.forEach((v, k) => allEscalations.set(k, (allEscalations.get(k) || 0) + v));
+  issueCallEscalations.forEach((v, k) => allEscalations.set(k, (allEscalations.get(k) || 0) + v));
+
+  if (allEscalations.size > 0) {
+    blocks.push({ type: 'divider' });
+    const escLines = Array.from(allEscalations.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => `• ${name}: ${count}`);
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*📈 Week's Top Escalations*\n${escLines.join('\n')}`,
+      },
+    });
+  }
+
+  // Completion rates by person (top performers)
+  const completionsByPerson = new Map<string, number>();
+  [...regularCompleted, ...icClosed].forEach(t => {
+    t.ownerNames.forEach(name => {
+      completionsByPerson.set(name, (completionsByPerson.get(name) || 0) + 1);
+    });
+  });
+
+  if (completionsByPerson.size > 0) {
+    blocks.push({ type: 'divider' });
+    const topPerformers = Array.from(completionsByPerson.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => `• ${name}: ${count} completed`);
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*🏆 Top Completions Today*\n${topPerformers.join('\n')}`,
+      },
+    });
+  }
+
+  return blocks;
+}
+
+/**
+ * Send Garet's supervisor report (non-issue call tasks)
+ */
+export async function sendSupervisorReportGaret(): Promise<boolean> {
+  console.log('[Report] Sending Garet supervisor report...');
+
+  try {
+    const tasks = await fetchAllTasksForReport();
+    const escalationCounts = digestState.getWeeklyEscalationCounts();
+    const blocks = buildGaretReportBlocks(tasks, escalationCounts);
+
+    const result = await sendDM(SUPERVISOR_IDS.garet, 'Daily Task Report', blocks);
+    return result !== null;
+  } catch (error) {
+    console.error('[Report] Error sending Garet report:', error);
+    return false;
+  }
+}
+
+/**
+ * Send Ruzzell's supervisor report (issue calls only)
+ */
+export async function sendSupervisorReportRuzzell(): Promise<boolean> {
+  console.log('[Report] Sending Ruzzell supervisor report...');
+
+  try {
+    const tasks = await fetchAllTasksForReport();
+    const escalationCounts = digestState.getWeeklyIssueCallEscalationCounts();
+    const blocks = buildRuzzellReportBlocks(tasks, escalationCounts);
+
+    const result = await sendDM(SUPERVISOR_IDS.ruzzell, 'Daily Issue Call Report', blocks);
+    return result !== null;
+  } catch (error) {
+    console.error('[Report] Error sending Ruzzell report:', error);
+    return false;
+  }
+}
+
+/**
+ * Send executive report (everything)
+ */
+export async function sendExecutiveReport(): Promise<boolean> {
+  console.log('[Report] Sending executive report...');
+
+  try {
+    const tasks = await fetchAllTasksForReport();
+    const taskEscalations = digestState.getWeeklyEscalationCounts();
+    const issueCallEscalations = digestState.getWeeklyIssueCallEscalationCounts();
+    const blocks = buildExecutiveReportBlocks(tasks, taskEscalations, issueCallEscalations);
+
+    const result = await sendDM(SUPERVISOR_IDS.executive, 'Executive Daily Report', blocks);
+    return result !== null;
+  } catch (error) {
+    console.error('[Report] Error sending executive report:', error);
+    return false;
+  }
+}
+
+/**
+ * Send all daily reports (6 PM EST)
+ */
+export async function sendAllDailyReports(): Promise<{ garet: boolean; ruzzell: boolean; executive: boolean }> {
+  console.log('[Report] Sending all daily reports...');
+
+  const [garet, ruzzell, executive] = await Promise.all([
+    sendSupervisorReportGaret(),
+    sendSupervisorReportRuzzell(),
+    sendExecutiveReport(),
+  ]);
+
+  return { garet, ruzzell, executive };
+}

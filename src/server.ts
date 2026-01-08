@@ -1622,6 +1622,78 @@ app.post('/admin/digest/reset', express.json(), (_req: Request, res: Response): 
 });
 
 // ============================================================================
+// Daily Supervisor & Executive Reports (6 PM EST)
+// ============================================================================
+
+/**
+ * Manually trigger all daily reports (Garet, Ruzzell, Executive)
+ * Usage: POST /admin/report/all
+ */
+app.post('/admin/report/all', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerDailyReports();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('[ReportTrigger] All reports failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger executive report (Edward)
+ * Usage: POST /admin/report/executive
+ */
+app.post('/admin/report/executive', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerExecutiveReport();
+    res.json(result);
+  } catch (error) {
+    console.error('[ReportTrigger] Executive report failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger Garet's supervisor report (non-issue call tasks)
+ * Usage: POST /admin/report/supervisor/garet
+ */
+app.post('/admin/report/supervisor/garet', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerGaretReport();
+    res.json(result);
+  } catch (error) {
+    console.error('[ReportTrigger] Garet report failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Manually trigger Ruzzell's supervisor report (issue calls only)
+ * Usage: POST /admin/report/supervisor/ruzzell
+ */
+app.post('/admin/report/supervisor/ruzzell', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await digestScheduler.triggerRuzzellReport();
+    res.json(result);
+  } catch (error) {
+    console.error('[ReportTrigger] Ruzzell report failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
