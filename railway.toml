@@ -6,6 +6,8 @@
 # All env vars are read at runtime, not build time
 
 [deploy]
-startCommand = "node dist/server.js"
+# startCommand removed - set per-service in Railway dashboard
+# Main server: node dist/server.js
+# Presale scanner: node dist/presaleServer.js
 healthcheckPath = "/health"
 healthcheckTimeout = 30
