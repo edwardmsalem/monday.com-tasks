@@ -6,6 +6,7 @@
  *
  * Also distinguishes between:
  * - REGISTRATION: Sign up for future presale access
+ * - UPCOMING: Presale is scheduled, code provided, just wait
  * - LIVE: Presale is happening now, use this code
  */
 
@@ -28,15 +29,15 @@ function getClient(): Anthropic {
 // Types
 // ============================================================================
 
-export type PresaleType = 'registration' | 'live';
+export type PresaleType = 'registration' | 'upcoming' | 'live';
 
 export interface ExclusivityCheckResult {
   isExclusive: boolean;
   confidence: number;
   reason: string;
   presaleType: PresaleType;
-  presaleDate: string | null;  // For registration: when presale starts (e.g., "Wed, Jan 14 at 12 PM")
-  presaleCode: string | null;  // For live: the presale code to use
+  presaleDate: string | null;  // For registration/upcoming: when presale starts (e.g., "Wed, Jan 14 at 12 PM")
+  presaleCode: string | null;  // For upcoming/live: the presale code to use
   deadline: string | null;     // When the presale expires
 }
 
@@ -54,7 +55,7 @@ CONTEXT:
 
 YOUR TASK:
 1. Determine if this is an EXCLUSIVE presale (requires action) or GENERIC (skip)
-2. Classify the presale type: REGISTRATION or LIVE
+2. Classify the presale type: REGISTRATION, UPCOMING, or LIVE
 
 EXCLUSIVE presales have ONE OR MORE of these characteristics:
 1. **Personalized Links**: URLs with unique tokens, account-specific parameters, or "personalized" language
@@ -69,19 +70,26 @@ GENERIC presales (SKIP these):
 
 PRESALE TYPES:
 
-**REGISTRATION** - Future presale, sign up now
+**REGISTRATION** - Future presale, must sign up/register
 - Contains: "Sign up", "register", "RSVP", "reserve your spot"
-- Presale date is mentioned in the FUTURE
-- No active code to use right now
+- Requires action NOW to get access later
+- No code provided yet - will receive code after registering
 - Example: "Register now for exclusive access starting January 14"
 
+**UPCOMING** - Future presale, code already provided, just wait
+- Contains: "Mark your calendar", "starts on", "beginning [future date]"
+- Code/password is already included in the email
+- Presale date is in the FUTURE - no action needed now
+- Example: "Your presale starts January 14 at 10 AM. Use code: STHG5L8Q"
+
 **LIVE** - Presale is active NOW
-- Contains: "Begins today", "now available", "use code", "starts now"
+- Contains: "Begins today", "now available", "use code", "starts now", "happening now"
 - Has an active presale code/password to use immediately
 - Example: "Your exclusive presale begins NOW! Use code: STHG5L8Q"
 
 EXTRACT:
 - For REGISTRATION: The presale start date/time (e.g., "Wed, Jan 14 at 12 PM")
+- For UPCOMING: Both the presale date AND the code
 - For LIVE: The presale code (e.g., "STHG5L8Q")
 - Deadline when the presale expires (if mentioned)`;
 
@@ -109,16 +117,16 @@ const EXCLUSIVITY_TOOL: Anthropic.Tool = {
       },
       presaleType: {
         type: 'string',
-        enum: ['registration', 'live'],
-        description: 'Type of presale: "registration" if signing up for future access, "live" if presale is active now',
+        enum: ['registration', 'upcoming', 'live'],
+        description: 'Type: "registration" (must sign up), "upcoming" (code provided, wait for date), "live" (active now)',
       },
       presaleDate: {
         type: 'string',
-        description: 'For registration type: when the presale starts (e.g., "Wed, Jan 14 at 12 PM"). Null for live presales.',
+        description: 'For registration/upcoming: when presale starts (e.g., "Wed, Jan 14 at 12 PM"). Null for live.',
       },
       presaleCode: {
         type: 'string',
-        description: 'For live type: the presale code/password to use (e.g., "STHG5L8Q"). Null for registration presales.',
+        description: 'For upcoming/live: the presale code (e.g., "STHG5L8Q"). Null for registration.',
       },
       deadline: {
         type: 'string',

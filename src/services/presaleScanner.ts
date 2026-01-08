@@ -505,6 +505,11 @@ async function postPresaleToSlack(
   if (exclusivity.presaleType === 'registration') {
     const dateInfo = exclusivity.presaleDate ? `🗓️ Presale starts ${exclusivity.presaleDate}` : '';
     typeLine = `📝 Registration${dateInfo ? ` • ${dateInfo}` : ''}`;
+  } else if (exclusivity.presaleType === 'upcoming') {
+    const dateInfo = exclusivity.presaleDate ? `🗓️ ${exclusivity.presaleDate}` : '';
+    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    const parts = [dateInfo, codeInfo].filter(Boolean).join(' • ');
+    typeLine = `📅 Upcoming${parts ? ` • ${parts}` : ''}`;
   } else {
     const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
     typeLine = `🎟️ Live Now${codeInfo ? ` • ${codeInfo}` : ''}`;

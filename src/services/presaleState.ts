@@ -10,7 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // Use /data directory on Railway, fallback to cwd for local dev
-const DATA_DIR = process.env['RAILWAY_VOLUME_MOUNT_PATH'] || process.cwd();
+// Railway volumes are mounted at /data by default
+const DATA_DIR = process.env['RAILWAY_VOLUME_MOUNT_PATH'] || (process.env['RAILWAY_ENVIRONMENT'] ? '/data' : process.cwd());
 const STATE_FILE = path.join(DATA_DIR, 'presale-state.json');
 
 // ============================================================================
