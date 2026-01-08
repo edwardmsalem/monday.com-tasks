@@ -87,7 +87,10 @@ function getMondayUrl(itemId: string): string {
 }
 
 function getSlackThreadUrl(channelId: string, threadTs: string): string {
-  return `https://slack.com/app_redirect?channel=${channelId}&message_ts=${threadTs}`;
+  // Use /archives/ format which works better for deep linking to threads
+  // Format: https://slack.com/archives/{channelId}/p{timestamp_without_dot}
+  const tsWithoutDot = threadTs.replace('.', '');
+  return `https://slack.com/archives/${channelId}/p${tsWithoutDot}`;
 }
 
 function getViewLink(task: DigestTask): string {
