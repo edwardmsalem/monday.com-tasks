@@ -2,7 +2,7 @@
  * Presale Scanner Service
  *
  * Scans Gmail for exclusive presale emails from sports teams,
- * deduplicates them, and posts notifications to Slack with screenshots.
+ * deduplicates them, and posts notifications to Slack with PDFs.
  *
  * Flow:
  * 1. Get sports team labels from Gmail (cached daily)
@@ -10,14 +10,14 @@
  * 3. Group by dedup key (sender domain + subject + date)
  * 4. Check if already posted
  * 5. For new presales, use AI to check exclusivity
- * 6. If exclusive, screenshot and post to Slack
+ * 6. If exclusive, convert to PDF and post to Slack
  * 7. Auto-cleanup old entries
  */
 
 import { google } from 'googleapis';
 import type { gmail_v1 } from 'googleapis';
 import { config } from '../config/environment.js';
-import { gmailCircuit, slackCircuit, convertApiCircuit } from './circuitBreaker.js';
+import { gmailCircuit, slackCircuit } from './circuitBreaker.js';
 import { getClient as getSlackClient } from './slack.js';
 import {
   getCachedLabels,
@@ -28,7 +28,7 @@ import {
   cleanupOldEntries,
 } from './presaleState.js';
 import { checkPresaleExclusivitySafe, type ExclusivityCheckResult } from './presaleAI.js';
-import ConvertApi from 'convertapi';
+import { convertHtmlToPdf } from './convertApi.js';
 
 // ============================================================================
 // Types
@@ -40,6 +40,7 @@ interface PresaleGroup {
   subject: string;
   date: string;  // YYYY-MM-DD
   team: string;
+  sport: string;  // NBA, MLB, NFL, etc.
   labelName: string;
   emailCount: number;
   emails: GmailMessage[];
@@ -65,11 +66,27 @@ export interface ScanResult {
 }
 
 // ============================================================================
+// Sport Emoji Mapping
+// ============================================================================
+
+const SPORT_EMOJIS: Record<string, string> = {
+  'NBA': '🏀',
+  'MLB': '⚾',
+  'NFL': '🏈',
+  'NHL': '🏒',
+  'MLS': '⚽',
+  'NCAA': '🎓',
+};
+
+function getSportEmoji(sport: string): string {
+  return SPORT_EMOJIS[sport.toUpperCase()] ?? '🎫';
+}
+
+// ============================================================================
 // Gmail Client
 // ============================================================================
 
 let gmailClient: gmail_v1.Gmail | null = null;
-let convertApiClient: any = null;
 
 async function getGmailClient(): Promise<gmail_v1.Gmail> {
   if (gmailClient) return gmailClient;
@@ -94,13 +111,6 @@ async function getGmailClient(): Promise<gmail_v1.Gmail> {
 
   gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
   return gmailClient;
-}
-
-function getConvertApiClient(): any {
-  if (!convertApiClient) {
-    convertApiClient = new (ConvertApi as any)(config.convertApi.secret);
-  }
-  return convertApiClient;
 }
 
 // ============================================================================
@@ -377,12 +387,21 @@ function normalizeSubject(subject: string): string {
 }
 
 /**
- * Extract team name from label
- * "NBA/Lakers" -> "Lakers"
+ * Extract team name and sport from label
+ * "NBA/Lakers" -> { team: "Lakers", sport: "NBA" }
  */
-function extractTeamFromLabel(labelName: string): string {
+function extractFromLabel(labelName: string): { team: string; sport: string } {
   const parts = labelName.split('/');
-  return parts[parts.length - 1] || labelName;
+  if (parts.length >= 2) {
+    return {
+      sport: parts[0],
+      team: parts[parts.length - 1],
+    };
+  }
+  return {
+    sport: '',
+    team: labelName,
+  };
 }
 
 /**
@@ -430,6 +449,7 @@ async function groupByDedupKey(
       continue;
     }
 
+    const { team, sport } = extractFromLabel(labelName);
     const dedupKey = `${senderDomain}:${normalizedSubject}:${dateStr}`;
 
     if (!groups.has(dedupKey)) {
@@ -438,7 +458,8 @@ async function groupByDedupKey(
         senderDomain,
         subject: email.subject, // Use original subject for display
         date: dateStr,
-        team: extractTeamFromLabel(labelName),
+        team,
+        sport,
         labelName,
         emailCount: 0,
         emails: [],
@@ -455,45 +476,11 @@ async function groupByDedupKey(
 }
 
 // ============================================================================
-// Step 6: Screenshot and Post to Slack
+// Step 6: Post to Slack
 // ============================================================================
 
 /**
- * Convert HTML to PNG using ConvertAPI
- */
-async function convertHtmlToPng(htmlContent: string): Promise<Buffer> {
-  const client = getConvertApiClient();
-
-  console.log('[PresaleScanner] Converting HTML to PNG...');
-
-  const result = await convertApiCircuit.execute<{ files: any[] }>(() =>
-    client.convert(
-      'png',
-      {
-        File: { name: 'email.html', data: Buffer.from(htmlContent, 'utf-8') },
-        ImageWidth: 800,
-        ImageHeight: 0, // Auto height
-      },
-      'html'
-    )
-  );
-
-  const file = result.files[0];
-  if (!file) {
-    throw new Error('ConvertAPI did not return a converted file');
-  }
-
-  const pngUrl = file.url as string;
-  const response = await fetch(pngUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to download converted PNG: ${response.statusText}`);
-  }
-
-  return Buffer.from(await response.arrayBuffer());
-}
-
-/**
- * Post presale notification to Slack with screenshot
+ * Post presale notification to Slack with PDF attachment
  */
 async function postPresaleToSlack(
   group: PresaleGroup,
@@ -506,9 +493,22 @@ async function postPresaleToSlack(
     throw new Error('SLACK_PRESALE_CHANNEL not configured');
   }
 
-  // Get HTML from the first email for screenshot
+  // Get HTML from the first email for PDF
   const firstEmail = group.emails[0];
   const htmlContent = firstEmail.bodyHtml;
+
+  // Get sport emoji
+  const sportEmoji = getSportEmoji(group.sport);
+
+  // Build type-specific line
+  let typeLine: string;
+  if (exclusivity.presaleType === 'registration') {
+    const dateInfo = exclusivity.presaleDate ? `🗓️ Presale starts ${exclusivity.presaleDate}` : '';
+    typeLine = `📝 Registration${dateInfo ? ` • ${dateInfo}` : ''}`;
+  } else {
+    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    typeLine = `🎟️ Live Now${codeInfo ? ` • ${codeInfo}` : ''}`;
+  }
 
   // Build the message blocks
   const blocks: any[] = [
@@ -516,7 +516,7 @@ async function postPresaleToSlack(
       type: 'header',
       text: {
         type: 'plain_text',
-        text: `🎫 ${group.team} Presale`,
+        text: `🎫 ${group.subject}`,
         emoji: true,
       },
     },
@@ -524,31 +524,25 @@ async function postPresaleToSlack(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Subject:* ${group.subject}`,
+        text: `${sportEmoji} *${group.team}* • ${group.emailCount} account${group.emailCount > 1 ? 's' : ''}`,
       },
     },
     {
       type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Found in:*\n${group.emailCount} account${group.emailCount > 1 ? 's' : ''}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*From:*\n${group.senderDomain}`,
-        },
-      ],
+      text: {
+        type: 'mrkdwn',
+        text: typeLine,
+      },
     },
   ];
 
-  // Add deadline if detected
-  if (exclusivity.deadline) {
+  // Add deadline if detected (and different from presale date)
+  if (exclusivity.deadline && exclusivity.deadline !== exclusivity.presaleDate) {
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `⏰ *Deadline:* ${exclusivity.deadline}`,
+        text: `⏰ Ends: ${exclusivity.deadline}`,
       },
     });
   }
@@ -569,38 +563,39 @@ async function postPresaleToSlack(
     slack.chat.postMessage({
       channel: channelId,
       blocks,
-      text: `🎫 ${group.team} Presale: ${group.subject}`,
+      text: `🎫 ${group.team}: ${group.subject}`,
     })
   );
 
-  const threadTs = messageResult.ts;
+  const threadTs = (messageResult as any).ts;
   if (!threadTs) {
     throw new Error('Failed to get Slack message timestamp');
   }
 
-  // Upload screenshot if HTML is available
+  // Upload PDF if HTML is available
   if (htmlContent) {
     try {
-      const pngBuffer = await convertHtmlToPng(htmlContent);
+      console.log('[PresaleScanner] Converting HTML to PDF...');
+      const pdfResult = await convertHtmlToPdf(htmlContent, `presale-${group.team.toLowerCase()}`);
 
       await slackCircuit.execute(() =>
         slack.filesUploadV2({
           channel_id: channelId,
           thread_ts: threadTs,
-          filename: `presale-${group.team.toLowerCase()}-${group.date}.png`,
-          file: pngBuffer,
-          title: `${group.team} Presale Screenshot`,
+          filename: `presale-${group.team.toLowerCase()}-${group.date}.pdf`,
+          file: pdfResult.data,
+          title: `${group.team} Presale Email`,
         })
       );
 
-      console.log('[PresaleScanner] Uploaded screenshot to Slack');
+      console.log('[PresaleScanner] Uploaded PDF to Slack');
     } catch (error) {
-      console.error('[PresaleScanner] Failed to upload screenshot:', error);
+      console.error('[PresaleScanner] Failed to upload PDF:', error);
       // Post error message in thread
       await slack.chat.postMessage({
         channel: channelId,
         thread_ts: threadTs,
-        text: `⚠️ Failed to generate screenshot: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        text: `⚠️ Failed to generate PDF: ${error instanceof Error ? error.message : 'Unknown error'}`,
       });
     }
   }
@@ -688,7 +683,7 @@ export async function scanPresales(
       }
 
       // Step 6: Post to Slack
-      console.log(`[PresaleScanner] EXCLUSIVE: "${group.subject}" - posting to Slack`);
+      console.log(`[PresaleScanner] EXCLUSIVE (${exclusivity.presaleType}): "${group.subject}" - posting to Slack`);
 
       try {
         const slackTs = await postPresaleToSlack(group, exclusivity);
