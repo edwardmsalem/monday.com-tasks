@@ -176,6 +176,14 @@ export const config = {
     ncaa: getEnvVarOptional('SHEETS_NCAA_ID'),     // NCAA workbook spreadsheet ID (college)
     other: getEnvVarOptional('SHEETS_OTHER_ID'),   // Other events workbook
   },
+
+  // Presale Scanner Configuration
+  presale: {
+    slackChannel: getEnvVar('SLACK_PRESALE_CHANNEL', ''),
+    scanIntervalMs: 60 * 60 * 1000, // 1 hour
+    lookbackMinutes: 60,
+    sportsLabelPrefixes: ['NBA/', 'MLB/', 'NFL/', 'NHL/', 'MLS/', 'NCAA/'],
+  },
 } as const;
 
 /**
