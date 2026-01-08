@@ -90,7 +90,7 @@ export const config = {
   // Slack
   slack: {
     botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
-    channelId: getEnvVar('SLACK_CHANNEL_ID'),  // REQUIRED: notification channel for task threads
+    channelId: getEnvVar('SLACK_CHANNEL_ID', ''),  // Main task notification channel (required for main server)
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
     // After-hours behavior (nights + weekends)
     // Tasks created after-hours are created quietly (no pings), then released at business start
