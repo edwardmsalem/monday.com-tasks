@@ -570,6 +570,10 @@ async function postPresaleToSlack(
     team: group.team,
     eventName: exclusivity.eventName ?? group.subject,
     subject: group.subject,
+    presaleType: exclusivity.presaleType,
+    presaleDate: exclusivity.presaleDate,
+    presaleCode: exclusivity.presaleCode,
+    presaleChannel: channelId,  // For building link back to original message
   });
 
   const declinePayload = JSON.stringify({

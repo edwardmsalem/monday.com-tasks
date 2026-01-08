@@ -151,6 +151,10 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
         team: string;
         eventName: string;
         subject: string;
+        presaleType: string;
+        presaleDate: string | null;
+        presaleCode: string | null;
+        presaleChannel: string;
       };
 
       console.log(`[PresaleServer] User ${userId} interested in: ${data.eventName}`);
@@ -158,9 +162,51 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
       // Post to operations channel
       const operationsChannel = config.presale.operationsChannel;
       if (operationsChannel) {
+        // Build the message link back to the original presale notification
+        const messageLink = messageTs
+          ? `https://slack.com/archives/${data.presaleChannel}/p${messageTs.replace('.', '')}`
+          : '';
+
+        // Build presale info line
+        let presaleInfo = '';
+        if (data.presaleType === 'registration') {
+          presaleInfo = data.presaleDate ? `📝 Registration • Presale starts ${data.presaleDate}` : '📝 Registration';
+        } else if (data.presaleType === 'upcoming') {
+          const parts = [];
+          if (data.presaleDate) parts.push(`🗓️ ${data.presaleDate}`);
+          if (data.presaleCode) parts.push(`🔑 Code: \`${data.presaleCode}\``);
+          presaleInfo = `📅 Upcoming${parts.length ? ' • ' + parts.join(' • ') : ''}`;
+        } else {
+          presaleInfo = data.presaleCode ? `🎟️ Live Now • 🔑 Code: \`${data.presaleCode}\`` : '🎟️ Live Now';
+        }
+
+        const blocks = [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `📋 *Prepare a sheet for ${data.team}*\n\n*Event:* ${data.eventName}\n${presaleInfo}`,
+            },
+          },
+        ];
+
+        // Add link back to original message
+        if (messageLink) {
+          blocks.push({
+            type: 'context',
+            elements: [
+              {
+                type: 'mrkdwn',
+                text: `<${messageLink}|View original presale notification>`,
+              },
+            ],
+          } as any);
+        }
+
         await slack.chat.postMessage({
           channel: operationsChannel,
-          text: `✅ *Interested in presale*\n*Team:* ${data.team}\n*Event:* ${data.eventName}\n*Subject:* ${data.subject}`,
+          blocks,
+          text: `📋 Prepare a sheet for ${data.team} - ${data.eventName}`,
         });
       }
 
