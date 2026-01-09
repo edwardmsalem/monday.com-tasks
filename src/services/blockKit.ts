@@ -96,6 +96,18 @@ function getIssueCallViewLink(ic: IssueCall): string {
   return getMondayUrl(ic.id);
 }
 
+// Get formatted Monday.com link for a task
+function getTaskLinks(task: DigestTask): string {
+  const mondayUrl = getMondayUrl(task.id);
+  return `<${mondayUrl}|Monday>`;
+}
+
+// Get formatted Monday.com link for an issue call
+function getIssueCallLinks(ic: IssueCall): string {
+  const mondayUrl = getMondayUrl(ic.id);
+  return `<${mondayUrl}|Monday>`;
+}
+
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return text.substring(0, maxLength - 3) + '...';
