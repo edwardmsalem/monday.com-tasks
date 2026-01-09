@@ -153,8 +153,12 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
         subject: string;
         presaleType: string;
         presaleDate: string | null;
-        presaleCode: string | null;
+        presaleCodes?: string[];  // New: array of all unique codes
+        hasUniqueCodes?: boolean;  // New: true if codes differ per account
+        hasPersonalizedLinks?: boolean;  // New: true if personalized links detected
         presaleChannel: string;
+        // Legacy single code field (backwards compat)
+        presaleCode?: string | null;
       };
 
       console.log(`[PresaleServer] User ${userId} interested in: ${data.eventName}`);
@@ -167,6 +171,27 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
           ? `https://slack.com/archives/${data.presaleChannel}/p${messageTs.replace('.', '')}`
           : '';
 
+        // Build code display - show all unique codes or indicate shared code
+        let codeInfo = '';
+        const codes = data.presaleCodes ?? (data.presaleCode ? [data.presaleCode] : []);
+        if (codes.length > 0) {
+          if (data.hasUniqueCodes && codes.length > 1) {
+            // Multiple unique codes - list them all
+            const codeList = codes.slice(0, 15).map(c => `\`${c}\``).join(', ');
+            const moreCount = codes.length > 15 ? ` +${codes.length - 15} more` : '';
+            codeInfo = `🔐 *Unique Codes (${codes.length}):*\n${codeList}${moreCount}`;
+          } else {
+            // Single or shared code
+            codeInfo = `🔑 Code: \`${codes[0]}\``;
+          }
+        }
+
+        // Add personalized links note
+        let linkNote = '';
+        if (data.hasPersonalizedLinks) {
+          linkNote = '\n⚠️ _Each account has unique personalized links - check individual emails_';
+        }
+
         // Build presale info line
         let presaleInfo = '';
         if (data.presaleType === 'registration') {
@@ -174,11 +199,13 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
         } else if (data.presaleType === 'upcoming') {
           const parts = [];
           if (data.presaleDate) parts.push(`🗓️ ${data.presaleDate}`);
-          if (data.presaleCode) parts.push(`🔑 Code: \`${data.presaleCode}\``);
           presaleInfo = `📅 Upcoming${parts.length ? ' • ' + parts.join(' • ') : ''}`;
+          if (codeInfo) presaleInfo += `\n${codeInfo}`;
         } else {
-          presaleInfo = data.presaleCode ? `🎟️ Live Now • 🔑 Code: \`${data.presaleCode}\`` : '🎟️ Live Now';
+          presaleInfo = `🎟️ Live Now`;
+          if (codeInfo) presaleInfo += `\n${codeInfo}`;
         }
+        presaleInfo += linkNote;
 
         const blocks = [
           {
