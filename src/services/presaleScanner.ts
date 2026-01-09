@@ -810,11 +810,12 @@ async function postPresaleToSlack(
     throw new Error('Failed to get Slack message timestamp');
   }
 
-  // Upload PDF if HTML is available
-  if (htmlContent) {
+  // Upload PDF if HTML is available and is a string
+  if (htmlContent && typeof htmlContent === 'string') {
     try {
       console.log('[PresaleScanner] Converting HTML to PDF...');
-      const pdfResult = await convertHtmlToPdf(htmlContent, `presale-${group.team.toLowerCase()}`);
+      const safeTeamName = String(group.team || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '-');
+      const pdfResult = await convertHtmlToPdf(htmlContent, `presale-${safeTeamName}`);
 
       await slackCircuit.execute(() =>
         slack.filesUploadV2({

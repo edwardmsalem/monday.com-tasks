@@ -137,8 +137,17 @@ export async function convertHtmlToPdf(
 ): Promise<ConvertedFile> {
   const client = getClient();
 
-  // Ensure filename doesn't have extension
-  const baseFilename = filename.replace(/\.(html?|pdf)$/i, '');
+  // Validate inputs
+  if (typeof htmlContent !== 'string') {
+    throw new Error(`htmlContent must be a string, got ${typeof htmlContent}`);
+  }
+  if (typeof filename !== 'string') {
+    throw new Error(`filename must be a string, got ${typeof filename}`);
+  }
+
+  // Ensure filename is clean and doesn't have extension
+  const safeFilename = String(filename).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const baseFilename = safeFilename.replace(/\.(html?|pdf)$/i, '') || 'email';
   const htmlFilename = `${baseFilename}.html`;
   const pdfFilename = `${baseFilename}.pdf`;
 
