@@ -137,8 +137,17 @@ export async function convertHtmlToPdf(
 ): Promise<ConvertedFile> {
   const client = getClient();
 
-  // Ensure filename doesn't have extension
-  const baseFilename = filename.replace(/\.(html?|pdf)$/i, '');
+  // Validate inputs
+  if (typeof htmlContent !== 'string') {
+    throw new Error(`htmlContent must be a string, got ${typeof htmlContent}`);
+  }
+  if (typeof filename !== 'string') {
+    throw new Error(`filename must be a string, got ${typeof filename}`);
+  }
+
+  // Ensure filename is clean and doesn't have extension
+  const safeFilename = String(filename).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const baseFilename = safeFilename.replace(/\.(html?|pdf)$/i, '') || 'email';
   const htmlFilename = `${baseFilename}.html`;
   const pdfFilename = `${baseFilename}.pdf`;
 
@@ -146,21 +155,33 @@ export async function convertHtmlToPdf(
 
   // Convert HTML to PDF using the convertapi library
   // Wrapped in circuit breaker (TD-05)
-  const result = await convertApiCircuit.execute<{ files: any[] }>(() =>
-    client.convert(
-      'pdf',
-      {
-        File: { name: htmlFilename, data: Buffer.from(htmlContent, 'utf-8') },
-        PageSize: 'a4',
-        MarginTop: 10,
-        MarginRight: 10,
-        MarginBottom: 10,
-        MarginLeft: 10,
-        PageOrientation: 'portrait',
-      },
-      'html'
-    )
-  );
+  let result: { files: any[] };
+  try {
+    result = await convertApiCircuit.execute<{ files: any[] }>(() =>
+      client.convert(
+        'pdf',
+        {
+          File: { name: htmlFilename, data: Buffer.from(htmlContent, 'utf-8') },
+          PageSize: 'a4',
+          MarginTop: 10,
+          MarginRight: 10,
+          MarginBottom: 10,
+          MarginLeft: 10,
+          PageOrientation: 'portrait',
+        },
+        'html'
+      )
+    );
+  } catch (error) {
+    // Log detailed error info for debugging
+    console.error('[ConvertAPI] HTML to PDF conversion failed:', {
+      filename: htmlFilename,
+      htmlLength: htmlContent.length,
+      error: error instanceof Error ? error.message : String(error),
+      circuitState: convertApiCircuit.getStats(),
+    });
+    throw error;
+  }
 
   // Get the converted file
   const file = result.files[0];

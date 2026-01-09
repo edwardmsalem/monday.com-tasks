@@ -16,6 +16,7 @@ import { config } from './config/environment.js';
 import { scanPresales, extractCodesFromMessageIds } from './services/presaleScanner.js';
 import { getFullState, getLastScan, reloadState, clearSeenPresales, declineOpportunity } from './services/presaleState.js';
 import { getClient as getSlackClient } from './services/slack.js';
+import { getAllCircuitStats, convertApiCircuit } from './services/circuitBreaker.js';
 
 const app = express();
 
@@ -105,6 +106,34 @@ app.post('/admin/presale/state/reload', (_req: Request, res: Response): void => 
 app.post('/admin/presale/reset', (_req: Request, res: Response): void => {
   const cleared = clearSeenPresales();
   res.json({ success: true, cleared, message: `Cleared ${cleared} seen presales` });
+});
+
+// ============================================================================
+// Circuit Breaker Debug Endpoints
+// ============================================================================
+
+/**
+ * GET /admin/circuits
+ *
+ * View all circuit breaker states (for debugging)
+ */
+app.get('/admin/circuits', (_req: Request, res: Response): void => {
+  const stats = getAllCircuitStats();
+  res.json(stats);
+});
+
+/**
+ * POST /admin/circuits/convertapi/reset
+ *
+ * Reset the ConvertAPI circuit breaker (if it's stuck open)
+ */
+app.post('/admin/circuits/convertapi/reset', (_req: Request, res: Response): void => {
+  convertApiCircuit.reset();
+  res.json({
+    success: true,
+    message: 'ConvertAPI circuit breaker reset',
+    stats: convertApiCircuit.getStats(),
+  });
 });
 
 // ============================================================================
@@ -426,6 +455,8 @@ function start(): void {
     console.log(`    GET  /admin/presale/state`);
     console.log(`    POST /admin/presale/state/reload`);
     console.log(`    POST /admin/presale/reset`);
+    console.log(`    GET  /admin/circuits`);
+    console.log(`    POST /admin/circuits/convertapi/reset`);
     console.log(`    POST /webhook/slack/presale-action`);
     console.log('============================================');
     console.log('');
