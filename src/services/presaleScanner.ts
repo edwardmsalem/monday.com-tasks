@@ -1066,17 +1066,26 @@ function extractFromAddress(from: string): string {
  * Scan Gmail for all emails with sports team labels and extract unique "from" addresses
  *
  * @param maxEmailsPerLabel - Maximum emails to fetch per label (default: 500)
+ * @param sportFilter - Optional filter to scan only one sport (e.g., "NBA", "MLB")
  * @returns Scan result with from addresses grouped by team label
  */
 export async function scanSportsTeamEmails(
-  maxEmailsPerLabel: number = 500
+  maxEmailsPerLabel: number = 500,
+  sportFilter?: string
 ): Promise<SportsTeamScanResult> {
-  console.log('[SportsTeamScanner] Starting scan for sports team emails...');
+  console.log(`[SportsTeamScanner] Starting scan for sports team emails (sport=${sportFilter || 'all'})...`);
 
   const gmail = await getGmailClient();
 
   // Step 1: Get all sports team labels
-  const sportsLabels = await getSportsTeamLabels();
+  let sportsLabels = await getSportsTeamLabels();
+
+  // Filter by sport if specified
+  if (sportFilter) {
+    const prefix = sportFilter.toUpperCase() + '/';
+    sportsLabels = sportsLabels.filter(label => label.startsWith(prefix));
+  }
+
   console.log(`[SportsTeamScanner] Found ${sportsLabels.length} sports team labels`);
 
   if (sportsLabels.length === 0) {
