@@ -670,9 +670,7 @@ async function groupByDedupKey(
  */
 async function postPresaleToSlack(
   group: PresaleGroup,
-  exclusivity: ExclusivityCheckResult,
-  extractedCodes: ExtractedCodes,
-  extractedLinks: ExtractedLinks
+  exclusivity: ExclusivityCheckResult
 ): Promise<string> {
   const slack = getSlackClient();
   const channelId = config.presale.slackChannel;
@@ -688,48 +686,19 @@ async function postPresaleToSlack(
   // Get sport emoji
   const sportEmoji = getSportEmoji(group.sport);
 
-  // Build code display based on extraction results
-  let codeDisplay = '';
-  let allCodesForPayload: string[] = [];
-
-  if (extractedCodes.uniqueCodes.length > 0) {
-    allCodesForPayload = extractedCodes.uniqueCodes;
-
-    if (extractedCodes.isSharedCode) {
-      // Same code across all accounts - just show it once
-      codeDisplay = `🔑 Shared Code: \`${extractedCodes.uniqueCodes[0]}\``;
-    } else if (extractedCodes.uniqueCodes.length === 1) {
-      // Only one code found
-      codeDisplay = `🔑 Code: \`${extractedCodes.uniqueCodes[0]}\``;
-    } else {
-      // Multiple unique codes - list them all
-      const codeList = extractedCodes.uniqueCodes.slice(0, 10).map(c => `\`${c}\``).join(', ');
-      const moreCount = extractedCodes.uniqueCodes.length > 10 ? ` +${extractedCodes.uniqueCodes.length - 10} more` : '';
-      codeDisplay = `🔐 Unique Codes (${extractedCodes.uniqueCodes.length}): ${codeList}${moreCount}`;
-    }
-  } else if (exclusivity.presaleCode) {
-    // Fall back to AI-detected code
-    codeDisplay = `🔑 Code: \`${exclusivity.presaleCode}\``;
-    allCodesForPayload = [exclusivity.presaleCode];
-  }
-
-  // Check for personalized links
-  let linkDisplay = '';
-  if (extractedLinks.arePersonalized && extractedLinks.uniqueLinks.length > 1) {
-    linkDisplay = `🔗 ${extractedLinks.uniqueLinks.length} unique personalized links detected`;
-  }
-
-  // Build type-specific line
+  // Build type-specific line (just show AI-detected code for now)
   let typeLine: string;
   if (exclusivity.presaleType === 'registration') {
     const dateInfo = exclusivity.presaleDate ? `🗓️ Presale starts ${exclusivity.presaleDate}` : '';
     typeLine = `📝 Registration${dateInfo ? ` • ${dateInfo}` : ''}`;
   } else if (exclusivity.presaleType === 'upcoming') {
     const dateInfo = exclusivity.presaleDate ? `🗓️ ${exclusivity.presaleDate}` : '';
-    const parts = [dateInfo, codeDisplay].filter(Boolean).join('\n');
-    typeLine = `📅 Upcoming${parts ? `\n${parts}` : ''}`;
+    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    const parts = [dateInfo, codeInfo].filter(Boolean).join(' • ');
+    typeLine = `📅 Upcoming${parts ? ` • ${parts}` : ''}`;
   } else {
-    typeLine = `🎟️ Live Now${codeDisplay ? `\n${codeDisplay}` : ''}`;
+    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    typeLine = `🎟️ Live Now${codeInfo ? ` • ${codeInfo}` : ''}`;
   }
 
   // Build the message blocks
@@ -758,17 +727,6 @@ async function postPresaleToSlack(
     },
   ];
 
-  // Add personalized links notice if detected
-  if (linkDisplay) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: linkDisplay,
-      },
-    });
-  }
-
   // Add deadline if detected (and different from presale date)
   if (exclusivity.deadline && exclusivity.deadline !== exclusivity.presaleDate) {
     blocks.push({
@@ -792,6 +750,8 @@ async function postPresaleToSlack(
   });
 
   // Add action buttons (Interested / Not Interested)
+  // Include message IDs so we can fetch all emails and extract codes when Interested is clicked
+  const messageIds = group.emails.map(e => e.id);
   const interestedPayload = JSON.stringify({
     dedupKey: group.dedupKey,
     team: group.team,
@@ -799,10 +759,8 @@ async function postPresaleToSlack(
     subject: group.subject,
     presaleType: exclusivity.presaleType,
     presaleDate: exclusivity.presaleDate,
-    presaleCodes: allCodesForPayload,  // All unique codes for operations team
-    hasUniqueCodes: !extractedCodes.isSharedCode && extractedCodes.uniqueCodes.length > 1,
-    hasPersonalizedLinks: extractedLinks.arePersonalized,
     presaleChannel: channelId,  // For building link back to original message
+    messageIds,  // Gmail message IDs for code extraction when clicked
   });
 
   const declinePayload = JSON.stringify({
@@ -970,27 +928,12 @@ export async function scanPresales(
         continue;
       }
 
-      // Step 5.5: Extract codes and links from ALL emails in the group
-      const extractedCodes = extractCodesFromEmails(group.emails);
-      const extractedLinks = extractLinksFromEmails(group.emails);
-
-      // Log extraction results
-      if (extractedCodes.uniqueCodes.length > 0) {
-        if (extractedCodes.isSharedCode) {
-          console.log(`[PresaleScanner] Found shared code: ${extractedCodes.uniqueCodes[0]}`);
-        } else if (extractedCodes.uniqueCodes.length > 1) {
-          console.log(`[PresaleScanner] Found ${extractedCodes.uniqueCodes.length} unique codes across ${group.emailCount} accounts`);
-        }
-      }
-      if (extractedLinks.arePersonalized) {
-        console.log(`[PresaleScanner] Found ${extractedLinks.uniqueLinks.length} personalized links`);
-      }
-
       // Step 6: Post to Slack
+      // Note: Code extraction happens later when "Interested" button is clicked
       console.log(`[PresaleScanner] EXCLUSIVE (${exclusivity.presaleType}): "${group.subject}" - posting to Slack`);
 
       try {
-        const slackTs = await postPresaleToSlack(group, exclusivity, extractedCodes, extractedLinks);
+        const slackTs = await postPresaleToSlack(group, exclusivity);
         markPresaleSeen(group.dedupKey, slackTs, group.emailCount, group.team, group.subject);
         result.posted.push(`${group.team}: ${group.subject}`);
         console.log(`[PresaleScanner] Posted to Slack: ${group.team} - ${group.subject}`);
@@ -1019,4 +962,67 @@ export async function scanPresales(
     result.errors.push(errorMsg);
     return result;
   }
+}
+
+// ============================================================================
+// Export for Code Extraction (called when "Interested" button clicked)
+// ============================================================================
+
+export interface CodeExtractionResult {
+  codes: string[];
+  isSharedCode: boolean;
+  hasPersonalizedLinks: boolean;
+  accountCount: number;
+}
+
+/**
+ * Fetch emails by message IDs and extract presale codes
+ * Called when user clicks "Interested" button
+ */
+export async function extractCodesFromMessageIds(
+  messageIds: string[]
+): Promise<CodeExtractionResult> {
+  console.log(`[PresaleScanner] Extracting codes from ${messageIds.length} messages...`);
+
+  const gmail = await getGmailClient();
+  const emails: GmailMessage[] = [];
+
+  // Fetch all emails by ID
+  for (const messageId of messageIds) {
+    const email = await fetchGmailMessage(gmail, messageId);
+    if (email) {
+      emails.push(email);
+    }
+  }
+
+  console.log(`[PresaleScanner] Fetched ${emails.length} emails for code extraction`);
+
+  if (emails.length === 0) {
+    return {
+      codes: [],
+      isSharedCode: false,
+      hasPersonalizedLinks: false,
+      accountCount: 0,
+    };
+  }
+
+  // Extract codes and links
+  const extractedCodes = extractCodesFromEmails(emails);
+  const extractedLinks = extractLinksFromEmails(emails);
+
+  // Log results
+  if (extractedCodes.uniqueCodes.length > 0) {
+    if (extractedCodes.isSharedCode) {
+      console.log(`[PresaleScanner] Extracted shared code: ${extractedCodes.uniqueCodes[0]}`);
+    } else {
+      console.log(`[PresaleScanner] Extracted ${extractedCodes.uniqueCodes.length} unique codes`);
+    }
+  }
+
+  return {
+    codes: extractedCodes.uniqueCodes,
+    isSharedCode: extractedCodes.isSharedCode,
+    hasPersonalizedLinks: extractedLinks.arePersonalized,
+    accountCount: emails.length,
+  };
 }

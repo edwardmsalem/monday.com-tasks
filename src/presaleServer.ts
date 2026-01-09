@@ -13,7 +13,7 @@
 
 import express, { type Request, type Response } from 'express';
 import { config } from './config/environment.js';
-import { scanPresales } from './services/presaleScanner.js';
+import { scanPresales, extractCodesFromMessageIds } from './services/presaleScanner.js';
 import { getFullState, getLastScan, reloadState, clearSeenPresales, declineOpportunity } from './services/presaleState.js';
 import { getClient as getSlackClient } from './services/slack.js';
 
@@ -153,15 +153,43 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
         subject: string;
         presaleType: string;
         presaleDate: string | null;
-        presaleCodes?: string[];  // New: array of all unique codes
-        hasUniqueCodes?: boolean;  // New: true if codes differ per account
-        hasPersonalizedLinks?: boolean;  // New: true if personalized links detected
         presaleChannel: string;
-        // Legacy single code field (backwards compat)
-        presaleCode?: string | null;
+        messageIds?: string[];  // Gmail message IDs for code extraction
       };
 
       console.log(`[PresaleServer] User ${userId} interested in: ${data.eventName}`);
+
+      // Extract codes from all emails now that they're interested
+      let codeInfo = '';
+      let linkNote = '';
+
+      if (data.messageIds && data.messageIds.length > 0) {
+        try {
+          const extraction = await extractCodesFromMessageIds(data.messageIds);
+
+          if (extraction.codes.length > 0) {
+            if (extraction.isSharedCode) {
+              // Same code across all accounts
+              codeInfo = `🔑 Shared Code: \`${extraction.codes[0]}\``;
+            } else if (extraction.codes.length === 1) {
+              // Single code found
+              codeInfo = `🔑 Code: \`${extraction.codes[0]}\``;
+            } else {
+              // Multiple unique codes - list them all
+              const codeList = extraction.codes.slice(0, 20).map(c => `\`${c}\``).join(', ');
+              const moreCount = extraction.codes.length > 20 ? ` +${extraction.codes.length - 20} more` : '';
+              codeInfo = `🔐 *Unique Codes (${extraction.codes.length} from ${extraction.accountCount} accounts):*\n${codeList}${moreCount}`;
+            }
+          }
+
+          if (extraction.hasPersonalizedLinks) {
+            linkNote = '\n⚠️ _Each account has unique personalized links - check individual emails_';
+          }
+        } catch (error) {
+          console.error('[PresaleServer] Failed to extract codes:', error);
+          codeInfo = '⚠️ _Could not extract codes - check emails manually_';
+        }
+      }
 
       // Post to operations channel
       const operationsChannel = config.presale.operationsChannel;
@@ -170,27 +198,6 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
         const messageLink = messageTs
           ? `https://slack.com/archives/${data.presaleChannel}/p${messageTs.replace('.', '')}`
           : '';
-
-        // Build code display - show all unique codes or indicate shared code
-        let codeInfo = '';
-        const codes = data.presaleCodes ?? (data.presaleCode ? [data.presaleCode] : []);
-        if (codes.length > 0) {
-          if (data.hasUniqueCodes && codes.length > 1) {
-            // Multiple unique codes - list them all
-            const codeList = codes.slice(0, 15).map(c => `\`${c}\``).join(', ');
-            const moreCount = codes.length > 15 ? ` +${codes.length - 15} more` : '';
-            codeInfo = `🔐 *Unique Codes (${codes.length}):*\n${codeList}${moreCount}`;
-          } else {
-            // Single or shared code
-            codeInfo = `🔑 Code: \`${codes[0]}\``;
-          }
-        }
-
-        // Add personalized links note
-        let linkNote = '';
-        if (data.hasPersonalizedLinks) {
-          linkNote = '\n⚠️ _Each account has unique personalized links - check individual emails_';
-        }
 
         // Build presale info line
         let presaleInfo = '';
