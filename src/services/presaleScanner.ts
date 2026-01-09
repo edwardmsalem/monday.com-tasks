@@ -686,18 +686,22 @@ async function postPresaleToSlack(
   // Get sport emoji
   const sportEmoji = getSportEmoji(group.sport);
 
+  // Helper to check if value is valid (not null, undefined, or "null" string)
+  const isValid = (val: string | null | undefined): val is string =>
+    val != null && val !== 'null' && val !== '';
+
   // Build type-specific line (just show AI-detected code for now)
   let typeLine: string;
   if (exclusivity.presaleType === 'registration') {
-    const dateInfo = exclusivity.presaleDate ? `🗓️ Presale starts ${exclusivity.presaleDate}` : '';
+    const dateInfo = isValid(exclusivity.presaleDate) ? `🗓️ Presale starts ${exclusivity.presaleDate}` : '';
     typeLine = `📝 Registration${dateInfo ? ` • ${dateInfo}` : ''}`;
   } else if (exclusivity.presaleType === 'upcoming') {
-    const dateInfo = exclusivity.presaleDate ? `🗓️ ${exclusivity.presaleDate}` : '';
-    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    const dateInfo = isValid(exclusivity.presaleDate) ? `🗓️ ${exclusivity.presaleDate}` : '';
+    const codeInfo = isValid(exclusivity.presaleCode) ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
     const parts = [dateInfo, codeInfo].filter(Boolean).join(' • ');
     typeLine = `📅 Upcoming${parts ? ` • ${parts}` : ''}`;
   } else {
-    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    const codeInfo = isValid(exclusivity.presaleCode) ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
     typeLine = `🎟️ Live Now${codeInfo ? ` • ${codeInfo}` : ''}`;
   }
 
@@ -728,7 +732,7 @@ async function postPresaleToSlack(
   ];
 
   // Add deadline if detected (and different from presale date)
-  if (exclusivity.deadline && exclusivity.deadline !== exclusivity.presaleDate) {
+  if (isValid(exclusivity.deadline) && exclusivity.deadline !== exclusivity.presaleDate) {
     blocks.push({
       type: 'section',
       text: {
