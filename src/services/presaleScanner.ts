@@ -1031,6 +1031,168 @@ function extractCtaLink(text: string, html: string | null): string | null {
   return null;
 }
 
+// ============================================================================
+// Sports Team Email Scanner
+// ============================================================================
+
+export interface SportsTeamEmails {
+  label: string;           // e.g., "NBA/New York Knicks"
+  sport: string;           // e.g., "NBA"
+  team: string;            // e.g., "New York Knicks"
+  fromAddresses: string[]; // Unique "from" email addresses
+  emailCount: number;      // Total emails scanned for this label
+}
+
+export interface SportsTeamScanResult {
+  teams: SportsTeamEmails[];
+  totalLabels: number;
+  totalUniqueAddresses: number;
+  scannedAt: string;
+}
+
+/**
+ * Extract email address from "From" header
+ * "John Doe <john@example.com>" -> "john@example.com"
+ */
+function extractFromAddress(from: string): string {
+  const match = from.match(/<([^>]+)>/) || from.match(/([^\s<]+@[^\s>]+)/);
+  if (match) {
+    return (match[1] || match[0]).toLowerCase().trim();
+  }
+  return from.toLowerCase().trim();
+}
+
+/**
+ * Scan Gmail for all emails with sports team labels and extract unique "from" addresses
+ *
+ * @param maxEmailsPerLabel - Maximum emails to fetch per label (default: 500)
+ * @returns Scan result with from addresses grouped by team label
+ */
+export async function scanSportsTeamEmails(
+  maxEmailsPerLabel: number = 500
+): Promise<SportsTeamScanResult> {
+  console.log('[SportsTeamScanner] Starting scan for sports team emails...');
+
+  const gmail = await getGmailClient();
+
+  // Step 1: Get all sports team labels
+  const sportsLabels = await getSportsTeamLabels();
+  console.log(`[SportsTeamScanner] Found ${sportsLabels.length} sports team labels`);
+
+  if (sportsLabels.length === 0) {
+    return {
+      teams: [],
+      totalLabels: 0,
+      totalUniqueAddresses: 0,
+      scannedAt: new Date().toISOString(),
+    };
+  }
+
+  // Step 2: Get label IDs for querying
+  const labelIdMap = await getLabelIds(sportsLabels);
+
+  // Reverse map: id -> name for looking up label names
+  const idToName = new Map<string, string>();
+  for (const [name, id] of labelIdMap.entries()) {
+    idToName.set(id, name);
+  }
+
+  const results: SportsTeamEmails[] = [];
+  const allUniqueAddresses = new Set<string>();
+
+  // Step 3: For each label, fetch all emails and extract "from" addresses
+  for (const labelName of sportsLabels) {
+    const labelId = labelIdMap.get(labelName);
+    if (!labelId) {
+      console.log(`[SportsTeamScanner] No ID found for label: ${labelName}`);
+      continue;
+    }
+
+    console.log(`[SportsTeamScanner] Scanning label: ${labelName}`);
+
+    try {
+      // Search for all emails with this label
+      const searchResponse = await gmailCircuit.execute(() =>
+        gmail.users.messages.list({
+          userId: 'me',
+          labelIds: [labelId],
+          maxResults: maxEmailsPerLabel,
+        })
+      );
+
+      const messages = searchResponse.data.messages ?? [];
+      console.log(`[SportsTeamScanner] Found ${messages.length} emails for ${labelName}`);
+
+      if (messages.length === 0) {
+        continue;
+      }
+
+      // Extract "from" addresses from each email
+      const fromAddresses = new Set<string>();
+
+      // Fetch message headers in batches (only need headers, not full body)
+      for (const msg of messages) {
+        if (!msg.id) continue;
+
+        try {
+          const msgResponse = await gmailCircuit.execute(() =>
+            gmail.users.messages.get({
+              userId: 'me',
+              id: msg.id!,
+              format: 'metadata',
+              metadataHeaders: ['From'],
+            })
+          );
+
+          const headers = msgResponse.data.payload?.headers ?? [];
+          const fromHeader = headers.find(h => h.name?.toLowerCase() === 'from');
+
+          if (fromHeader?.value) {
+            const fromAddress = extractFromAddress(fromHeader.value);
+            if (fromAddress && fromAddress.includes('@')) {
+              fromAddresses.add(fromAddress);
+              allUniqueAddresses.add(fromAddress);
+            }
+          }
+        } catch (error) {
+          console.error(`[SportsTeamScanner] Failed to fetch message ${msg.id}:`, error);
+        }
+      }
+
+      // Extract team info from label
+      const { team, sport } = extractFromLabel(labelName);
+
+      results.push({
+        label: labelName,
+        sport,
+        team,
+        fromAddresses: Array.from(fromAddresses).sort(),
+        emailCount: messages.length,
+      });
+
+      console.log(`[SportsTeamScanner] ${labelName}: ${fromAddresses.size} unique from addresses`);
+
+    } catch (error) {
+      console.error(`[SportsTeamScanner] Failed to scan label ${labelName}:`, error);
+    }
+  }
+
+  // Sort results by sport, then by team
+  results.sort((a, b) => {
+    if (a.sport !== b.sport) return a.sport.localeCompare(b.sport);
+    return a.team.localeCompare(b.team);
+  });
+
+  console.log(`[SportsTeamScanner] Scan complete. ${results.length} teams, ${allUniqueAddresses.size} total unique addresses`);
+
+  return {
+    teams: results,
+    totalLabels: sportsLabels.length,
+    totalUniqueAddresses: allUniqueAddresses.size,
+    scannedAt: new Date().toISOString(),
+  };
+}
+
 /**
  * Fetch emails by message IDs and extract presale codes/links per account
  * Called when user clicks "Interested" button
