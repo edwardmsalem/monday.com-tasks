@@ -361,6 +361,8 @@ function categorizeTasks(
   const dueToday: blockKit.DigestTask[] = [];
   const thisWeek: blockKit.DigestTask[] = [];
 
+  console.log(`[Digest] Categorizing ${tasks.length} tasks, today=${today}`);
+
   for (const task of tasks) {
     if (!task.dueDate) continue;
 
@@ -371,7 +373,8 @@ function categorizeTasks(
     const info = assigneeInfo?.get(task.id);
 
     if (taskDateStr < today) {
-      // Overdue
+      // Overdue - log for debugging due date issues
+      console.log(`[Digest] Task ${task.id} "${task.name.slice(0, 30)}..." marked OVERDUE: dueDate=${taskDateStr}, today=${today}`);
       overdue.push(toDigestTask(
         task,
         isConfirmed,

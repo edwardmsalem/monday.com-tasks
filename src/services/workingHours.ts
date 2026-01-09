@@ -314,8 +314,14 @@ export function getDaysLate(dueDate: Date, now: Date = new Date()): number {
  * Parse a date string (YYYY-MM-DD) into a Date object
  */
 export function parseDate(dateString: string): Date {
+  // Parse as EST noon to avoid timezone shift issues
+  // Using noon ensures the date won't shift when converted between timezones
   const [year, month, day] = dateString.split('-').map(Number);
-  return new Date(year, month - 1, day);
+
+  // Create date at noon EST to be safe from timezone edge cases
+  // This ensures "2026-01-08" stays "2026-01-08" regardless of server timezone
+  const estNoon = new Date(Date.UTC(year, month - 1, day, 17, 0, 0)); // 17:00 UTC = 12:00 EST
+  return estNoon;
 }
 
 /**
