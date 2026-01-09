@@ -13,7 +13,7 @@
 
 import express, { type Request, type Response } from 'express';
 import { config } from './config/environment.js';
-import { scanPresales, extractCodesFromMessageIds } from './services/presaleScanner.js';
+import { scanPresales, extractCodesFromMessageIds, scanSportsTeamEmails } from './services/presaleScanner.js';
 import { getFullState, getLastScan, reloadState, clearSeenPresales, declineOpportunity } from './services/presaleState.js';
 import { getClient as getSlackClient } from './services/slack.js';
 import { getAllCircuitStats, convertApiCircuit } from './services/circuitBreaker.js';
@@ -106,6 +106,40 @@ app.post('/admin/presale/state/reload', (_req: Request, res: Response): void => 
 app.post('/admin/presale/reset', (_req: Request, res: Response): void => {
   const cleared = clearSeenPresales();
   res.json({ success: true, cleared, message: `Cleared ${cleared} seen presales` });
+});
+
+// ============================================================================
+// Sports Team Email Scanner Endpoint
+// ============================================================================
+
+/**
+ * GET /admin/sports-team-emails
+ *
+ * Scan all sports team labels and extract unique "from" addresses
+ * Optional query params:
+ *   - maxPerLabel: Maximum emails to fetch per label (default: 500)
+ *
+ * Returns: { teams, totalLabels, totalUniqueAddresses, scannedAt }
+ */
+app.get('/admin/sports-team-emails', async (req: Request, res: Response): Promise<void> => {
+  try {
+    console.log('[PresaleServer] Sports team email scan triggered');
+
+    const maxPerLabel = parseInt(req.query.maxPerLabel as string, 10) || 500;
+
+    const result = await scanSportsTeamEmails(maxPerLabel);
+
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    console.error('[PresaleServer] Sports team email scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
 });
 
 // ============================================================================
@@ -455,6 +489,7 @@ function start(): void {
     console.log(`    GET  /admin/presale/state`);
     console.log(`    POST /admin/presale/state/reload`);
     console.log(`    POST /admin/presale/reset`);
+    console.log(`    GET  /admin/sports-team-emails`);
     console.log(`    GET  /admin/circuits`);
     console.log(`    POST /admin/circuits/convertapi/reset`);
     console.log(`    POST /webhook/slack/presale-action`);
