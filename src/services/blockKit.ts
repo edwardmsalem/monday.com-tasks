@@ -86,54 +86,13 @@ function getMondayUrl(itemId: string): string {
   return `${config.monday.boardUrl}/pulses/${itemId}`;
 }
 
-function getSlackThreadUrl(channelId: string, threadTs: string): string {
-  // Use /archives/ format which works better for deep linking to threads
-  // Format: https://slack.com/archives/{channelId}/p{timestamp_without_dot}
-  const tsWithoutDot = threadTs.replace('.', '');
-  return `https://slack.com/archives/${channelId}/p${tsWithoutDot}`;
-}
-
-/**
- * Get formatted links for a task (Monday + Slack thread if available)
- * Returns: "<mondayUrl|Monday> · <slackUrl|Thread>" or just "<mondayUrl|Monday>"
- */
-function getTaskLinks(task: DigestTask): string {
-  const mondayUrl = getMondayUrl(task.id);
-  const mondayLink = `<${mondayUrl}|Monday>`;
-
-  if (task.slackThreadTs) {
-    const slackUrl = getSlackThreadUrl(task.channelId, task.slackThreadTs);
-    return `${mondayLink} · <${slackUrl}|Thread>`;
-  }
-  return mondayLink;
-}
-
-/**
- * Get formatted links for an issue call (Monday + Slack thread if available)
- */
-function getIssueCallLinks(ic: IssueCall): string {
-  const mondayUrl = getMondayUrl(ic.id);
-  const mondayLink = `<${mondayUrl}|Monday>`;
-
-  if (ic.slackThreadTs) {
-    const slackUrl = getSlackThreadUrl(ic.channelId, ic.slackThreadTs);
-    return `${mondayLink} · <${slackUrl}|Thread>`;
-  }
-  return mondayLink;
-}
-
-// Legacy functions for backwards compatibility (returns single URL)
+// Always use Monday.com links for tasks
 function getViewLink(task: DigestTask): string {
-  if (task.slackThreadTs) {
-    return getSlackThreadUrl(task.channelId, task.slackThreadTs);
-  }
   return getMondayUrl(task.id);
 }
 
+// Always use Monday.com links for issue calls
 function getIssueCallViewLink(ic: IssueCall): string {
-  if (ic.slackThreadTs) {
-    return getSlackThreadUrl(ic.channelId, ic.slackThreadTs);
-  }
   return getMondayUrl(ic.id);
 }
 
@@ -923,7 +882,10 @@ export function buildIssueCallClaimEscalationBlocks(
   const lastUpdateText = formatLastUpdate(issueCall.lastUpdate);
   const links = getIssueCallLinks(issueCall);
   blocks.push(sectionBlock(`Created ${timeText} ago, still unclaimed. Last update: ${lastUpdateText}`));
-  blocks.push(sectionBlock(links));
+
+  // Add Monday.com link
+  const mondayUrl = getMondayUrl(issueCall.id);
+  blocks.push(sectionBlock(`<${mondayUrl}|View in Monday>`));
 
   if (!isFirst) {
     blocks.push(dividerBlock());
@@ -966,7 +928,9 @@ export function buildIssueCallCompletionEscalationBlocks(
     sectionBlock(`Only *${hoursRemaining}* working hours until 4 PM deadline.`)
   );
 
-  blocks.push(sectionBlock(links));
+  // Add Monday.com link
+  const mondayUrl = getMondayUrl(issueCall.id);
+  blocks.push(sectionBlock(`<${mondayUrl}|View in Monday>`));
 
   if (!isFirst) {
     blocks.push(dividerBlock());
