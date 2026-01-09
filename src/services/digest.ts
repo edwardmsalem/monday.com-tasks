@@ -158,6 +158,11 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
       let dueDate: Date | null = null;
       if (dueDateStr) {
         dueDate = workingHours.parseDate(dueDateStr);
+        // Debug: check for date parse mismatch (timezone issue detection)
+        const parsedDateStr = workingHours.getESTDateString(dueDate);
+        if (dueDateStr !== parsedDateStr) {
+          console.log(`[Digest] WARNING: Due date mismatch for "${item.name.slice(0, 30)}": Monday="${dueDateStr}", parsed="${parsedDateStr}"`);
+        }
       }
 
       // Parse owners
@@ -361,6 +366,9 @@ function categorizeTasks(
   const dueToday: blockKit.DigestTask[] = [];
   const thisWeek: blockKit.DigestTask[] = [];
 
+  const serverNow = new Date();
+  console.log(`[Digest] Categorizing ${tasks.length} tasks, today=${today}, serverTime=${serverNow.toISOString()}, serverTZ=${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+
   for (const task of tasks) {
     if (!task.dueDate) continue;
 
@@ -371,7 +379,8 @@ function categorizeTasks(
     const info = assigneeInfo?.get(task.id);
 
     if (taskDateStr < today) {
-      // Overdue
+      // Overdue - log for debugging due date issues
+      console.log(`[Digest] Task ${task.id} "${task.name.slice(0, 30)}..." marked OVERDUE: dueDate=${taskDateStr}, today=${today}`);
       overdue.push(toDigestTask(
         task,
         isConfirmed,
