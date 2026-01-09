@@ -118,16 +118,18 @@ app.post('/admin/presale/reset', (_req: Request, res: Response): void => {
  * Scan all sports team labels and extract unique "from" addresses
  * Optional query params:
  *   - maxPerLabel: Maximum emails to fetch per label (default: 500)
+ *   - sport: Filter to single sport (e.g., "NBA", "MLB", "NFL")
  *
  * Returns: { teams, totalLabels, totalUniqueAddresses, scannedAt }
  */
 app.get('/admin/sports-team-emails', async (req: Request, res: Response): Promise<void> => {
   try {
-    console.log('[PresaleServer] Sports team email scan triggered');
-
     const maxPerLabel = parseInt(req.query.maxPerLabel as string, 10) || 500;
+    const sportFilter = req.query.sport as string | undefined;
 
-    const result = await scanSportsTeamEmails(maxPerLabel);
+    console.log(`[PresaleServer] Sports team email scan triggered (sport=${sportFilter || 'all'}, maxPerLabel=${maxPerLabel})`);
+
+    const result = await scanSportsTeamEmails(maxPerLabel, sportFilter);
 
     res.json({
       success: true,
