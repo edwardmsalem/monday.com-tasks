@@ -86,21 +86,13 @@ function getMondayUrl(itemId: string): string {
   return `${config.monday.boardUrl}/pulses/${itemId}`;
 }
 
-function getSlackThreadUrl(channelId: string, threadTs: string): string {
-  return `https://slack.com/app_redirect?channel=${channelId}&message_ts=${threadTs}`;
-}
-
+// Always use Monday.com links for tasks
 function getViewLink(task: DigestTask): string {
-  if (task.slackThreadTs) {
-    return getSlackThreadUrl(task.channelId, task.slackThreadTs);
-  }
   return getMondayUrl(task.id);
 }
 
+// Always use Monday.com links for issue calls
 function getIssueCallViewLink(ic: IssueCall): string {
-  if (ic.slackThreadTs) {
-    return getSlackThreadUrl(ic.channelId, ic.slackThreadTs);
-  }
   return getMondayUrl(ic.id);
 }
 
@@ -888,10 +880,9 @@ export function buildIssueCallClaimEscalationBlocks(
   const lastUpdateText = formatLastUpdate(issueCall.lastUpdate);
   blocks.push(sectionBlock(`Created ${timeText} ago, still unclaimed. Last update: ${lastUpdateText}`));
 
-  if (issueCall.slackThreadTs) {
-    const viewLink = getSlackThreadUrl(issueCall.channelId, issueCall.slackThreadTs);
-    blocks.push(sectionBlock(`<${viewLink}|View Thread>`));
-  }
+  // Add Monday.com link
+  const mondayUrl = getMondayUrl(issueCall.id);
+  blocks.push(sectionBlock(`<${mondayUrl}|View in Monday>`));
 
   if (!isFirst) {
     blocks.push(dividerBlock());
@@ -933,10 +924,9 @@ export function buildIssueCallCompletionEscalationBlocks(
     sectionBlock(`Only *${hoursRemaining}* working hours until 4 PM deadline.`)
   );
 
-  if (issueCall.slackThreadTs) {
-    const viewLink = getSlackThreadUrl(issueCall.channelId, issueCall.slackThreadTs);
-    blocks.push(sectionBlock(`<${viewLink}|View Thread>`));
-  }
+  // Add Monday.com link
+  const mondayUrl = getMondayUrl(issueCall.id);
+  blocks.push(sectionBlock(`<${mondayUrl}|View in Monday>`));
 
   if (!isFirst) {
     blocks.push(dividerBlock());
