@@ -292,16 +292,16 @@ export function buildPersonalDigestBlocks(
 
     for (const task of tasks.overdue) {
       const daysLate = getDaysLate(task.dueDate);
-      const viewLink = getViewLink(task);
       const dayText = daysLate === 1 ? 'day' : 'days';
       const lastUpdateText = formatLastUpdate(task.lastUpdate);
+      const links = getTaskLinks(task);
 
       // Show acknowledgment status if partial acknowledgment exists
       const ackStatus = task.acknowledgmentStatus ? `\n  ${task.acknowledgmentStatus}` : '';
 
       blocks.push(
         sectionBlock(
-          `• ${truncate(task.name, 50)} (${daysLate} ${dayText} late, last update ${lastUpdateText}) <${viewLink}|[View]>${ackStatus}`
+          `• ${truncate(task.name, 50)} (${daysLate} ${dayText} late, last update ${lastUpdateText})\n  ${links}${ackStatus}`
         )
       );
       blocks.push(buildOverdueTaskActions(task.id, task.assigneeSlackIds));
@@ -315,12 +315,12 @@ export function buildPersonalDigestBlocks(
     blocks.push(sectionBlock(`*🔴 DUE TODAY (${tasks.dueToday.length})*`));
 
     for (const task of tasks.dueToday) {
-      const viewLink = getViewLink(task);
       const confirmedTag = task.isConfirmed ? ' ✓' : '';
       const lastUpdateText = formatLastUpdate(task.lastUpdate);
+      const links = getTaskLinks(task);
 
       blocks.push(
-        sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText}) <${viewLink}|[View]>${confirmedTag}`)
+        sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText})${confirmedTag}\n  ${links}`)
       );
 
       // Only show buttons if not already confirmed
@@ -337,12 +337,12 @@ export function buildPersonalDigestBlocks(
     blocks.push(sectionBlock(`*📅 THIS WEEK (${tasks.thisWeek.length})*`));
 
     for (const task of tasks.thisWeek) {
-      const viewLink = getViewLink(task);
       const dayName = getDayName(task.dueDate);
       const lastUpdateText = formatLastUpdate(task.lastUpdate);
+      const links = getTaskLinks(task);
 
       blocks.push(
-        sectionBlock(`• ${dayName}: ${truncate(task.name, 40)} (last update ${lastUpdateText}) <${viewLink}|[View]>`)
+        sectionBlock(`• ${dayName}: ${truncate(task.name, 40)} (last update ${lastUpdateText})\n  ${links}`)
       );
     }
 
@@ -389,12 +389,12 @@ export function buildIssueCallDigestBlocks(
       const assigneeText = ic.assigneeSlackId
         ? `<@${ic.assigneeSlackId}>`
         : ic.assignee ?? 'Unassigned';
-      const viewLink = getIssueCallViewLink(ic);
+      const links = getIssueCallLinks(ic);
       const lastUpdateText = formatLastUpdate(ic.lastUpdate);
 
       blocks.push(
         sectionBlock(
-          `• ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (${daysLate} ${dayText} late, last update ${lastUpdateText}) <${viewLink}|[View]>\n  Assigned: ${assigneeText}`
+          `• ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (${daysLate} ${dayText} late, last update ${lastUpdateText})\n  Assigned: ${assigneeText} | ${links}`
         )
       );
     }
@@ -407,13 +407,13 @@ export function buildIssueCallDigestBlocks(
     blocks.push(sectionBlock(`*🔴 DUE TODAY (${issueCalls.dueToday.length})*`));
 
     for (const ic of issueCalls.dueToday) {
-      const viewLink = getIssueCallViewLink(ic);
+      const links = getIssueCallLinks(ic);
       const lastUpdateText = formatLastUpdate(ic.lastUpdate);
 
       if (ic.isUnclaimed) {
         blocks.push(
           sectionBlock(
-            `• ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (last update ${lastUpdateText}) <${viewLink}|[View]>\n  ⚠️ *UNCLAIMED*`
+            `• ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (last update ${lastUpdateText})\n  ⚠️ *UNCLAIMED* | ${links}`
           )
         );
         blocks.push(buildClaimButton(ic.id));
@@ -423,7 +423,7 @@ export function buildIssueCallDigestBlocks(
           : ic.assignee ?? 'Unassigned';
         blocks.push(
           sectionBlock(
-            `• ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (last update ${lastUpdateText}) <${viewLink}|[View]>\n  Assigned: ${assigneeText}`
+            `• ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (last update ${lastUpdateText})\n  Assigned: ${assigneeText} | ${links}`
           )
         );
       }
@@ -438,12 +438,12 @@ export function buildIssueCallDigestBlocks(
 
     for (const ic of issueCalls.thisWeek) {
       const dayName = getDayName(ic.dueDate);
-      const viewLink = getIssueCallViewLink(ic);
+      const links = getIssueCallLinks(ic);
       const lastUpdateText = formatLastUpdate(ic.lastUpdate);
 
       blocks.push(
         sectionBlock(
-          `• ${dayName}: ${truncate(ic.customerName, 20)} - ${truncate(ic.issue, 25)} (last update ${lastUpdateText}) <${viewLink}|[View]>`
+          `• ${dayName}: ${truncate(ic.customerName, 20)} - ${truncate(ic.issue, 25)} (last update ${lastUpdateText})\n  ${links}`
         )
       );
     }
@@ -486,12 +486,12 @@ export function buildTeamOverviewBlocks(teamStatus: TeamStatus): any[] {
       if (member.overdueTasks.length > 0) {
         for (const task of member.overdueTasks) {
           const daysLate = getDaysLate(task.dueDate);
-          const viewLink = getViewLink(task);
+          const links = getTaskLinks(task);
           const lastUpdateText = formatLastUpdate(task.lastUpdate);
 
           blocks.push(
             sectionBlock(
-              `  ⚠️ ${truncate(task.name, 40)} (${daysLate}d late, last update ${lastUpdateText}) <${viewLink}|[View]>`
+              `  ⚠️ ${truncate(task.name, 40)} (${daysLate}d late, last update ${lastUpdateText})\n    ${links}`
             )
           );
         }
@@ -500,13 +500,13 @@ export function buildTeamOverviewBlocks(teamStatus: TeamStatus): any[] {
       // Show due today tasks
       if (member.dueTodayTasks.length > 0) {
         for (const task of member.dueTodayTasks) {
-          const viewLink = getViewLink(task);
+          const links = getTaskLinks(task);
           const lastUpdateText = formatLastUpdate(task.lastUpdate);
           const confirmedTag = task.isConfirmed ? ' ✓' : '';
 
           blocks.push(
             sectionBlock(
-              `  🔴 ${truncate(task.name, 40)} (due today, last update ${lastUpdateText}) <${viewLink}|[View]>${confirmedTag}`
+              `  🔴 ${truncate(task.name, 40)} (due today, last update ${lastUpdateText})${confirmedTag}\n    ${links}`
             )
           );
         }
@@ -527,24 +527,24 @@ export function buildTeamOverviewBlocks(teamStatus: TeamStatus): any[] {
       // Show overdue first
       for (const task of member.overdueTasks) {
         const daysLate = getDaysLate(task.dueDate);
-        const viewLink = getViewLink(task);
+        const links = getTaskLinks(task);
         const lastUpdateText = formatLastUpdate(task.lastUpdate);
 
         blocks.push(
           sectionBlock(
-            `  ⚠️ ${truncate(task.name, 40)} (${daysLate}d late, last update ${lastUpdateText}) <${viewLink}|[View]>`
+            `  ⚠️ ${truncate(task.name, 40)} (${daysLate}d late, last update ${lastUpdateText})\n    ${links}`
           )
         );
       }
 
       // Then due today
       for (const task of member.dueTodayTasks) {
-        const viewLink = getViewLink(task);
+        const links = getTaskLinks(task);
         const lastUpdateText = formatLastUpdate(task.lastUpdate);
 
         blocks.push(
           sectionBlock(
-            `  🔴 ${truncate(task.name, 40)} (due today, last update ${lastUpdateText}) <${viewLink}|[View]>`
+            `  🔴 ${truncate(task.name, 40)} (due today, last update ${lastUpdateText})\n    ${links}`
           )
         );
       }
@@ -552,12 +552,12 @@ export function buildTeamOverviewBlocks(teamStatus: TeamStatus): any[] {
       // Then this week
       for (const task of member.thisWeekTasks) {
         const dayName = getDayName(task.dueDate);
-        const viewLink = getViewLink(task);
+        const links = getTaskLinks(task);
         const lastUpdateText = formatLastUpdate(task.lastUpdate);
 
         blocks.push(
           sectionBlock(
-            `  📅 ${truncate(task.name, 40)} (${dayName}, last update ${lastUpdateText}) <${viewLink}|[View]>`
+            `  📅 ${truncate(task.name, 40)} (${dayName}, last update ${lastUpdateText})\n    ${links}`
           )
         );
       }
@@ -581,7 +581,7 @@ export function buildTeamOverviewBlocks(teamStatus: TeamStatus): any[] {
     blocks.push(sectionBlock('*📞 ISSUE CALLS*'));
 
     for (const ic of teamStatus.issueCalls) {
-      const viewLink = getIssueCallViewLink(ic);
+      const links = getIssueCallLinks(ic);
       const lastUpdateText = formatLastUpdate(ic.lastUpdate);
 
       let statusEmoji = '📋';
@@ -609,7 +609,7 @@ export function buildTeamOverviewBlocks(teamStatus: TeamStatus): any[] {
 
       blocks.push(
         sectionBlock(
-          `${statusEmoji} ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (${dueText}, last update ${lastUpdateText}) <${viewLink}|[View]>\n  → ${assigneeText}`
+          `${statusEmoji} ${truncate(ic.customerName, 25)} - ${truncate(ic.issue, 30)} (${dueText}, last update ${lastUpdateText})\n  → ${assigneeText} | ${links}`
         )
       );
 
@@ -661,10 +661,10 @@ export function buildTomorrowPrepBlocks(
     );
 
     for (const task of tasks) {
-      const viewLink = getViewLink(task);
+      const links = getTaskLinks(task);
       const lastUpdateText = formatLastUpdate(task.lastUpdate);
       blocks.push(
-        sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText}) <${viewLink}|[View]>`)
+        sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText})\n  ${links}`)
       );
     }
 
@@ -678,10 +678,10 @@ export function buildTomorrowPrepBlocks(
     );
 
     for (const task of unackedToday) {
-      const viewLink = getViewLink(task);
+      const links = getTaskLinks(task);
       const lastUpdateText = formatLastUpdate(task.lastUpdate);
       blocks.push(
-        sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText}) <${viewLink}|[View]>`)
+        sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText})\n  ${links}`)
       );
     }
 
@@ -729,9 +729,10 @@ export function buildIssueCallEODBlocks(
       const assigneeText = ic.assigneeSlackId
         ? `<@${ic.assigneeSlackId}>`
         : ic.assignee ?? 'Unknown';
+      const links = getIssueCallLinks(ic);
       blocks.push(
         sectionBlock(
-          `• ${truncate(ic.customerName, 30)} - ${truncate(ic.issue, 40)} (by ${assigneeText})`
+          `• ${truncate(ic.customerName, 30)} - ${truncate(ic.issue, 40)} (by ${assigneeText})\n  ${links}`
         )
       );
     }
@@ -748,9 +749,10 @@ export function buildIssueCallEODBlocks(
         ? `<@${ic.assigneeSlackId}>`
         : ic.assignee ?? 'Unassigned';
       const lastUpdateText = formatLastUpdate(ic.lastUpdate);
+      const links = getIssueCallLinks(ic);
       blocks.push(
         sectionBlock(
-          `• ${truncate(ic.customerName, 30)} - ${truncate(ic.issue, 35)} (${assigneeText}, last update ${lastUpdateText})`
+          `• ${truncate(ic.customerName, 30)} - ${truncate(ic.issue, 35)} (${assigneeText}, last update ${lastUpdateText})\n  ${links}`
         )
       );
     }
@@ -763,11 +765,11 @@ export function buildIssueCallEODBlocks(
     blocks.push(sectionBlock(`*⚠️ STILL UNCLAIMED (${unclaimed.length})*`));
 
     for (const ic of unclaimed) {
-      const viewLink = getIssueCallViewLink(ic);
+      const links = getIssueCallLinks(ic);
       const lastUpdateText = formatLastUpdate(ic.lastUpdate);
       blocks.push(
         sectionBlock(
-          `• ${truncate(ic.customerName, 30)} - ${truncate(ic.issue, 35)} (last update ${lastUpdateText}) <${viewLink}|[View]>\n  _Needs morning attention!_`
+          `• ${truncate(ic.customerName, 30)} - ${truncate(ic.issue, 35)} (last update ${lastUpdateText})\n  ${links}\n  _Needs morning attention!_`
         )
       );
     }
@@ -807,10 +809,10 @@ export function buildFirstEscalationBlocks(
   );
 
   for (const task of unconfirmedTasks) {
-    const viewLink = getViewLink(task);
+    const links = getTaskLinks(task);
     const lastUpdateText = formatLastUpdate(task.lastUpdate);
     blocks.push(
-      sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText}) <${viewLink}|[View]>`)
+      sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText})\n  ${links}`)
     );
   }
 
@@ -839,10 +841,10 @@ export function buildFinalEscalationBlocks(
   );
 
   for (const task of unconfirmedTasks) {
-    const viewLink = getViewLink(task);
+    const links = getTaskLinks(task);
     const lastUpdateText = formatLastUpdate(task.lastUpdate);
     blocks.push(
-      sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText}) <${viewLink}|[View]>`)
+      sectionBlock(`• ${truncate(task.name, 50)} (last update ${lastUpdateText})\n  ${links}`)
     );
   }
 
@@ -878,6 +880,7 @@ export function buildIssueCallClaimEscalationBlocks(
     ? `${Math.floor(hoursUnclaimed * 60)} minutes`
     : `${hoursUnclaimed}+ hours`;
   const lastUpdateText = formatLastUpdate(issueCall.lastUpdate);
+  const links = getIssueCallLinks(issueCall);
   blocks.push(sectionBlock(`Created ${timeText} ago, still unclaimed. Last update: ${lastUpdateText}`));
 
   // Add Monday.com link
@@ -918,6 +921,7 @@ export function buildIssueCallCompletionEscalationBlocks(
     ? `<@${issueCall.assigneeSlackId}>`
     : issueCall.assignee ?? 'Unknown';
   const lastUpdateText = formatLastUpdate(issueCall.lastUpdate);
+  const links = getIssueCallLinks(issueCall);
   blocks.push(sectionBlock(`Assigned to: ${assigneeText} (last update ${lastUpdateText})`));
 
   blocks.push(

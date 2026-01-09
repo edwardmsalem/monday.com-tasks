@@ -90,7 +90,7 @@ export const config = {
   // Slack
   slack: {
     botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
-    channelId: getEnvVar('SLACK_CHANNEL_ID'),  // REQUIRED: notification channel for task threads
+    channelId: getEnvVar('SLACK_CHANNEL_ID', ''),  // Main task notification channel (required for main server)
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
     // After-hours behavior (nights + weekends)
     // Tasks created after-hours are created quietly (no pings), then released at business start
@@ -175,6 +175,14 @@ export const config = {
     mls: getEnvVarOptional('SHEETS_MLS_ID'),       // MLS workbook spreadsheet ID
     ncaa: getEnvVarOptional('SHEETS_NCAA_ID'),     // NCAA workbook spreadsheet ID (college)
     other: getEnvVarOptional('SHEETS_OTHER_ID'),   // Other events workbook
+  },
+
+  // Presale Scanner Configuration
+  presale: {
+    slackChannel: getEnvVar('SLACK_PRESALE_CHANNEL', ''),
+    scanIntervalMs: 60 * 60 * 1000, // 1 hour
+    lookbackMinutes: 60,
+    sportsLabelPrefixes: ['NBA/', 'MLB/', 'NFL/', 'NHL/', 'MLS/', 'NCAA/'],
   },
 } as const;
 
