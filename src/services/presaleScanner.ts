@@ -968,61 +968,119 @@ export async function scanPresales(
 // Export for Code Extraction (called when "Interested" button clicked)
 // ============================================================================
 
+export interface AccountPresaleData {
+  email: string;
+  code: string | null;
+  link: string | null;
+}
+
 export interface CodeExtractionResult {
-  codes: string[];
-  isSharedCode: boolean;
-  hasPersonalizedLinks: boolean;
-  accountCount: number;
+  accounts: AccountPresaleData[];
+  hasUniqueCodes: boolean;  // Different codes per account = definitely exclusive
+  hasUniqueLinks: boolean;  // Different personalized links per account
+  sharedCode: string | null;  // If all accounts have the same code
 }
 
 /**
- * Fetch emails by message IDs and extract presale codes
+ * Extract the first "click here" or CTA link from email
+ */
+function extractCtaLink(text: string, html: string | null): string | null {
+  // Look for common CTA patterns in HTML first (more reliable)
+  if (html) {
+    // Look for links with CTA text
+    const ctaPatterns = [
+      /<a[^>]+href=["']([^"']+)["'][^>]*>(?:[^<]*(?:click|buy|shop|get|access|unlock|purchase|tickets)[^<]*)<\/a>/gi,
+      /<a[^>]+href=["']([^"']+ticketmaster[^"']+)["'][^>]*>/gi,
+      /<a[^>]+href=["']([^"']+(?:presale|offer|unlock|access)[^"']+)["'][^>]*>/gi,
+    ];
+
+    for (const pattern of ctaPatterns) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(html);
+      if (match && match[1]) {
+        // Clean up the URL
+        let url = match[1].trim();
+        // Decode HTML entities
+        url = url.replace(/&amp;/g, '&');
+        if (url.startsWith('http')) {
+          return url;
+        }
+      }
+    }
+  }
+
+  // Fallback to text patterns
+  const linkPatterns = [
+    /https?:\/\/[^\s<>"']+ticketmaster[^\s<>"']+/gi,
+    /https?:\/\/[^\s<>"']+(?:presale|offer|unlock|access)[^\s<>"']+/gi,
+  ];
+
+  for (const pattern of linkPatterns) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(text);
+    if (match) {
+      return match[0].replace(/[.,;:!?)\]]+$/, '');
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fetch emails by message IDs and extract presale codes/links per account
  * Called when user clicks "Interested" button
  */
 export async function extractCodesFromMessageIds(
   messageIds: string[]
 ): Promise<CodeExtractionResult> {
-  console.log(`[PresaleScanner] Extracting codes from ${messageIds.length} messages...`);
+  console.log(`[PresaleScanner] Extracting codes/links from ${messageIds.length} messages...`);
 
   const gmail = await getGmailClient();
-  const emails: GmailMessage[] = [];
+  const accounts: AccountPresaleData[] = [];
+  const allCodes = new Set<string>();
+  const allLinks = new Set<string>();
 
-  // Fetch all emails by ID
+  // Fetch all emails and extract data
   for (const messageId of messageIds) {
     const email = await fetchGmailMessage(gmail, messageId);
-    if (email) {
-      emails.push(email);
-    }
+    if (!email) continue;
+
+    const accountEmail = email.to ?? email.from;
+    const codes = extractCodesFromText(email.bodyText);
+    const link = extractCtaLink(email.bodyText, email.bodyHtml);
+    const code = codes.length > 0 ? codes[0] : null;
+
+    if (code) allCodes.add(code);
+    if (link) allLinks.add(link);
+
+    accounts.push({
+      email: accountEmail,
+      code,
+      link,
+    });
   }
 
-  console.log(`[PresaleScanner] Fetched ${emails.length} emails for code extraction`);
+  console.log(`[PresaleScanner] Extracted data from ${accounts.length} accounts`);
 
-  if (emails.length === 0) {
-    return {
-      codes: [],
-      isSharedCode: false,
-      hasPersonalizedLinks: false,
-      accountCount: 0,
-    };
+  // Determine if codes/links are unique per account
+  const hasUniqueCodes = allCodes.size > 1;
+  const hasUniqueLinks = allLinks.size > 1;
+  const sharedCode = allCodes.size === 1 ? Array.from(allCodes)[0] : null;
+
+  if (hasUniqueCodes) {
+    console.log(`[PresaleScanner] Found ${allCodes.size} unique codes across accounts`);
+  } else if (sharedCode) {
+    console.log(`[PresaleScanner] All accounts share code: ${sharedCode}`);
   }
 
-  // Extract codes and links
-  const extractedCodes = extractCodesFromEmails(emails);
-  const extractedLinks = extractLinksFromEmails(emails);
-
-  // Log results
-  if (extractedCodes.uniqueCodes.length > 0) {
-    if (extractedCodes.isSharedCode) {
-      console.log(`[PresaleScanner] Extracted shared code: ${extractedCodes.uniqueCodes[0]}`);
-    } else {
-      console.log(`[PresaleScanner] Extracted ${extractedCodes.uniqueCodes.length} unique codes`);
-    }
+  if (hasUniqueLinks) {
+    console.log(`[PresaleScanner] Found ${allLinks.size} unique links across accounts`);
   }
 
   return {
-    codes: extractedCodes.uniqueCodes,
-    isSharedCode: extractedCodes.isSharedCode,
-    hasPersonalizedLinks: extractedLinks.arePersonalized,
-    accountCount: emails.length,
+    accounts,
+    hasUniqueCodes,
+    hasUniqueLinks,
+    sharedCode,
   };
 }

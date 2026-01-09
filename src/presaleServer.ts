@@ -159,35 +159,44 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
 
       console.log(`[PresaleServer] User ${userId} interested in: ${data.eventName}`);
 
-      // Extract codes from all emails now that they're interested
-      let codeInfo = '';
-      let linkNote = '';
+      // Extract codes/links from all emails now that they're interested
+      let statusInfo = '';
+      let csvContent: string | null = null;
+      let csvFilename = '';
 
       if (data.messageIds && data.messageIds.length > 0) {
         try {
           const extraction = await extractCodesFromMessageIds(data.messageIds);
 
-          if (extraction.codes.length > 0) {
-            if (extraction.isSharedCode) {
-              // Same code across all accounts
-              codeInfo = `🔑 Shared Code: \`${extraction.codes[0]}\``;
-            } else if (extraction.codes.length === 1) {
-              // Single code found
-              codeInfo = `🔑 Code: \`${extraction.codes[0]}\``;
-            } else {
-              // Multiple unique codes - list them all
-              const codeList = extraction.codes.slice(0, 20).map(c => `\`${c}\``).join(', ');
-              const moreCount = extraction.codes.length > 20 ? ` +${extraction.codes.length - 20} more` : '';
-              codeInfo = `🔐 *Unique Codes (${extraction.codes.length} from ${extraction.accountCount} accounts):*\n${codeList}${moreCount}`;
-            }
+          // Build status info for the message
+          const statusParts: string[] = [];
+          if (extraction.sharedCode) {
+            statusParts.push(`🔑 Shared Code: \`${extraction.sharedCode}\``);
           }
+          if (extraction.hasUniqueCodes) {
+            statusParts.push(`🔐 Unique codes per account (${extraction.accounts.length} accounts)`);
+          }
+          if (extraction.hasUniqueLinks) {
+            statusParts.push(`🔗 Unique links per account`);
+          }
+          statusInfo = statusParts.join('\n');
 
-          if (extraction.hasPersonalizedLinks) {
-            linkNote = '\n⚠️ _Each account has unique personalized links - check individual emails_';
+          // Generate CSV if we have account data
+          if (extraction.accounts.length > 0) {
+            const csvRows = ['Email,Code,Link'];
+            for (const account of extraction.accounts) {
+              // Escape CSV fields
+              const email = account.email.replace(/"/g, '""');
+              const code = (account.code ?? '').replace(/"/g, '""');
+              const link = (account.link ?? '').replace(/"/g, '""');
+              csvRows.push(`"${email}","${code}","${link}"`);
+            }
+            csvContent = csvRows.join('\n');
+            csvFilename = `${data.team.toLowerCase().replace(/\s+/g, '-')}-${data.eventName.toLowerCase().replace(/\s+/g, '-')}.csv`;
           }
         } catch (error) {
           console.error('[PresaleServer] Failed to extract codes:', error);
-          codeInfo = '⚠️ _Could not extract codes - check emails manually_';
+          statusInfo = '⚠️ _Could not extract codes - check emails manually_';
         }
       }
 
@@ -204,15 +213,13 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
         if (data.presaleType === 'registration') {
           presaleInfo = data.presaleDate ? `📝 Registration • Presale starts ${data.presaleDate}` : '📝 Registration';
         } else if (data.presaleType === 'upcoming') {
-          const parts = [];
-          if (data.presaleDate) parts.push(`🗓️ ${data.presaleDate}`);
-          presaleInfo = `📅 Upcoming${parts.length ? ' • ' + parts.join(' • ') : ''}`;
-          if (codeInfo) presaleInfo += `\n${codeInfo}`;
+          presaleInfo = data.presaleDate ? `📅 Upcoming • 🗓️ ${data.presaleDate}` : '📅 Upcoming';
         } else {
-          presaleInfo = `🎟️ Live Now`;
-          if (codeInfo) presaleInfo += `\n${codeInfo}`;
+          presaleInfo = '🎟️ Live Now';
         }
-        presaleInfo += linkNote;
+        if (statusInfo) {
+          presaleInfo += `\n${statusInfo}`;
+        }
 
         const blocks = [
           {
@@ -237,11 +244,29 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
           } as any);
         }
 
-        await slack.chat.postMessage({
+        // Post the message first
+        const opsMessage = await slack.chat.postMessage({
           channel: operationsChannel,
           blocks,
           text: `📋 Prepare a sheet for ${data.team} - ${data.eventName}`,
         });
+
+        // Upload CSV as a file in thread
+        if (csvContent && opsMessage.ts) {
+          try {
+            await slack.filesUploadV2({
+              channel_id: operationsChannel,
+              thread_ts: opsMessage.ts,
+              filename: csvFilename,
+              file: Buffer.from(csvContent, 'utf-8'),
+              title: `Account Data - ${data.eventName}`,
+              initial_comment: 'Email, Code, Link for each account:',
+            });
+            console.log(`[PresaleServer] Uploaded CSV: ${csvFilename}`);
+          } catch (uploadError) {
+            console.error('[PresaleServer] Failed to upload CSV:', uploadError);
+          }
+        }
       }
 
       // Update the original message to show status
