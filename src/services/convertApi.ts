@@ -1,5 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import ConvertApi from 'convertapi';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { config } from '../config/environment.js';
 import type { ConvertedFile } from '../types/index.js';
 import { convertApiCircuit } from './circuitBreaker.js';
@@ -153,59 +156,80 @@ export async function convertHtmlToPdf(
 
   console.log('Converting HTML to PDF:', htmlFilename, htmlContent.length, 'chars');
 
-  // Convert HTML to PDF using the convertapi library
-  // Wrapped in circuit breaker (TD-05)
-  let result: { files: any[] };
+  // Write HTML to a temp file (ConvertAPI library has issues with in-memory objects)
+  const tempDir = os.tmpdir();
+  const tempFilePath = path.join(tempDir, `convertapi-${Date.now()}-${htmlFilename}`);
+
   try {
-    result = await convertApiCircuit.execute<{ files: any[] }>(() =>
-      client.convert(
-        'pdf',
-        {
-          File: { name: htmlFilename, data: Buffer.from(htmlContent, 'utf-8') },
-          PageSize: 'a4',
-          MarginTop: 10,
-          MarginRight: 10,
-          MarginBottom: 10,
-          MarginLeft: 10,
-          PageOrientation: 'portrait',
-        },
-        'html'
-      )
-    );
-  } catch (error) {
-    // Log detailed error info for debugging
-    console.error('[ConvertAPI] HTML to PDF conversion failed:', {
-      filename: htmlFilename,
-      htmlLength: htmlContent.length,
-      error: error instanceof Error ? error.message : String(error),
-      circuitState: convertApiCircuit.getStats(),
-    });
-    throw error;
+    // Write the HTML content to a temp file
+    fs.writeFileSync(tempFilePath, htmlContent, 'utf-8');
+    console.log('[ConvertAPI] Wrote temp file:', tempFilePath);
+
+    // Convert HTML to PDF using the convertapi library
+    // Wrapped in circuit breaker (TD-05)
+    let result: { files: any[] };
+    try {
+      result = await convertApiCircuit.execute<{ files: any[] }>(() =>
+        client.convert(
+          'pdf',
+          {
+            File: tempFilePath,  // Pass the file path as a string
+            PageSize: 'a4',
+            MarginTop: 10,
+            MarginRight: 10,
+            MarginBottom: 10,
+            MarginLeft: 10,
+            PageOrientation: 'portrait',
+          },
+          'html'
+        )
+      );
+    } catch (error) {
+      // Log detailed error info for debugging
+      console.error('[ConvertAPI] HTML to PDF conversion failed:', {
+        filename: htmlFilename,
+        tempFilePath,
+        htmlLength: htmlContent.length,
+        error: error instanceof Error ? error.message : String(error),
+        circuitState: convertApiCircuit.getStats(),
+      });
+      throw error;
+    }
+
+    // Get the converted file
+    const file = result.files[0];
+    if (!file) {
+      throw new Error('ConvertAPI did not return a converted file');
+    }
+
+    // Store the durable URL for potential retries
+    const pdfUrl = file.url as string;
+    console.log('ConvertAPI PDF URL:', pdfUrl);
+
+    // Fetch the file data
+    const response = await fetch(pdfUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download converted PDF: ${response.statusText}`);
+    }
+
+    const data = Buffer.from(await response.arrayBuffer());
+
+    return {
+      filename: pdfFilename,
+      data,
+      url: pdfUrl,
+    };
+  } finally {
+    // Clean up temp file
+    try {
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+        console.log('[ConvertAPI] Cleaned up temp file:', tempFilePath);
+      }
+    } catch (cleanupError) {
+      console.warn('[ConvertAPI] Failed to clean up temp file:', tempFilePath, cleanupError);
+    }
   }
-
-  // Get the converted file
-  const file = result.files[0];
-  if (!file) {
-    throw new Error('ConvertAPI did not return a converted file');
-  }
-
-  // Store the durable URL for potential retries
-  const pdfUrl = file.url as string;
-  console.log('ConvertAPI PDF URL:', pdfUrl);
-
-  // Fetch the file data
-  const response = await fetch(pdfUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to download converted PDF: ${response.statusText}`);
-  }
-
-  const data = Buffer.from(await response.arrayBuffer());
-
-  return {
-    filename: pdfFilename,
-    data,
-    url: pdfUrl,
-  };
 }
 
 /**
