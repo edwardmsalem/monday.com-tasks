@@ -3,6 +3,11 @@
  *
  * Uses Claude to detect if a presale email is "exclusive" (personalized link,
  * unique code, exclusive language) vs generic fan presales with public codes.
+ *
+ * Also distinguishes between:
+ * - REGISTRATION: Sign up for future presale access
+ * - UPCOMING: Presale is scheduled, code provided, just wait
+ * - LIVE: Presale is happening now, use this code
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -24,11 +29,17 @@ function getClient(): Anthropic {
 // Types
 // ============================================================================
 
+export type PresaleType = 'registration' | 'upcoming' | 'live';
+
 export interface ExclusivityCheckResult {
   isExclusive: boolean;
   confidence: number;
   reason: string;
-  deadline: string | null;  // Extracted deadline if detected
+  presaleType: PresaleType;
+  eventName: string | null;    // The event/artist name (e.g., "Bruno Mars", "Playoff Round 1")
+  presaleDate: string | null;  // For registration/upcoming: when presale starts (e.g., "Wed, Jan 14 at 12 PM")
+  presaleCode: string | null;  // For upcoming/live: the presale code to use
+  deadline: string | null;     // When the presale expires
 }
 
 // ============================================================================
@@ -44,34 +55,45 @@ CONTEXT:
 - We want to SKIP generic fan presales that anyone can use (public codes)
 
 YOUR TASK:
-Analyze presale emails to determine if they are EXCLUSIVE (require our action) or GENERIC (skip).
+1. Determine if this is an EXCLUSIVE presale (requires action) or GENERIC (skip)
+2. Classify the presale type: REGISTRATION, UPCOMING, or LIVE
 
 EXCLUSIVE presales have ONE OR MORE of these characteristics:
 1. **Personalized Links**: URLs with unique tokens, account-specific parameters, or "personalized" language
-   - Example: "Your exclusive link: tickets.com/presale?token=abc123"
-   - Example: "Click here to access YOUR presale" (implies personalized)
-
-2. **Unique Codes**: Codes that are explicitly described as unique, personal, or one-time-use
-   - Example: "Your personal presale code: JONES2025"
-   - Example: "This code is unique to your account"
-
+2. **Unique Codes**: Codes explicitly described as unique, personal, or one-time-use
 3. **Exclusive Language**: Clear indication this is special access not available to general public
-   - Example: "As a season ticket member, you have exclusive access"
-   - Example: "This offer is only available to select account holders"
+   - "As a season ticket member", "exclusive access", "select account holders"
 
-GENERIC presales (SKIP these) have these characteristics:
-1. **Public Codes**: Codes that are generic or widely shared
-   - Example: "Use code PRESALE2025" (no personalization)
-   - Example: "Fan presale code: FANS" (clearly generic)
+GENERIC presales (SKIP these):
+1. **Public Codes**: Generic codes like "PRESALE2025", "FANS"
+2. **General Fan Presales**: Available to anyone who signs up
+3. **No Personalization**: No unique links or account-specific content
 
-2. **General Fan Presales**: Available to anyone who signs up or follows the team
-   - Example: "Fan Club presale starts Tuesday"
-   - Example: "Sign up to get presale access"
+PRESALE TYPES:
 
-3. **No Personalization**: No unique links, codes, or account-specific content
+**REGISTRATION** - Future presale, must sign up/register
+- Contains: "Sign up", "register", "RSVP", "reserve your spot"
+- Requires action NOW to get access later
+- No code provided yet - will receive code after registering
+- Example: "Register now for exclusive access starting January 14"
 
-ALSO EXTRACT:
-- Any deadline mentioned for the presale (date/time when it expires)`;
+**UPCOMING** - Future presale, code already provided, just wait
+- Contains: "Mark your calendar", "starts on", "beginning [future date]"
+- Code/password is already included in the email
+- Presale date is in the FUTURE - no action needed now
+- Example: "Your presale starts January 14 at 10 AM. Use code: STHG5L8Q"
+
+**LIVE** - Presale is active NOW
+- Contains: "Begins today", "now available", "use code", "starts now", "happening now"
+- Has an active presale code/password to use immediately
+- Example: "Your exclusive presale begins NOW! Use code: STHG5L8Q"
+
+EXTRACT:
+- **Event Name**: The artist, show, or event (e.g., "Bruno Mars", "Playoff Round 1", "Taylor Swift"). Use short, recognizable names.
+- For REGISTRATION: The presale start date/time (e.g., "Wed, Jan 14 at 12 PM")
+- For UPCOMING: Both the presale date AND the code
+- For LIVE: The presale code (e.g., "STHG5L8Q")
+- Deadline when the presale expires (if mentioned)`;
 
 // ============================================================================
 // Tool Definition
@@ -79,7 +101,7 @@ ALSO EXTRACT:
 
 const EXCLUSIVITY_TOOL: Anthropic.Tool = {
   name: 'check_presale_exclusivity',
-  description: 'Analyze a presale email to determine if it is exclusive or generic',
+  description: 'Analyze a presale email to determine if it is exclusive or generic, and classify its type',
   input_schema: {
     type: 'object' as const,
     properties: {
@@ -95,12 +117,29 @@ const EXCLUSIVITY_TOOL: Anthropic.Tool = {
         type: 'string',
         description: 'Brief explanation of why this is exclusive or generic (1-2 sentences)',
       },
+      presaleType: {
+        type: 'string',
+        enum: ['registration', 'upcoming', 'live'],
+        description: 'Type: "registration" (must sign up), "upcoming" (code provided, wait for date), "live" (active now)',
+      },
+      eventName: {
+        type: 'string',
+        description: 'The event/artist name (e.g., "Bruno Mars", "Playoff Round 1", "Taylor Swift"). Short, recognizable name.',
+      },
+      presaleDate: {
+        type: 'string',
+        description: 'For registration/upcoming: when presale starts (e.g., "Wed, Jan 14 at 12 PM"). Null for live.',
+      },
+      presaleCode: {
+        type: 'string',
+        description: 'For upcoming/live: the presale code (e.g., "STHG5L8Q"). Null for registration.',
+      },
       deadline: {
         type: 'string',
-        description: 'Presale deadline/expiration if mentioned in the email (e.g., "Friday 10 PM EST", "Dec 15 at noon"). Null if not found.',
+        description: 'Presale deadline/expiration if mentioned (e.g., "Friday 10 PM EST"). Null if not found.',
       },
     },
-    required: ['isExclusive', 'confidence', 'reason'],
+    required: ['isExclusive', 'confidence', 'reason', 'presaleType', 'eventName'],
   },
 };
 
@@ -113,7 +152,7 @@ const EXCLUSIVITY_TOOL: Anthropic.Tool = {
  *
  * @param subject - Email subject line
  * @param bodySnippet - Email body (can be truncated for efficiency)
- * @returns Exclusivity check result with confidence score
+ * @returns Exclusivity check result with confidence score and type classification
  */
 export async function checkPresaleExclusivity(
   subject: string,
@@ -122,7 +161,9 @@ export async function checkPresaleExclusivity(
   const client = getClient();
 
   // Build the message content
-  const content = `Analyze this presale email to determine if it's EXCLUSIVE (requires our action) or GENERIC (skip).
+  const content = `Analyze this presale email to determine:
+1. Is it EXCLUSIVE (requires our action) or GENERIC (skip)?
+2. Is it a REGISTRATION (sign up for future) or LIVE (active now)?
 
 **Subject:** ${subject}
 
@@ -156,11 +197,14 @@ ${bodySnippet.slice(0, 3000)}`;
 
     if (!toolUse || toolUse.name !== 'check_presale_exclusivity') {
       console.error('[PresaleAI] Claude did not return exclusivity check results');
-      // Default to not exclusive if we can't determine
       return {
         isExclusive: false,
         confidence: 0,
         reason: 'Failed to analyze email',
+        presaleType: 'live',
+        eventName: null,
+        presaleDate: null,
+        presaleCode: null,
         deadline: null,
       };
     }
@@ -169,24 +213,39 @@ ${bodySnippet.slice(0, 3000)}`;
       isExclusive: boolean;
       confidence: number;
       reason: string;
+      presaleType: PresaleType;
+      eventName?: string;
+      presaleDate?: string;
+      presaleCode?: string;
       deadline?: string;
     };
 
-    console.log('[PresaleAI] Result:', input.isExclusive ? 'EXCLUSIVE' : 'GENERIC', `(${input.confidence})`);
+    console.log('[PresaleAI] Result:',
+      input.isExclusive ? 'EXCLUSIVE' : 'GENERIC',
+      `(${input.presaleType})`,
+      `confidence: ${input.confidence}`
+    );
 
     return {
       isExclusive: input.isExclusive,
       confidence: input.confidence,
       reason: input.reason,
+      presaleType: input.presaleType,
+      eventName: input.eventName ?? null,
+      presaleDate: input.presaleDate ?? null,
+      presaleCode: input.presaleCode ?? null,
       deadline: input.deadline ?? null,
     };
   } catch (error) {
     console.error('[PresaleAI] Error checking exclusivity:', error);
-    // Default to not exclusive if there's an error
     return {
       isExclusive: false,
       confidence: 0,
       reason: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      presaleType: 'live',
+      eventName: null,
+      presaleDate: null,
+      presaleCode: null,
       deadline: null,
     };
   }
@@ -207,6 +266,10 @@ export async function checkPresaleExclusivitySafe(
       isExclusive: false,
       confidence: 0,
       reason: `Unexpected error: ${error instanceof Error ? error.message : 'Unknown'}`,
+      presaleType: 'live',
+      eventName: null,
+      presaleDate: null,
+      presaleCode: null,
       deadline: null,
     };
   }

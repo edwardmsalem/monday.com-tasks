@@ -10,7 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // Use /data directory on Railway, fallback to cwd for local dev
-const DATA_DIR = process.env['RAILWAY_VOLUME_MOUNT_PATH'] || process.cwd();
+// Railway volumes are mounted at /data by default
+const DATA_DIR = process.env['RAILWAY_VOLUME_MOUNT_PATH'] || (process.env['RAILWAY_ENVIRONMENT'] ? '/data' : process.cwd());
 const STATE_FILE = path.join(DATA_DIR, 'presale-state.json');
 
 // ============================================================================
@@ -30,8 +31,15 @@ export interface LabelCache {
   cachedAt: string;       // When cache was built (ISO timestamp)
 }
 
+export interface DeclinedOpportunity {
+  declinedAt: string;     // ISO timestamp
+  team: string;           // Team name
+  eventName: string;      // Event name (e.g., "Bruno Mars")
+}
+
 export interface PresaleState {
   seenPresales: { [dedupKey: string]: SeenPresale };
+  declinedOpportunities: { [key: string]: DeclinedOpportunity };  // key: domain:eventName
   lastScan: string;       // ISO timestamp
   labelCache: LabelCache | null;
 }
@@ -43,6 +51,7 @@ export interface PresaleState {
 function createDefaultState(): PresaleState {
   return {
     seenPresales: {},
+    declinedOpportunities: {},
     lastScan: '',
     labelCache: null,
   };
@@ -157,6 +166,80 @@ export function getAllSeenPresales(): { [dedupKey: string]: SeenPresale } {
 }
 
 // ============================================================================
+// Declined Opportunities
+// ============================================================================
+
+/**
+ * Build the key for declined opportunities
+ * Normalizes domain and event name for consistent matching
+ */
+function buildDeclinedKey(domain: string, eventName: string): string {
+  const normalizedDomain = domain.toLowerCase().trim();
+  const normalizedEvent = eventName.toLowerCase().trim().replace(/\s+/g, ' ');
+  return `${normalizedDomain}:${normalizedEvent}`;
+}
+
+/**
+ * Check if an opportunity has been declined
+ */
+export function isOpportunityDeclined(domain: string, eventName: string): boolean {
+  if (!eventName) return false;
+  const state = getState();
+  // Ensure declinedOpportunities exists (for old state files)
+  if (!state.declinedOpportunities) {
+    state.declinedOpportunities = {};
+  }
+  const key = buildDeclinedKey(domain, eventName);
+  return key in state.declinedOpportunities;
+}
+
+/**
+ * Mark an opportunity as declined (user clicked "Not Interested")
+ */
+export function declineOpportunity(domain: string, eventName: string, team: string): void {
+  const state = getState();
+  // Ensure declinedOpportunities exists (for old state files)
+  if (!state.declinedOpportunities) {
+    state.declinedOpportunities = {};
+  }
+  const key = buildDeclinedKey(domain, eventName);
+
+  state.declinedOpportunities[key] = {
+    declinedAt: new Date().toISOString(),
+    team,
+    eventName,
+  };
+
+  savePresaleState(state);
+  console.log(`[PresaleState] Declined opportunity: ${key}`);
+}
+
+/**
+ * Get all declined opportunities
+ */
+export function getAllDeclinedOpportunities(): { [key: string]: DeclinedOpportunity } {
+  const state = getState();
+  return { ...state.declinedOpportunities };
+}
+
+/**
+ * Clear a declined opportunity (allow future notifications again)
+ */
+export function clearDeclinedOpportunity(domain: string, eventName: string): boolean {
+  const state = getState();
+  if (!state.declinedOpportunities) return false;
+
+  const key = buildDeclinedKey(domain, eventName);
+  if (key in state.declinedOpportunities) {
+    delete state.declinedOpportunities[key];
+    savePresaleState(state);
+    console.log(`[PresaleState] Cleared declined opportunity: ${key}`);
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
 // Label Cache
 // ============================================================================
 
@@ -231,14 +314,28 @@ export function cleanupOldEntries(daysToKeep: number = 7): number {
   const state = getState();
   const now = new Date();
   const cutoff = new Date(now.getTime() - daysToKeep * 24 * 60 * 60 * 1000);
+  // Declined opportunities kept longer (30 days)
+  const declinedCutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
   let removedCount = 0;
 
+  // Clean up seen presales
   for (const [key, presale] of Object.entries(state.seenPresales)) {
     const firstSeen = new Date(presale.firstSeen);
     if (firstSeen < cutoff) {
       delete state.seenPresales[key];
       removedCount++;
+    }
+  }
+
+  // Clean up old declined opportunities
+  if (state.declinedOpportunities) {
+    for (const [key, declined] of Object.entries(state.declinedOpportunities)) {
+      const declinedAt = new Date(declined.declinedAt);
+      if (declinedAt < declinedCutoff) {
+        delete state.declinedOpportunities[key];
+        removedCount++;
+      }
     }
   }
 
@@ -248,6 +345,18 @@ export function cleanupOldEntries(daysToKeep: number = 7): number {
   }
 
   return removedCount;
+}
+
+/**
+ * Clear all seen presales (for testing)
+ */
+export function clearSeenPresales(): number {
+  const state = getState();
+  const count = Object.keys(state.seenPresales).length;
+  state.seenPresales = {};
+  savePresaleState(state);
+  console.log(`[PresaleState] Cleared ${count} seen presales`);
+  return count;
 }
 
 // ============================================================================

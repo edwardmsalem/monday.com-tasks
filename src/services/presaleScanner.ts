@@ -2,7 +2,7 @@
  * Presale Scanner Service
  *
  * Scans Gmail for exclusive presale emails from sports teams,
- * deduplicates them, and posts notifications to Slack with screenshots.
+ * deduplicates them, and posts notifications to Slack with PDFs.
  *
  * Flow:
  * 1. Get sports team labels from Gmail (cached daily)
@@ -10,14 +10,14 @@
  * 3. Group by dedup key (sender domain + subject + date)
  * 4. Check if already posted
  * 5. For new presales, use AI to check exclusivity
- * 6. If exclusive, screenshot and post to Slack
+ * 6. If exclusive, convert to PDF and post to Slack
  * 7. Auto-cleanup old entries
  */
 
 import { google } from 'googleapis';
 import type { gmail_v1 } from 'googleapis';
 import { config } from '../config/environment.js';
-import { gmailCircuit, slackCircuit, convertApiCircuit } from './circuitBreaker.js';
+import { gmailCircuit, slackCircuit } from './circuitBreaker.js';
 import { getClient as getSlackClient } from './slack.js';
 import {
   getCachedLabels,
@@ -26,9 +26,10 @@ import {
   markPresaleSeen,
   updateLastScan,
   cleanupOldEntries,
+  isOpportunityDeclined,
 } from './presaleState.js';
 import { checkPresaleExclusivitySafe, type ExclusivityCheckResult } from './presaleAI.js';
-import ConvertApi from 'convertapi';
+import { convertHtmlToPdf } from './convertApi.js';
 
 // ============================================================================
 // Types
@@ -40,6 +41,7 @@ interface PresaleGroup {
   subject: string;
   date: string;  // YYYY-MM-DD
   team: string;
+  sport: string;  // NBA, MLB, NFL, etc.
   labelName: string;
   emailCount: number;
   emails: GmailMessage[];
@@ -65,11 +67,49 @@ export interface ScanResult {
 }
 
 // ============================================================================
+// Code/Link Extraction Types
+// ============================================================================
+
+interface ExtractedCodes {
+  /** All unique codes found across emails */
+  uniqueCodes: string[];
+  /** Whether all emails have the same code (shared) or different codes (unique per account) */
+  isSharedCode: boolean;
+  /** Map of account email → code for unique codes */
+  codesByAccount: Map<string, string>;
+}
+
+interface ExtractedLinks {
+  /** All unique presale links found */
+  uniqueLinks: string[];
+  /** Whether links appear to be personalized (contain tokens/ids) */
+  arePersonalized: boolean;
+  /** Map of account email → link for personalized links */
+  linksByAccount: Map<string, string>;
+}
+
+// ============================================================================
+// Sport Emoji Mapping
+// ============================================================================
+
+const SPORT_EMOJIS: Record<string, string> = {
+  'NBA': '🏀',
+  'MLB': '⚾',
+  'NFL': '🏈',
+  'NHL': '🏒',
+  'MLS': '⚽',
+  'NCAA': '🎓',
+};
+
+function getSportEmoji(sport: string): string {
+  return SPORT_EMOJIS[sport.toUpperCase()] ?? '🎫';
+}
+
+// ============================================================================
 // Gmail Client
 // ============================================================================
 
 let gmailClient: gmail_v1.Gmail | null = null;
-let convertApiClient: any = null;
 
 async function getGmailClient(): Promise<gmail_v1.Gmail> {
   if (gmailClient) return gmailClient;
@@ -94,13 +134,6 @@ async function getGmailClient(): Promise<gmail_v1.Gmail> {
 
   gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
   return gmailClient;
-}
-
-function getConvertApiClient(): any {
-  if (!convertApiClient) {
-    convertApiClient = new (ConvertApi as any)(config.convertApi.secret);
-  }
-  return convertApiClient;
 }
 
 // ============================================================================
@@ -296,6 +329,169 @@ function extractEmailBodyHtml(payload: any): string | null {
   return null;
 }
 
+// ============================================================================
+// Code & Link Extraction from All Emails
+// ============================================================================
+
+/**
+ * Common presale code patterns (alphanumeric, typically 6-12 chars)
+ * Looks for: Code: XXX, Password: XXX, Use code XXX, etc.
+ */
+const CODE_PATTERNS = [
+  // "Code: ABC123" or "Code ABC123" or "code: abc123"
+  /(?:code|password|passcode|promo|offer\s*code)[\s:]+([A-Z0-9]{4,16})/gi,
+  // "Use code ABC123" or "enter code ABC123"
+  /(?:use|enter|apply)\s+(?:code|password)[\s:]+([A-Z0-9]{4,16})/gi,
+  // "Your code is ABC123" or "your password: ABC123"
+  /your\s+(?:code|password|access\s*code)\s+(?:is[\s:]+)?([A-Z0-9]{4,16})/gi,
+  // "CODE: ABC123" in all caps
+  /\bCODE[\s:]+([A-Z0-9]{4,16})\b/g,
+  // Standalone codes in backticks or quotes (from email formatting)
+  /[`'""]([A-Z0-9]{6,12})[`'""]/gi,
+];
+
+/**
+ * Presale link patterns - look for ticketmaster, team sites, etc.
+ */
+const LINK_PATTERNS = [
+  // Ticketmaster presale links with tokens
+  /https?:\/\/(?:www\.)?ticketmaster\.com\/[^\s<>"'\]]+(?:presale|offer|unlock|token)[^\s<>"'\]]+/gi,
+  // Team site presale links
+  /https?:\/\/(?:www\.)?[a-z0-9-]+\.(?:com|net|org)\/[^\s<>"'\]]*presale[^\s<>"'\]]+/gi,
+  // Generic links with access tokens
+  /https?:\/\/[^\s<>"'\]]+(?:access[_-]?token|unlock|offer[_-]?id|code=)[^\s<>"'\]]+/gi,
+  // Any link with long token-like parameters (32+ char hex/base64)
+  /https?:\/\/[^\s<>"'\]]+[?&][a-z_]+=([a-f0-9]{32,}|[A-Za-z0-9+\/=]{32,})[^\s<>"'\]]*/gi,
+];
+
+/**
+ * Extract presale codes from email body text
+ * Returns all unique codes found
+ */
+function extractCodesFromText(text: string): string[] {
+  const codes = new Set<string>();
+
+  for (const pattern of CODE_PATTERNS) {
+    // Reset regex state
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const code = match[1].toUpperCase().trim();
+      // Filter out common false positives
+      if (code.length >= 4 &&
+          !['HTTP', 'HTTPS', 'HTML', 'TEXT', 'CODE', 'NULL', 'TRUE', 'FALSE'].includes(code)) {
+        codes.add(code);
+      }
+    }
+  }
+
+  return Array.from(codes);
+}
+
+/**
+ * Extract presale links from email body text
+ * Returns all unique links found
+ */
+function extractLinksFromText(text: string): string[] {
+  const links = new Set<string>();
+
+  for (const pattern of LINK_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const link = match[0].trim();
+      // Clean up trailing punctuation
+      const cleanLink = link.replace(/[.,;:!?)\]]+$/, '');
+      links.add(cleanLink);
+    }
+  }
+
+  return Array.from(links);
+}
+
+/**
+ * Check if a link appears to be personalized (has unique tokens)
+ */
+function isPersonalizedLink(link: string): boolean {
+  // Look for common personalization patterns
+  const personalizedPatterns = [
+    /[?&](?:token|id|code|key|access|unlock|offer)=[a-zA-Z0-9]{8,}/i,
+    /\/(?:unlock|access|offer)\/[a-zA-Z0-9-]{8,}/i,
+    /[?&]u=[a-f0-9]{16,}/i,  // User ID parameters
+    /[?&]e=[a-zA-Z0-9+/=]{16,}/i,  // Encoded email/user
+  ];
+
+  return personalizedPatterns.some(pattern => pattern.test(link));
+}
+
+/**
+ * Extract presale codes from all emails in a group
+ * Returns analysis of whether codes are shared or unique per account
+ */
+function extractCodesFromEmails(emails: GmailMessage[]): ExtractedCodes {
+  const codesByAccount = new Map<string, string>();
+  const allCodes = new Set<string>();
+
+  for (const email of emails) {
+    const accountEmail = email.to ?? email.from;
+    const codes = extractCodesFromText(email.bodyText);
+
+    if (codes.length > 0) {
+      // Use the first code found (most likely the primary presale code)
+      codesByAccount.set(accountEmail, codes[0]);
+      codes.forEach(c => allCodes.add(c));
+    }
+  }
+
+  const uniqueCodes = Array.from(allCodes);
+
+  // If we have multiple accounts but only one unique code, it's shared
+  const isSharedCode = uniqueCodes.length === 1 && codesByAccount.size > 1;
+
+  return {
+    uniqueCodes,
+    isSharedCode,
+    codesByAccount,
+  };
+}
+
+/**
+ * Extract presale links from all emails in a group
+ * Returns analysis of whether links are personalized
+ */
+function extractLinksFromEmails(emails: GmailMessage[]): ExtractedLinks {
+  const linksByAccount = new Map<string, string>();
+  const allLinks = new Set<string>();
+  let personalizedCount = 0;
+
+  for (const email of emails) {
+    const accountEmail = email.to ?? email.from;
+    const links = extractLinksFromText(email.bodyText + ' ' + (email.bodyHtml ?? ''));
+
+    if (links.length > 0) {
+      // Check first link for personalization
+      const firstLink = links[0];
+      if (isPersonalizedLink(firstLink)) {
+        personalizedCount++;
+      }
+      linksByAccount.set(accountEmail, firstLink);
+      links.forEach(l => allLinks.add(l));
+    }
+  }
+
+  const uniqueLinks = Array.from(allLinks);
+
+  // Links are personalized if most accounts have unique links with tokens
+  const arePersonalized = personalizedCount > 0 &&
+    (uniqueLinks.length > 1 || personalizedCount / Math.max(linksByAccount.size, 1) > 0.5);
+
+  return {
+    uniqueLinks,
+    arePersonalized,
+    linksByAccount,
+  };
+}
+
 /**
  * Search Gmail for presale emails
  */
@@ -377,12 +573,21 @@ function normalizeSubject(subject: string): string {
 }
 
 /**
- * Extract team name from label
- * "NBA/Lakers" -> "Lakers"
+ * Extract team name and sport from label
+ * "NBA/Lakers" -> { team: "Lakers", sport: "NBA" }
  */
-function extractTeamFromLabel(labelName: string): string {
+function extractFromLabel(labelName: string): { team: string; sport: string } {
   const parts = labelName.split('/');
-  return parts[parts.length - 1] || labelName;
+  if (parts.length >= 2) {
+    return {
+      sport: parts[0],
+      team: parts[parts.length - 1],
+    };
+  }
+  return {
+    sport: '',
+    team: labelName,
+  };
 }
 
 /**
@@ -430,6 +635,7 @@ async function groupByDedupKey(
       continue;
     }
 
+    const { team, sport } = extractFromLabel(labelName);
     const dedupKey = `${senderDomain}:${normalizedSubject}:${dateStr}`;
 
     if (!groups.has(dedupKey)) {
@@ -438,7 +644,8 @@ async function groupByDedupKey(
         senderDomain,
         subject: email.subject, // Use original subject for display
         date: dateStr,
-        team: extractTeamFromLabel(labelName),
+        team,
+        sport,
         labelName,
         emailCount: 0,
         emails: [],
@@ -455,45 +662,11 @@ async function groupByDedupKey(
 }
 
 // ============================================================================
-// Step 6: Screenshot and Post to Slack
+// Step 6: Post to Slack
 // ============================================================================
 
 /**
- * Convert HTML to PNG using ConvertAPI
- */
-async function convertHtmlToPng(htmlContent: string): Promise<Buffer> {
-  const client = getConvertApiClient();
-
-  console.log('[PresaleScanner] Converting HTML to PNG...');
-
-  const result = await convertApiCircuit.execute<{ files: any[] }>(() =>
-    client.convert(
-      'png',
-      {
-        File: { name: 'email.html', data: Buffer.from(htmlContent, 'utf-8') },
-        ImageWidth: 800,
-        ImageHeight: 0, // Auto height
-      },
-      'html'
-    )
-  );
-
-  const file = result.files[0];
-  if (!file) {
-    throw new Error('ConvertAPI did not return a converted file');
-  }
-
-  const pngUrl = file.url as string;
-  const response = await fetch(pngUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to download converted PNG: ${response.statusText}`);
-  }
-
-  return Buffer.from(await response.arrayBuffer());
-}
-
-/**
- * Post presale notification to Slack with screenshot
+ * Post presale notification to Slack with PDF attachment
  */
 async function postPresaleToSlack(
   group: PresaleGroup,
@@ -506,9 +679,27 @@ async function postPresaleToSlack(
     throw new Error('SLACK_PRESALE_CHANNEL not configured');
   }
 
-  // Get HTML from the first email for screenshot
+  // Get HTML from the first email for PDF
   const firstEmail = group.emails[0];
   const htmlContent = firstEmail.bodyHtml;
+
+  // Get sport emoji
+  const sportEmoji = getSportEmoji(group.sport);
+
+  // Build type-specific line (just show AI-detected code for now)
+  let typeLine: string;
+  if (exclusivity.presaleType === 'registration') {
+    const dateInfo = exclusivity.presaleDate ? `🗓️ Presale starts ${exclusivity.presaleDate}` : '';
+    typeLine = `📝 Registration${dateInfo ? ` • ${dateInfo}` : ''}`;
+  } else if (exclusivity.presaleType === 'upcoming') {
+    const dateInfo = exclusivity.presaleDate ? `🗓️ ${exclusivity.presaleDate}` : '';
+    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    const parts = [dateInfo, codeInfo].filter(Boolean).join(' • ');
+    typeLine = `📅 Upcoming${parts ? ` • ${parts}` : ''}`;
+  } else {
+    const codeInfo = exclusivity.presaleCode ? `🔑 Code: \`${exclusivity.presaleCode}\`` : '';
+    typeLine = `🎟️ Live Now${codeInfo ? ` • ${codeInfo}` : ''}`;
+  }
 
   // Build the message blocks
   const blocks: any[] = [
@@ -516,7 +707,7 @@ async function postPresaleToSlack(
       type: 'header',
       text: {
         type: 'plain_text',
-        text: `🎫 ${group.team} Presale`,
+        text: `🎫 ${group.subject}`,
         emoji: true,
       },
     },
@@ -524,31 +715,25 @@ async function postPresaleToSlack(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Subject:* ${group.subject}`,
+        text: `${sportEmoji} *${group.team}* • ${group.emailCount} account${group.emailCount > 1 ? 's' : ''}`,
       },
     },
     {
       type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Found in:*\n${group.emailCount} account${group.emailCount > 1 ? 's' : ''}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*From:*\n${group.senderDomain}`,
-        },
-      ],
+      text: {
+        type: 'mrkdwn',
+        text: typeLine,
+      },
     },
   ];
 
-  // Add deadline if detected
-  if (exclusivity.deadline) {
+  // Add deadline if detected (and different from presale date)
+  if (exclusivity.deadline && exclusivity.deadline !== exclusivity.presaleDate) {
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `⏰ *Deadline:* ${exclusivity.deadline}`,
+        text: `⏰ Ends: ${exclusivity.deadline}`,
       },
     });
   }
@@ -564,43 +749,91 @@ async function postPresaleToSlack(
     ],
   });
 
+  // Add action buttons (Interested / Not Interested)
+  // Include message IDs so we can fetch all emails and extract codes when Interested is clicked
+  const messageIds = group.emails.map(e => e.id);
+  const interestedPayload = JSON.stringify({
+    dedupKey: group.dedupKey,
+    team: group.team,
+    eventName: exclusivity.eventName ?? group.subject,
+    subject: group.subject,
+    presaleType: exclusivity.presaleType,
+    presaleDate: exclusivity.presaleDate,
+    presaleChannel: channelId,  // For building link back to original message
+    messageIds,  // Gmail message IDs for code extraction when clicked
+  });
+
+  const declinePayload = JSON.stringify({
+    domain: group.senderDomain,
+    eventName: exclusivity.eventName ?? group.subject,
+    team: group.team,
+  });
+
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '✅ Interested',
+          emoji: true,
+        },
+        style: 'primary',
+        action_id: 'presale_interested',
+        value: interestedPayload,
+      },
+      {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '❌ Not Interested',
+          emoji: true,
+        },
+        action_id: 'presale_decline',
+        value: declinePayload,
+      },
+    ],
+  });
+
   // Post the initial message
   const messageResult = await slackCircuit.execute(() =>
     slack.chat.postMessage({
       channel: channelId,
       blocks,
-      text: `🎫 ${group.team} Presale: ${group.subject}`,
+      text: `🎫 ${group.team}: ${group.subject}`,
     })
   );
 
-  const threadTs = messageResult.ts;
+  const threadTs = (messageResult as any).ts;
   if (!threadTs) {
     throw new Error('Failed to get Slack message timestamp');
   }
 
-  // Upload screenshot if HTML is available
+  // Upload PDF if HTML is available
   if (htmlContent) {
     try {
-      const pngBuffer = await convertHtmlToPng(htmlContent);
+      console.log('[PresaleScanner] Converting HTML to PDF...');
+      const pdfResult = await convertHtmlToPdf(htmlContent, `presale-${group.team.toLowerCase()}`);
 
       await slackCircuit.execute(() =>
         slack.filesUploadV2({
           channel_id: channelId,
           thread_ts: threadTs,
-          filename: `presale-${group.team.toLowerCase()}-${group.date}.png`,
-          file: pngBuffer,
-          title: `${group.team} Presale Screenshot`,
+          filename: `presale-${group.team.toLowerCase()}-${group.date}.pdf`,
+          file: pdfResult.data,
+          title: `${group.team} Presale Email`,
         })
       );
 
-      console.log('[PresaleScanner] Uploaded screenshot to Slack');
+      console.log('[PresaleScanner] Uploaded PDF to Slack');
     } catch (error) {
-      console.error('[PresaleScanner] Failed to upload screenshot:', error);
+      console.error('[PresaleScanner] Failed to upload PDF:', error);
       // Post error message in thread
       await slack.chat.postMessage({
         channel: channelId,
         thread_ts: threadTs,
-        text: `⚠️ Failed to generate screenshot: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        text: `⚠️ Failed to generate PDF: ${error instanceof Error ? error.message : 'Unknown error'}`,
       });
     }
   }
@@ -687,8 +920,17 @@ export async function scanPresales(
         continue;
       }
 
+      // Check if opportunity was previously declined
+      if (exclusivity.eventName && isOpportunityDeclined(group.senderDomain, exclusivity.eventName)) {
+        console.log(`[PresaleScanner] SKIPPED: "${group.subject}" - previously declined (${exclusivity.eventName})`);
+        markPresaleSeen(group.dedupKey, '', group.emailCount, group.team, group.subject);
+        skippedCount++;
+        continue;
+      }
+
       // Step 6: Post to Slack
-      console.log(`[PresaleScanner] EXCLUSIVE: "${group.subject}" - posting to Slack`);
+      // Note: Code extraction happens later when "Interested" button is clicked
+      console.log(`[PresaleScanner] EXCLUSIVE (${exclusivity.presaleType}): "${group.subject}" - posting to Slack`);
 
       try {
         const slackTs = await postPresaleToSlack(group, exclusivity);
@@ -720,4 +962,125 @@ export async function scanPresales(
     result.errors.push(errorMsg);
     return result;
   }
+}
+
+// ============================================================================
+// Export for Code Extraction (called when "Interested" button clicked)
+// ============================================================================
+
+export interface AccountPresaleData {
+  email: string;
+  code: string | null;
+  link: string | null;
+}
+
+export interface CodeExtractionResult {
+  accounts: AccountPresaleData[];
+  hasUniqueCodes: boolean;  // Different codes per account = definitely exclusive
+  hasUniqueLinks: boolean;  // Different personalized links per account
+  sharedCode: string | null;  // If all accounts have the same code
+}
+
+/**
+ * Extract the first "click here" or CTA link from email
+ */
+function extractCtaLink(text: string, html: string | null): string | null {
+  // Look for common CTA patterns in HTML first (more reliable)
+  if (html) {
+    // Look for links with CTA text
+    const ctaPatterns = [
+      /<a[^>]+href=["']([^"']+)["'][^>]*>(?:[^<]*(?:click|buy|shop|get|access|unlock|purchase|tickets)[^<]*)<\/a>/gi,
+      /<a[^>]+href=["']([^"']+ticketmaster[^"']+)["'][^>]*>/gi,
+      /<a[^>]+href=["']([^"']+(?:presale|offer|unlock|access)[^"']+)["'][^>]*>/gi,
+    ];
+
+    for (const pattern of ctaPatterns) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(html);
+      if (match && match[1]) {
+        // Clean up the URL
+        let url = match[1].trim();
+        // Decode HTML entities
+        url = url.replace(/&amp;/g, '&');
+        if (url.startsWith('http')) {
+          return url;
+        }
+      }
+    }
+  }
+
+  // Fallback to text patterns
+  const linkPatterns = [
+    /https?:\/\/[^\s<>"']+ticketmaster[^\s<>"']+/gi,
+    /https?:\/\/[^\s<>"']+(?:presale|offer|unlock|access)[^\s<>"']+/gi,
+  ];
+
+  for (const pattern of linkPatterns) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(text);
+    if (match) {
+      return match[0].replace(/[.,;:!?)\]]+$/, '');
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fetch emails by message IDs and extract presale codes/links per account
+ * Called when user clicks "Interested" button
+ */
+export async function extractCodesFromMessageIds(
+  messageIds: string[]
+): Promise<CodeExtractionResult> {
+  console.log(`[PresaleScanner] Extracting codes/links from ${messageIds.length} messages...`);
+
+  const gmail = await getGmailClient();
+  const accounts: AccountPresaleData[] = [];
+  const allCodes = new Set<string>();
+  const allLinks = new Set<string>();
+
+  // Fetch all emails and extract data
+  for (const messageId of messageIds) {
+    const email = await fetchGmailMessage(gmail, messageId);
+    if (!email) continue;
+
+    const accountEmail = email.to ?? email.from;
+    const codes = extractCodesFromText(email.bodyText);
+    const link = extractCtaLink(email.bodyText, email.bodyHtml);
+    const code = codes.length > 0 ? codes[0] : null;
+
+    if (code) allCodes.add(code);
+    if (link) allLinks.add(link);
+
+    accounts.push({
+      email: accountEmail,
+      code,
+      link,
+    });
+  }
+
+  console.log(`[PresaleScanner] Extracted data from ${accounts.length} accounts`);
+
+  // Determine if codes/links are unique per account
+  const hasUniqueCodes = allCodes.size > 1;
+  const hasUniqueLinks = allLinks.size > 1;
+  const sharedCode = allCodes.size === 1 ? Array.from(allCodes)[0] : null;
+
+  if (hasUniqueCodes) {
+    console.log(`[PresaleScanner] Found ${allCodes.size} unique codes across accounts`);
+  } else if (sharedCode) {
+    console.log(`[PresaleScanner] All accounts share code: ${sharedCode}`);
+  }
+
+  if (hasUniqueLinks) {
+    console.log(`[PresaleScanner] Found ${allLinks.size} unique links across accounts`);
+  }
+
+  return {
+    accounts,
+    hasUniqueCodes,
+    hasUniqueLinks,
+    sharedCode,
+  };
 }
