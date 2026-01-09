@@ -158,6 +158,11 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
       let dueDate: Date | null = null;
       if (dueDateStr) {
         dueDate = workingHours.parseDate(dueDateStr);
+        // Debug: check for date parse mismatch (timezone issue detection)
+        const parsedDateStr = workingHours.getESTDateString(dueDate);
+        if (dueDateStr !== parsedDateStr) {
+          console.log(`[Digest] WARNING: Due date mismatch for "${item.name.slice(0, 30)}": Monday="${dueDateStr}", parsed="${parsedDateStr}"`);
+        }
       }
 
       // Parse owners
