@@ -168,18 +168,18 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
         try {
           const extraction = await extractCodesFromMessageIds(data.messageIds);
 
-          // Build status info for the message
+          // Build status info for the message (just mention what's in the CSV)
           const statusParts: string[] = [];
+          statusParts.push(`📊 ${extraction.accounts.length} accounts`);
           if (extraction.sharedCode) {
-            statusParts.push(`🔑 Shared Code: \`${extraction.sharedCode}\``);
-          }
-          if (extraction.hasUniqueCodes) {
-            statusParts.push(`🔐 Unique codes per account (${extraction.accounts.length} accounts)`);
+            statusParts.push(`🔑 Shared code`);
+          } else if (extraction.hasUniqueCodes) {
+            statusParts.push(`🔐 Unique codes per account`);
           }
           if (extraction.hasUniqueLinks) {
             statusParts.push(`🔗 Unique links per account`);
           }
-          statusInfo = statusParts.join('\n');
+          statusInfo = statusParts.join(' • ');
 
           // Generate CSV if we have account data
           if (extraction.accounts.length > 0) {
