@@ -151,6 +151,18 @@ async function handleBlockAction(
       await handleIssueCallClaim(value, userId, channelId, threadTs);
       break;
 
+    case 'issue_call_working':
+      await handleIssueCallWorking(value, userId, channelId, threadTs);
+      break;
+
+    case 'issue_call_complete':
+      await handleIssueCallComplete(value, userId, channelId, threadTs);
+      break;
+
+    case 'issue_call_stuck':
+      await handleIssueCallStuck(value, userId, channelId, threadTs);
+      break;
+
     default:
       console.log(`[Interactivity] Unknown action: ${action_id}`);
   }
@@ -553,6 +565,81 @@ async function handleIssueCallClaim(
     console.log(`[Interactivity] Issue call claimed by ${userId}`);
   } catch (error) {
     console.error(`[Interactivity] Failed to claim issue call:`, error);
+  }
+}
+
+async function handleIssueCallWorking(
+  mondayItemId: string,
+  userId: string,
+  channelId?: string,
+  threadTs?: string
+): Promise<void> {
+  try {
+    // Update Monday status to "Working on it"
+    await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
+
+    // Post confirmation to thread
+    if (channelId && threadTs) {
+      await slack.postToThread(
+        threadTs,
+        `🟡 <@${userId}> marked this issue call as *Working on it*`,
+        channelId
+      );
+    }
+
+    console.log(`[Interactivity] Issue call ${mondayItemId} marked working by ${userId}`);
+  } catch (error) {
+    console.error(`[Interactivity] Failed to mark issue call working:`, error);
+  }
+}
+
+async function handleIssueCallComplete(
+  mondayItemId: string,
+  userId: string,
+  channelId?: string,
+  threadTs?: string
+): Promise<void> {
+  try {
+    // Update Monday status to "Complete"
+    await monday.updateWorkflowStatus(mondayItemId, 'Complete');
+
+    // Post confirmation to thread
+    if (channelId && threadTs) {
+      await slack.postToThread(
+        threadTs,
+        `✅ <@${userId}> marked this issue call as *Complete*`,
+        channelId
+      );
+    }
+
+    console.log(`[Interactivity] Issue call ${mondayItemId} marked complete by ${userId}`);
+  } catch (error) {
+    console.error(`[Interactivity] Failed to mark issue call complete:`, error);
+  }
+}
+
+async function handleIssueCallStuck(
+  mondayItemId: string,
+  userId: string,
+  channelId?: string,
+  threadTs?: string
+): Promise<void> {
+  try {
+    // Update Monday status to "Stuck"
+    await monday.updateWorkflowStatus(mondayItemId, 'Stuck');
+
+    // Post confirmation to thread
+    if (channelId && threadTs) {
+      await slack.postToThread(
+        threadTs,
+        `🔴 <@${userId}> marked this issue call as *Stuck*`,
+        channelId
+      );
+    }
+
+    console.log(`[Interactivity] Issue call ${mondayItemId} marked stuck by ${userId}`);
+  } catch (error) {
+    console.error(`[Interactivity] Failed to mark issue call stuck:`, error);
   }
 }
 

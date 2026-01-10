@@ -1030,13 +1030,41 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       }
     );
 
+    // Add Status buttons
+    issueCallBlocks.push({
+      type: 'actions',
+      block_id: `issue_call_${mondayItem.id}_status`,
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🟡 Working on it', emoji: true },
+          action_id: 'issue_call_working',
+          value: mondayItem.id,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '✅ Complete', emoji: true },
+          style: 'primary',
+          action_id: 'issue_call_complete',
+          value: mondayItem.id,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🔴 Stuck', emoji: true },
+          style: 'danger',
+          action_id: 'issue_call_stuck',
+          value: mondayItem.id,
+        },
+      ],
+    });
+
     // Add Status Legend
     issueCallBlocks.push({
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text: '*Status:* 👀 Acknowledged  •  🟡 Working on it  •  🔴 Stuck  •  🟢 Done',
+          text: '*Status:* React 👀 to acknowledge • Use buttons above to update status',
         },
       ],
     });
@@ -1461,6 +1489,27 @@ app.post('/admin/migrate/thread-buttons', express.json(), async (_req: Request, 
     res.json(result);
   } catch (error) {
     console.error('[Migration] Failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Migration endpoint: Add buttons to existing issue call messages
+ * Safe to re-run (skips messages that already have buttons)
+ * Also auto-marks status based on reactions (✅=Complete, 🔴=Stuck, 🟡=Working)
+ *
+ * Usage: POST /admin/migrate/issue-call-buttons
+ */
+app.post('/admin/migrate/issue-call-buttons', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const { runIssueCallButtonMigration } = await import('./scripts/migrateIssueCallButtons.js');
+    const result = await runIssueCallButtonMigration();
+    res.json(result);
+  } catch (error) {
+    console.error('[Issue Call Button Migration] Failed:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
