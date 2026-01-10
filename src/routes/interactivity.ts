@@ -600,21 +600,21 @@ async function handleIssueCallComplete(
   threadTs?: string
 ): Promise<void> {
   try {
-    // Update Monday status to "Complete"
-    await monday.updateWorkflowStatus(mondayItemId, 'Complete');
+    // Update Monday status to "Done"
+    await monday.updateWorkflowStatus(mondayItemId, 'Done');
 
     // Post confirmation to thread
     if (channelId && threadTs) {
       await slack.postToThread(
         threadTs,
-        `✅ <@${userId}> marked this issue call as *Complete*`,
+        `✅ <@${userId}> marked this issue call as *Done*`,
         channelId
       );
     }
 
-    console.log(`[Interactivity] Issue call ${mondayItemId} marked complete by ${userId}`);
+    console.log(`[Interactivity] Issue call ${mondayItemId} marked done by ${userId}`);
   } catch (error) {
-    console.error(`[Interactivity] Failed to mark issue call complete:`, error);
+    console.error(`[Interactivity] Failed to mark issue call done:`, error);
   }
 }
 

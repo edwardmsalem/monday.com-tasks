@@ -2,10 +2,10 @@
  * Migration Script: Add Status Buttons to Existing Issue Call Messages
  *
  * Scans the issue call channel, adds buttons, and auto-marks status based on reactions:
- * - ✅ (white_check_mark, heavy_check_mark) -> Complete
+ * - ✅ (white_check_mark, heavy_check_mark) -> Done
  * - 🔴 (red_circle) -> Stuck
  * - 🟡 (large_yellow_circle) -> Working on it
- * - 🟢 (large_green_circle) -> Complete
+ * - 🟢 (large_green_circle) -> Done
  *
  * Usage:
  *   npx ts-node src/scripts/migrateIssueCallButtons.ts
@@ -73,7 +73,7 @@ function buildIssueCallButtonBlock(mondayItemId: string): Record<string, unknown
       },
       {
         type: 'button',
-        text: { type: 'plain_text', text: '✅ Complete', emoji: true },
+        text: { type: 'plain_text', text: '✅ Done', emoji: true },
         style: 'primary',
         action_id: 'issue_call_complete',
         value: mondayItemId,
@@ -203,7 +203,7 @@ function hasStatusButtonsAlready(blocks: any[]): boolean {
 function getStatusFromReactions(reactions: Array<{ name: string; count: number }>): string | null {
   const reactionNames = reactions.map(r => r.name);
 
-  // Green checkmark or green circle = Complete
+  // Green checkmark or green circle = Done
   if (reactionNames.some(r =>
     r === 'white_check_mark' ||
     r === 'heavy_check_mark' ||
@@ -211,7 +211,7 @@ function getStatusFromReactions(reactions: Array<{ name: string; count: number }
     r === 'green_heart' ||
     r === 'ballot_box_with_check'
   )) {
-    return 'Complete';
+    return 'Done';
   }
 
   // Red circle = Stuck

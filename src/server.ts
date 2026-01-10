@@ -1043,7 +1043,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: '✅ Complete', emoji: true },
+          text: { type: 'plain_text', text: '✅ Done', emoji: true },
           style: 'primary',
           action_id: 'issue_call_complete',
           value: mondayItem.id,
