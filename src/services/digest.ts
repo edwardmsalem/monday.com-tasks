@@ -1780,7 +1780,7 @@ function buildExecutiveReportBlocks(
     const escLines = Array.from(allEscalations.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
-      .map(([name, count]) => `• ${name}: ${count}`);
+      .map(([userId, count]) => `• <@${userId}>: ${count}`);
 
     blocks.push({
       type: 'section',
