@@ -1499,11 +1499,11 @@ app.post('/admin/migrate/thread-buttons', express.json(), async (_req: Request, 
 /**
  * Migration endpoint: Add buttons to existing issue call messages
  * Safe to re-run (skips messages that already have buttons)
- * Also auto-marks status based on reactions (✅=Complete, 🔴=Stuck, 🟡=Working)
+ * Also auto-marks status based on reactions (✅=Done, 🔴=Stuck, 🟡=Working)
  *
- * Usage: POST /admin/migrate/issue-call-buttons
+ * Usage: GET or POST /admin/migrate/issue-call-buttons
  */
-app.post('/admin/migrate/issue-call-buttons', express.json(), async (_req: Request, res: Response): Promise<void> => {
+app.all('/admin/migrate/issue-call-buttons', express.json(), async (_req: Request, res: Response): Promise<void> => {
   try {
     const { runIssueCallButtonMigration } = await import('./scripts/migrateIssueCallButtons.js');
     const result = await runIssueCallButtonMigration();
