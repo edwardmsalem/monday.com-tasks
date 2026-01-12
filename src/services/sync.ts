@@ -176,10 +176,11 @@ export async function syncMondayToSlack(
           try {
             const fileBuffer = await monday.downloadFile(asset.url);
             await slack.uploadFileToThread(
-              threadInfo.channelId,
               threadInfo.threadTs,
+              asset.name,
               fileBuffer,
-              asset.name
+              undefined,  // title (use default = filename)
+              threadInfo.channelId
             );
             console.log(`Synced file ${asset.name} from Monday to Slack`);
           } catch (fileError) {
