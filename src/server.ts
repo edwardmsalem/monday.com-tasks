@@ -469,7 +469,7 @@ const TEAM_NAME_EXPANSIONS: Record<string, string> = {
   // NFL
   'ny giants': 'New York Giants',
   'nfl giants': 'New York Giants',
-  'jets': 'New York Jets',  // Default jets → NFL (use 'winnipeg jets' for NHL)
+  // 'jets' is AMBIGUOUS - must specify: 'ny jets'/'nfl jets' for NFL, 'winnipeg jets'/'nhl jets' for NHL
   'ny jets': 'New York Jets',
   'nfl jets': 'New York Jets',
   'cowboys': 'Dallas Cowboys',
@@ -494,7 +494,7 @@ const TEAM_NAME_EXPANSIONS: Record<string, string> = {
   'packers': 'Green Bay Packers',
   'vikings': 'Minnesota Vikings',
   'falcons': 'Atlanta Falcons',
-  'panthers': 'Carolina Panthers',  // Default panthers → NFL (use 'florida panthers' for NHL)
+  // 'panthers' is AMBIGUOUS - must specify: 'carolina panthers'/'nfl panthers' for NFL, 'florida panthers'/'nhl panthers' for NHL
   'carolina panthers': 'Carolina Panthers',
   'nfl panthers': 'Carolina Panthers',
   'saints': 'New Orleans Saints',
@@ -512,7 +512,7 @@ const TEAM_NAME_EXPANSIONS: Record<string, string> = {
   'yankees': 'New York Yankees',
   'mets': 'New York Mets',
   'astros': 'Houston Astros',
-  'rangers': 'Texas Rangers',  // Default rangers → MLB Texas (use 'ny rangers' or 'nyr' for NHL)
+  // 'rangers' is AMBIGUOUS - must specify: 'texas rangers' for MLB, 'ny rangers'/'nyr' for NHL
   'texas rangers': 'Texas Rangers',
   'dodgers': 'Los Angeles Dodgers',
   'red sox': 'Boston Red Sox',
@@ -539,11 +539,11 @@ const TEAM_NAME_EXPANSIONS: Record<string, string> = {
   'orioles': 'Baltimore Orioles',
   'blue jays': 'Toronto Blue Jays',
   'rays': 'Tampa Bay Rays',
-  'cardinals': 'St. Louis Cardinals',  // Default cardinals → MLB (use 'arizona cardinals' for NFL)
+  // 'cardinals' is AMBIGUOUS - must specify: 'arizona cardinals'/'nfl cardinals' for NFL, 'st louis cardinals'/'stl cardinals'/'mlb cardinals' for MLB
   'stl cardinals': 'St. Louis Cardinals',
   'st louis cardinals': 'St. Louis Cardinals',
   'mlb cardinals': 'St. Louis Cardinals',
-  'giants': 'San Francisco Giants',  // Default giants → MLB (use 'ny giants' for NFL)
+  // 'giants' is AMBIGUOUS - must specify: 'ny giants'/'nfl giants' for NFL, 'sf giants'/'san francisco giants'/'mlb giants' for MLB
   'sf giants': 'San Francisco Giants',
   'san francisco giants': 'San Francisco Giants',
   'mlb giants': 'San Francisco Giants',
@@ -576,7 +576,7 @@ const TEAM_NAME_EXPANSIONS: Record<string, string> = {
   'golden knights': 'Vegas Golden Knights',
   'ducks': 'Anaheim Ducks',
   'sharks': 'San Jose Sharks',
-  'kings': 'Los Angeles Kings',  // Default kings → NHL (use 'sacramento kings' for NBA)
+  // 'kings' is AMBIGUOUS - must specify: 'sacramento kings'/'nba kings' for NBA, 'la kings'/'nhl kings' for NHL
   'la kings': 'Los Angeles Kings',
   'nhl kings': 'Los Angeles Kings',
   'coyotes': 'Arizona Coyotes',

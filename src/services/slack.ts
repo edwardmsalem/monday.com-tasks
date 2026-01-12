@@ -426,24 +426,29 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
 /**
  * Upload a file to a Slack thread
  * Wrapped in circuit breaker (TD-05)
+ * @param threadTs - Thread timestamp to upload to
+ * @param filename - Name of the file
+ * @param fileBuffer - File data as Buffer
+ * @param title - Optional display title (defaults to filename)
+ * @param channelId - Optional channel ID (defaults to main channel)
  */
 export async function uploadFileToThread(
-  channelId: string,
   threadTs: string,
-  fileBuffer: Buffer,
   filename: string,
-  initialComment?: string
+  fileBuffer: Buffer,
+  title?: string,
+  channelId?: string
 ): Promise<void> {
   const client = getClient();
+  const channel = channelId || config.slack.channelId;
 
   await slackCircuit.execute(() =>
     client.filesUploadV2({
-      channel_id: channelId,
+      channel_id: channel,
       thread_ts: threadTs,
       filename,
       file: fileBuffer,
-      title: filename,
-      initial_comment: initialComment,
+      title: title || filename,
     })
   );
 }
