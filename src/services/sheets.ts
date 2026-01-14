@@ -238,6 +238,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
 
   const spreadsheetId = createResponse.data.spreadsheetId!;
   const spreadsheetUrl = createResponse.data.spreadsheetUrl!;
+  const sheetId = createResponse.data.sheets?.[0]?.properties?.sheetId ?? 0;
 
   // Build the data rows dynamically (using sorted recipients)
   const dataRows = sortedRecipients.map(r => {
@@ -280,7 +281,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         {
           repeatCell: {
             range: {
-              sheetId: 0,
+              sheetId,
               startRowIndex: 0,
               endRowIndex: 1,
             },
@@ -297,7 +298,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         {
           autoResizeDimensions: {
             dimensions: {
-              sheetId: 0,
+              sheetId,
               dimension: 'COLUMNS',
               startIndex: 0,
               endIndex: columnCount,
