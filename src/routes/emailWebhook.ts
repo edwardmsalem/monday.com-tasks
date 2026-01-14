@@ -552,6 +552,29 @@ router.post(
                 mondayItem.id,
                 `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
               );
+
+              // Create calendar events for appointments (1 per recipient with a time)
+              const calendar = await import('../services/calendar.js');
+              if (calendar.isCalendarEnabled()) {
+                console.log('Creating calendar events for scan appointments...');
+                try {
+                  const calendarEvents = await calendar.createScanAppointmentEvents(
+                    subject,
+                    scannedRecipients,
+                    mondayItem.id,
+                    sheetUrl
+                  );
+                  if (calendarEvents.length > 0) {
+                    console.log(`Created ${calendarEvents.length} calendar events`);
+                    await monday.createUpdate(
+                      mondayItem.id,
+                      `📅 Created ${calendarEvents.length} calendar event(s) for appointments`
+                    );
+                  }
+                } catch (calendarError) {
+                  console.error('Failed to create calendar events:', calendarError);
+                }
+              }
             } catch (sheetError) {
               console.error('Failed to create Google Sheet:', sheetError);
             }

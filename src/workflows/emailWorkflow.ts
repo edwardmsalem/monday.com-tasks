@@ -227,6 +227,28 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
             mondayItem.id,
             `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
           );
+
+          // Create calendar events for appointments (1 per recipient with a time)
+          if (calendar.isCalendarEnabled()) {
+            log.log('Creating calendar events for scan appointments...');
+            try {
+              const calendarEvents = await calendar.createScanAppointmentEvents(
+                taskName,
+                recipients,
+                mondayItem.id,
+                sheetUrl
+              );
+              if (calendarEvents.length > 0) {
+                log.log(`Created ${calendarEvents.length} calendar events`);
+                await monday.createUpdate(
+                  mondayItem.id,
+                  `📅 Created ${calendarEvents.length} calendar event(s) for appointments`
+                );
+              }
+            } catch (calendarError) {
+              log.error('Failed to create calendar events:', calendarError);
+            }
+          }
         } catch (sheetError) {
           log.error('Failed to create Google Sheet:', sheetError);
         }

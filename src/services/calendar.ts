@@ -209,3 +209,158 @@ export async function deleteTaskEvent(eventId: string): Promise<boolean> {
 export function isCalendarEnabled(): boolean {
   return config.google.enabled && getClient() !== null;
 }
+
+// ============================================================================
+// /scan Appointment Events
+// ============================================================================
+
+// Default invitees for scan appointment events
+const SCAN_APPOINTMENT_INVITEES = [
+  'edward@salemseats.com',
+  'michael@salemseats.com',
+  'operations@salemseats.com',
+];
+
+export interface ScanAppointmentInput {
+  title: string;           // e.g., "Astros Relocation - john@client.com"
+  email: string;           // Recipient email
+  dateTime: string;        // ISO 8601 format: "2025-12-20T14:00:00"
+  sheetUrl?: string;       // Link to tracking sheet
+  mondayItemId: string;
+}
+
+export interface ScanAppointmentResult {
+  eventId: string;
+  htmlLink: string;
+  email: string;
+}
+
+/**
+ * Create a calendar event for a /scan appointment
+ * - Invites the team (edward, michael, operations)
+ * - 1 hour reminder
+ * - 30 minute duration
+ */
+export async function createScanAppointmentEvent(
+  input: ScanAppointmentInput
+): Promise<ScanAppointmentResult | null> {
+  const client = getClient();
+
+  if (!client) {
+    console.log('[Calendar] Google Calendar not configured, skipping scan appointment event');
+    return null;
+  }
+
+  const mondayUrl = monday.getItemUrl(input.mondayItemId);
+
+  // Parse the ISO datetime
+  const startTime = new Date(input.dateTime);
+  if (isNaN(startTime.getTime())) {
+    console.error('[Calendar] Invalid datetime for scan appointment:', input.dateTime);
+    return null;
+  }
+
+  // End time is 30 minutes after start
+  const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
+
+  // Build description
+  const descriptionParts = [
+    `Recipient: ${input.email}`,
+    '',
+    '---',
+    `Monday.com: ${mondayUrl}`,
+  ];
+  if (input.sheetUrl) {
+    descriptionParts.push(`Tracking Sheet: ${input.sheetUrl}`);
+  }
+
+  const event: calendar_v3.Schema$Event = {
+    summary: input.title,
+    description: descriptionParts.join('\n'),
+    start: {
+      dateTime: startTime.toISOString(),
+      timeZone: config.google.timeZone,
+    },
+    end: {
+      dateTime: endTime.toISOString(),
+      timeZone: config.google.timeZone,
+    },
+    attendees: SCAN_APPOINTMENT_INVITEES.map(email => ({ email })),
+    reminders: {
+      useDefault: false,
+      overrides: [
+        { method: 'popup', minutes: 60 }, // 1 hour before
+      ],
+    },
+    source: {
+      title: 'Monday.com Task',
+      url: mondayUrl,
+    },
+  };
+
+  try {
+    const response = await client.events.insert({
+      calendarId: config.google.calendarId,
+      requestBody: event,
+      sendUpdates: 'all', // Send email invites to attendees
+    });
+
+    console.log(`[Calendar] Scan appointment event created for ${input.email}:`, response.data.id);
+
+    return {
+      eventId: response.data.id!,
+      htmlLink: response.data.htmlLink!,
+      email: input.email,
+    };
+  } catch (error) {
+    console.error(`[Calendar] Failed to create scan appointment event for ${input.email}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Create calendar events for all /scan recipients with appointments
+ * Returns array of created events
+ */
+export async function createScanAppointmentEvents(
+  taskTitle: string,
+  recipients: Array<{ email: string; rawDateTime: string | null }>,
+  mondayItemId: string,
+  sheetUrl?: string
+): Promise<ScanAppointmentResult[]> {
+  const client = getClient();
+
+  if (!client) {
+    console.log('[Calendar] Google Calendar not configured, skipping scan appointment events');
+    return [];
+  }
+
+  const results: ScanAppointmentResult[] = [];
+
+  // Filter to only recipients with valid datetime
+  const recipientsWithTime = recipients.filter(r => r.rawDateTime);
+
+  if (recipientsWithTime.length === 0) {
+    console.log('[Calendar] No recipients with appointment times, skipping calendar events');
+    return [];
+  }
+
+  console.log(`[Calendar] Creating ${recipientsWithTime.length} calendar events for scan appointments...`);
+
+  for (const recipient of recipientsWithTime) {
+    const result = await createScanAppointmentEvent({
+      title: `${taskTitle} - ${recipient.email}`,
+      email: recipient.email,
+      dateTime: recipient.rawDateTime!,
+      sheetUrl,
+      mondayItemId,
+    });
+
+    if (result) {
+      results.push(result);
+    }
+  }
+
+  console.log(`[Calendar] Created ${results.length}/${recipientsWithTime.length} calendar events`);
+  return results;
+}
