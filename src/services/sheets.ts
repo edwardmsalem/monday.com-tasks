@@ -49,6 +49,42 @@ async function getDriveClient() {
   return driveClient!;
 }
 
+/**
+ * Safely share a sheet with anyone who has the link.
+ * If sharing fails (e.g., due to workspace restrictions), logs a warning but continues.
+ * @returns true if sharing succeeded, false if it failed
+ */
+async function safeShareSheet(spreadsheetId: string): Promise<boolean> {
+  try {
+    const drive = await getDriveClient();
+    await drive.permissions.create({
+      fileId: spreadsheetId,
+      requestBody: {
+        role: 'writer',
+        type: 'anyone',
+      },
+    });
+    return true;
+  } catch (error) {
+    // Check if this is a workspace sharing restriction error
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isWorkspaceRestriction =
+      errorMessage.includes('sharing outside') ||
+      errorMessage.includes('domain') ||
+      errorMessage.includes('organization') ||
+      errorMessage.includes('policy') ||
+      errorMessage.includes('not allowed');
+
+    if (isWorkspaceRestriction) {
+      console.warn(`[Sheets] Cannot share sheet publicly (workspace policy restricts external sharing). Sheet ID: ${spreadsheetId}`);
+      console.warn('[Sheets] The sheet was created successfully but is only accessible to workspace members.');
+    } else {
+      console.error(`[Sheets] Failed to share sheet: ${errorMessage}`);
+    }
+    return false;
+  }
+}
+
 export interface SheetResult {
   spreadsheetId: string;
   spreadsheetUrl: string;
@@ -159,17 +195,10 @@ export async function createRecipientSheet(
     },
   });
 
-  // Make the sheet accessible to anyone with the link
-  const drive = await getDriveClient();
-  await drive.permissions.create({
-    fileId: spreadsheetId,
-    requestBody: {
-      role: 'writer', // Anyone with link can edit
-      type: 'anyone',
-    },
-  });
-
-  console.log(`Created Google Sheet: ${spreadsheetUrl}`);
+  // Try to make the sheet accessible to anyone with the link
+  // (may fail if workspace restricts external sharing)
+  const shared = await safeShareSheet(spreadsheetId);
+  console.log(`Created Google Sheet: ${spreadsheetUrl}${shared ? '' : ' (not shared publicly - workspace restriction)'}`);
 
   return {
     spreadsheetId,
@@ -309,17 +338,10 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     },
   });
 
-  // Make the sheet accessible to anyone with the link
-  const drive = await getDriveClient();
-  await drive.permissions.create({
-    fileId: spreadsheetId,
-    requestBody: {
-      role: 'writer',
-      type: 'anyone',
-    },
-  });
-
-  console.log(`[Sheets] Created scan sheet: ${spreadsheetUrl} (type: ${contentType}, columns: ${columnCount})`);
+  // Try to make the sheet accessible to anyone with the link
+  // (may fail if workspace restricts external sharing)
+  const shared = await safeShareSheet(spreadsheetId);
+  console.log(`[Sheets] Created scan sheet: ${spreadsheetUrl} (type: ${contentType}, columns: ${columnCount})${shared ? '' : ' (not shared publicly - workspace restriction)'}`);
 
   return {
     spreadsheetId,
