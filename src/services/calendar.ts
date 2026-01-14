@@ -305,16 +305,18 @@ export async function createScanAppointmentEvents(
     const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
 
     // Build description with all emails for this time slot
-    const descriptionParts = [
+    const descriptionParts: string[] = [];
+    if (sheetUrl) {
+      descriptionParts.push(`Tracking Sheet: ${sheetUrl}`);
+      descriptionParts.push('');
+    }
+    descriptionParts.push(
       `Accounts (${emails.length}):`,
       ...emails.map(e => `• ${e}`),
       '',
       '---',
-      `Monday.com: ${mondayUrl}`,
-    ];
-    if (sheetUrl) {
-      descriptionParts.push(`Tracking Sheet: ${sheetUrl}`);
-    }
+      `Monday.com: ${mondayUrl}`
+    );
 
     const event: calendar_v3.Schema$Event = {
       summary: `${teamName} Relocation`,
