@@ -516,44 +516,44 @@ router.post(
         );
       }
 
-      // Check for /scan or /scantimes command in body text
-      const { shouldScanForRecipients, shouldExtractAppointmentTimes, findRelatedRecipients, formatRecipientSubtaskName } = await import('../services/gmail.js');
-      const { shouldCreateSheet, createRecipientSheet } = await import('../services/sheets.js');
+      // Check for /scan command in body text (now also matches /scantimes - merged behavior)
+      const { shouldScanForRecipients, findRelatedRecipients } = await import('../services/gmail.js');
+      const { createScanSheet, detectContentType } = await import('../services/sheets.js');
 
       let sheetUrl: string | null = null;
-      let scannedRecipients: Array<{ email: string; appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null }> = [];
+      let scannedRecipients: Array<{ email: string; appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; code: string | null; link: string | null }> = [];
       const scanDetected = shouldScanForRecipients(bodyText);
-      const scantimesDetected = shouldExtractAppointmentTimes(bodyText);
       console.log('=== /SCAN DETECTION ===');
       console.log('shouldScanForRecipients result:', scanDetected);
-      console.log('shouldExtractAppointmentTimes result:', scantimesDetected);
       console.log('bodyText for scan check:', JSON.stringify(bodyText));
 
-      if (scanDetected || scantimesDetected) {
-        const commandUsed = scantimesDetected ? '/scantimes' : '/scan';
-        console.log(`${commandUsed} detected - searching for related recipients (extractAppointments: ${scantimesDetected})...`);
+      if (scanDetected) {
+        console.log('/scan detected - searching for related recipients...');
         try {
-          scannedRecipients = await findRelatedRecipients(subject, scantimesDetected);
-          if (scannedRecipients.length > 0) {
-            console.log(`Found ${scannedRecipients.length} related recipients, creating subtasks...`);
-            const subtaskNames = scannedRecipients.map(r => formatRecipientSubtaskName(r));
-            await monday.createSubitems(mondayItem.id, subtaskNames);
-            console.log(`Created ${subtaskNames.length} subtasks`);
+          // Detect content type to determine if we should extract codes/links
+          const contentType = detectContentType(subject);
+          const extractCodesAndLinks = contentType === 'presale';
+          console.log(`Content type: ${contentType}, extracting codes/links: ${extractCodesAndLinks}`);
 
-            // Create Google Sheet if subject matches presale/relocation/selection
-            if (shouldCreateSheet(subject)) {
-              console.log('Creating Google Sheet for recipient tracking...');
-              try {
-                const sheetResult = await createRecipientSheet(subject, scannedRecipients);
-                sheetUrl = sheetResult.spreadsheetUrl;
-                console.log('Google Sheet created:', sheetUrl);
-                await monday.createUpdate(
-                  mondayItem.id,
-                  `📊 Recipient tracking sheet: ${sheetUrl}`
-                );
-              } catch (sheetError) {
-                console.error('Failed to create Google Sheet:', sheetError);
-              }
+          scannedRecipients = await findRelatedRecipients(subject, extractCodesAndLinks);
+          if (scannedRecipients.length > 0) {
+            console.log(`Found ${scannedRecipients.length} related recipients, creating Google Sheet...`);
+
+            // Always create Google Sheet for /scan (no subtasks)
+            try {
+              const sheetResult = await createScanSheet({
+                title: subject,
+                recipients: scannedRecipients,
+                contentType,
+              });
+              sheetUrl = sheetResult.spreadsheetUrl;
+              console.log('Google Sheet created:', sheetUrl);
+              await monday.createUpdate(
+                mondayItem.id,
+                `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
+              );
+            } catch (sheetError) {
+              console.error('Failed to create Google Sheet:', sheetError);
             }
           } else {
             console.log('No related recipients found in the last 48 hours');
@@ -563,7 +563,7 @@ router.post(
           // Don't fail the whole workflow if scan fails
         }
       } else {
-        console.log('/scan and /scantimes NOT detected in body text');
+        console.log('/scan NOT detected in body text');
       }
 
       console.log('Sending Slack notification...');

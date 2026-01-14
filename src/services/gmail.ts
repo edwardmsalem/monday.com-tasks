@@ -144,28 +144,90 @@ function hasAppointmentKeywords(text: string): boolean {
 }
 
 /**
- * Recipient with their appointment information
+ * Recipient with their appointment information and optional code/link
  */
 export interface RecipientWithAppointment {
   email: string;
   appointmentDate: string | null;  // e.g., "Tue Dec 20" (date only)
   appointmentTime: string | null;  // e.g., "2:00 PM" (time only)
   rawDateTime: string | null;      // ISO format for sorting
+  code: string | null;             // Presale code if found
+  link: string | null;             // Presale link if found
+}
+
+// ============================================================================
+// Code & Link Extraction (for /scan feature)
+// ============================================================================
+
+/**
+ * Common presale code patterns (alphanumeric, typically 6-12 chars)
+ */
+const CODE_PATTERNS = [
+  /(?:code|password|passcode|promo|offer\s*code)[\s:]+([A-Z0-9]{4,16})/gi,
+  /(?:use|enter|apply)\s+(?:code|password)[\s:]+([A-Z0-9]{4,16})/gi,
+  /your\s+(?:code|password|access\s*code)\s+(?:is[\s:]+)?([A-Z0-9]{4,16})/gi,
+  /\bCODE[\s:]+([A-Z0-9]{4,16})\b/g,
+  /[`'""]([A-Z0-9]{6,12})[`'""]/gi,
+];
+
+/**
+ * Presale link patterns - ticketmaster, team sites, etc.
+ */
+const LINK_PATTERNS = [
+  /https?:\/\/(?:www\.)?ticketmaster\.com\/[^\s<>"'\]]+(?:presale|offer|unlock|token)[^\s<>"'\]]+/gi,
+  /https?:\/\/(?:www\.)?[a-z0-9-]+\.(?:com|net|org)\/[^\s<>"'\]]*presale[^\s<>"'\]]+/gi,
+  /https?:\/\/[^\s<>"'\]]+(?:access[_-]?token|unlock|offer[_-]?id|code=)[^\s<>"'\]]+/gi,
+  /https?:\/\/[^\s<>"'\]]+[?&][a-z_]+=([a-f0-9]{32,}|[A-Za-z0-9+\/=]{32,})[^\s<>"'\]]*/gi,
+];
+
+/**
+ * Extract the first presale code from email body text
+ */
+export function extractCodeFromBody(text: string): string | null {
+  for (const pattern of CODE_PATTERNS) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(text);
+    if (match && match[1]) {
+      const code = match[1].toUpperCase().trim();
+      if (code.length >= 4 &&
+          !['HTTP', 'HTTPS', 'HTML', 'TEXT', 'CODE', 'NULL', 'TRUE', 'FALSE'].includes(code)) {
+        return code;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the first presale link from email body text
+ */
+export function extractLinkFromBody(text: string, html?: string): string | null {
+  const combinedText = html ? `${text} ${html}` : text;
+
+  for (const pattern of LINK_PATTERNS) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(combinedText);
+    if (match) {
+      const link = match[0].trim().replace(/[.,;:!?)\]]+$/, '');
+      return link;
+    }
+  }
+  return null;
 }
 
 /**
  * Search for emails with the same subject within the last 48 hours
- * Returns recipients with optional appointment times extracted from email bodies
+ * Returns recipients with appointment times and optional codes/links
  *
  * @param subject - Email subject to search for
- * @param extractAppointments - If true, use Claude to extract appointment times (default: false)
+ * @param extractCodesAndLinks - If true, also extract presale codes and links (default: false)
  */
-export async function findRelatedRecipients(subject: string, extractAppointments: boolean = false): Promise<RecipientWithAppointment[]> {
+export async function findRelatedRecipients(subject: string, extractCodesAndLinks: boolean = false): Promise<RecipientWithAppointment[]> {
   const gmail = await getGmailClient();
 
   const normalizedSubject = normalizeSubject(subject);
 
-  console.log(`Subject "${normalizedSubject}" - extract appointments: ${extractAppointments}`);
+  console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}`);
 
   // Build search query - last 48 hours
   const twoDaysAgo = new Date();
@@ -233,6 +295,7 @@ export async function findRelatedRecipients(subject: string, extractAppointments
     interface MessageWithBody {
       toEmails: string[];
       bodyText: string;
+      bodyHtml: string | null;
     }
     const messagesToProcess: MessageWithBody[] = [];
 
@@ -246,13 +309,15 @@ export async function findRelatedRecipients(subject: string, extractAppointments
       if (!toHeader?.value) continue;
 
       const recipientEmails = extractEmailAddresses(toHeader.value);
-      const bodyText = extractAppointments ? extractEmailBody(msgData.payload) : '';
+      // Always extract body for appointments, optionally for codes/links
+      const bodyText = extractEmailBody(msgData.payload);
+      const bodyHtml = extractCodesAndLinks ? extractEmailBodyHtml(msgData.payload) : null;
 
-      messagesToProcess.push({ toEmails: recipientEmails, bodyText });
+      messagesToProcess.push({ toEmails: recipientEmails, bodyText, bodyHtml });
     }
 
-    // If we need appointments, batch extract them with Claude (3 concurrent to avoid API limits)
-    if (extractAppointments && messagesToProcess.length > 0) {
+    // Always extract appointments with Claude (3 concurrent to avoid API limits)
+    if (messagesToProcess.length > 0) {
       const appointmentStartTime = Date.now();
       console.log(`[Gmail] Extracting appointments from ${messagesToProcess.length} emails with concurrency=3...`);
 
@@ -266,12 +331,16 @@ export async function findRelatedRecipients(subject: string, extractAppointments
       const appointmentSuccess = appointmentResults.filter(r => r.success).length;
       console.log(`[Gmail] Extracted ${appointmentSuccess} appointments in ${appointmentTime}ms`);
 
-      // Combine recipients with their appointment info
+      // Combine recipients with their appointment info and optional codes/links
       messagesToProcess.forEach((msg, idx) => {
         const appointmentResult = appointmentResults[idx];
         const appointmentInfo = appointmentResult.success
           ? appointmentResult.value
           : { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+
+        // Extract code and link if requested
+        const code = extractCodesAndLinks ? extractCodeFromBody(msg.bodyText) : null;
+        const link = extractCodesAndLinks ? extractLinkFromBody(msg.bodyText, msg.bodyHtml ?? undefined) : null;
 
         for (const email of msg.toEmails) {
           const normalizedEmail = email.toLowerCase();
@@ -287,29 +356,12 @@ export async function findRelatedRecipients(subject: string, extractAppointments
               appointmentDate: appointmentInfo.appointmentDate,
               appointmentTime: appointmentInfo.appointmentTime,
               rawDateTime: appointmentInfo.rawDateTime,
+              code,
+              link,
             });
           }
         }
       });
-    } else {
-      // No appointments needed - just add recipients
-      for (const msg of messagesToProcess) {
-        for (const email of msg.toEmails) {
-          const normalizedEmail = email.toLowerCase();
-          // Skip forwarding inbox and excluded domains
-          if (normalizedEmail === config.google.forwardingEmail?.toLowerCase()) continue;
-          if (shouldExcludeRecipient(normalizedEmail)) continue;
-
-          if (!recipientMap.has(normalizedEmail)) {
-            recipientMap.set(normalizedEmail, {
-              email: normalizedEmail,
-              appointmentDate: null,
-              appointmentTime: null,
-              rawDateTime: null,
-            });
-          }
-        }
-      }
     }
 
     const totalTime = Date.now() - startTime;
@@ -449,18 +501,11 @@ function extractEmailAddresses(headerValue: string): string[] {
 }
 
 /**
- * Check if /scan command is in the email body (just emails, no appointment extraction)
+ * Check if /scan command is in the email body
+ * Now matches both /scan and /scantimes (merged behavior - always extracts times)
  */
 export function shouldScanForRecipients(emailBody: string): boolean {
-  // Match /scan but NOT /scantimes
-  return /\/scan\b(?!times)/i.test(emailBody);
-}
-
-/**
- * Check if /scantimes command is in the email body (emails WITH appointment extraction)
- */
-export function shouldExtractAppointmentTimes(emailBody: string): boolean {
-  return /\/scantimes\b/i.test(emailBody);
+  return /\/scan(?:times)?\b/i.test(emailBody);
 }
 
 /**

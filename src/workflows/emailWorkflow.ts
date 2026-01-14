@@ -38,8 +38,8 @@ import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { config } from '../config/environment.js';
 import { parseDate, formatDateForDisplay } from '../utils/dateParser.js';
 import { formatTaskName } from '../utils/taskName.js';
-import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject, formatRecipientSubtaskName } from '../services/gmail.js';
-import { createRecipientSheet, shouldCreateSheet } from '../services/sheets.js';
+import { shouldScanForRecipients, findRelatedRecipients, normalizeSubject } from '../services/gmail.js';
+import { createScanSheet, detectContentType } from '../services/sheets.js';
 import * as todoist from '../services/todoist.js';
 import { mapPriorityToUrgency, createLogger, postRunIdToSlack, applyIntentModeWithLogging, createFailedResult } from './shared.js';
 
@@ -198,35 +198,37 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   }
 
   // Step 8.6: Check for /scan command in email body
-  // If present, search Gmail for related recipients and create subtasks with appointment times
+  // If present, search Gmail for related recipients and create a Google Sheet (no subtasks)
   let sheetUrl: string | null = null;
   if (shouldScanForRecipients(email.text)) {
-    log.log('/scan detected - searching for related recipients and appointments...');
+    log.log('/scan detected - searching for related recipients...');
     try {
-      const recipients = await findRelatedRecipients(email.subject);
+      // Detect content type to determine if we should extract codes/links
+      const contentType = detectContentType(taskName);
+      const extractCodesAndLinks = contentType === 'presale';
+      log.log(`Content type: ${contentType}, extracting codes/links: ${extractCodesAndLinks}`);
+
+      const recipients = await findRelatedRecipients(email.subject, extractCodesAndLinks);
       if (recipients.length > 0) {
-        log.log(`Found ${recipients.length} related recipients, creating subtasks...`);
-        // Format subtask names with appointment times (e.g., "john@client.com - Tue Dec 20, 2:00 PM")
-        const subtaskNames = recipients.map(formatRecipientSubtaskName);
-        const subtasks = await monday.createSubitems(mondayItem.id, subtaskNames);
-        log.log(`Created ${subtasks.length} subtasks for recipients`);
+        log.log(`Found ${recipients.length} related recipients, creating Google Sheet...`);
 
-        // Create Google Sheet for presale/relocation emails
-        if (shouldCreateSheet(taskName)) {
-          log.log('Creating Google Sheet for recipient tracking...');
-          try {
-            const sheet = await createRecipientSheet(taskName, recipients);
-            sheetUrl = sheet.spreadsheetUrl;
-            log.log(`Google Sheet created: ${sheetUrl}`);
+        // Always create Google Sheet for /scan (no subtasks)
+        try {
+          const sheet = await createScanSheet({
+            title: taskName,
+            recipients,
+            contentType,
+          });
+          sheetUrl = sheet.spreadsheetUrl;
+          log.log(`Google Sheet created: ${sheetUrl}`);
 
-            // Post sheet link as Monday update
-            await monday.createUpdate(
-              mondayItem.id,
-              `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
-            );
-          } catch (sheetError) {
-            log.error('Failed to create Google Sheet:', sheetError);
-          }
+          // Post sheet link as Monday update
+          await monday.createUpdate(
+            mondayItem.id,
+            `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
+          );
+        } catch (sheetError) {
+          log.error('Failed to create Google Sheet:', sheetError);
         }
       } else {
         log.log('No related recipients found in the last 48 hours');

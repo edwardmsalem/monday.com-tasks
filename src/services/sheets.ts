@@ -55,6 +55,23 @@ export interface SheetResult {
   title: string;
 }
 
+export type ScanContentType = 'relocation' | 'presale' | 'generic';
+
+/**
+ * Detect content type from email subject
+ * Used to determine which columns to include in the scan sheet
+ */
+export function detectContentType(subject: string): ScanContentType {
+  const lowerSubject = subject.toLowerCase();
+  if (lowerSubject.includes('relocation') || lowerSubject.includes('selection')) {
+    return 'relocation';
+  }
+  if (lowerSubject.includes('presale') || lowerSubject.includes('pre-sale')) {
+    return 'presale';
+  }
+  return 'generic';
+}
+
 /**
  * Create a Google Sheet with recipient appointment data
  */
@@ -162,12 +179,143 @@ export async function createRecipientSheet(
 }
 
 /**
- * Check if we should create a sheet (presale/relocation keywords)
+ * Options for creating a scan sheet
  */
-export function shouldCreateSheet(subject: string): boolean {
-  const keywords = ['presale', 'pre-sale', 'relocation', 'selection'];
-  const lowerSubject = subject.toLowerCase();
-  return keywords.some(keyword => lowerSubject.includes(keyword));
+export interface ScanSheetOptions {
+  title: string;
+  recipients: RecipientWithAppointment[];
+  contentType: ScanContentType;
+}
+
+/**
+ * Create a Google Sheet for /scan results with dynamic columns based on content
+ * - Presales with codes/links: Email | Date | Time | Code | Link | Status | Notes
+ * - Relocations/Generic: Email | Date | Time | Status | Notes
+ */
+export async function createScanSheet(options: ScanSheetOptions): Promise<SheetResult> {
+  const { title, recipients, contentType } = options;
+  const sheets = await getSheetsClient();
+
+  // Check if any recipients have codes or links (for presale)
+  const hasCodes = recipients.some(r => r.code);
+  const hasLinks = recipients.some(r => r.link);
+  const includeCodeColumns = contentType === 'presale' && (hasCodes || hasLinks);
+
+  // Build dynamic header based on content
+  const headerRow = includeCodeColumns
+    ? ['Email', 'Date', 'Time', 'Code', 'Link', 'Status', 'Notes']
+    : ['Email', 'Date', 'Time', 'Status', 'Notes'];
+
+  const columnCount = headerRow.length;
+
+  // Create the spreadsheet
+  const createResponse = await sheets.spreadsheets.create({
+    requestBody: {
+      properties: {
+        title: title,
+      },
+      sheets: [
+        {
+          properties: {
+            title: 'Recipients',
+            gridProperties: {
+              frozenRowCount: 1,
+            },
+          },
+        },
+      ],
+    },
+  });
+
+  const spreadsheetId = createResponse.data.spreadsheetId!;
+  const spreadsheetUrl = createResponse.data.spreadsheetUrl!;
+
+  // Build the data rows dynamically
+  const dataRows = recipients.map(r => {
+    if (includeCodeColumns) {
+      return [
+        r.email,
+        r.appointmentDate || '',
+        r.appointmentTime || '',
+        r.code || '',
+        r.link || '',
+        '', // Status
+        '', // Notes
+      ];
+    } else {
+      return [
+        r.email,
+        r.appointmentDate || '',
+        r.appointmentTime || '',
+        '', // Status
+        '', // Notes
+      ];
+    }
+  });
+
+  // Add data to the sheet
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: 'Recipients!A1',
+    valueInputOption: 'RAW',
+    requestBody: {
+      values: [headerRow, ...dataRows],
+    },
+  });
+
+  // Format the header row (bold, background color)
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          repeatCell: {
+            range: {
+              sheetId: 0,
+              startRowIndex: 0,
+              endRowIndex: 1,
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: { red: 0.2, green: 0.4, blue: 0.8 },
+                textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
+              },
+            },
+            fields: 'userEnteredFormat(backgroundColor,textFormat)',
+          },
+        },
+        // Auto-resize columns
+        {
+          autoResizeDimensions: {
+            dimensions: {
+              sheetId: 0,
+              dimension: 'COLUMNS',
+              startIndex: 0,
+              endIndex: columnCount,
+            },
+          },
+        },
+      ],
+    },
+  });
+
+  // Make the sheet accessible to anyone with the link
+  const drive = await getDriveClient();
+  await drive.permissions.create({
+    fileId: spreadsheetId,
+    requestBody: {
+      role: 'writer',
+      type: 'anyone',
+    },
+  });
+
+  console.log(`[Sheets] Created scan sheet: ${spreadsheetUrl} (type: ${contentType}, columns: ${columnCount})`);
+
+  return {
+    spreadsheetId,
+    spreadsheetUrl,
+    title,
+  };
 }
 
 
