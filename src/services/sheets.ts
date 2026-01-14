@@ -196,9 +196,18 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   const { title, recipients, contentType } = options;
   const sheets = await getSheetsClient();
 
+  // Sort recipients by appointment time ascending (earliest first)
+  const sortedRecipients = [...recipients].sort((a, b) => {
+    // Recipients without rawDateTime go to the end
+    if (!a.rawDateTime && !b.rawDateTime) return 0;
+    if (!a.rawDateTime) return 1;
+    if (!b.rawDateTime) return -1;
+    return new Date(a.rawDateTime).getTime() - new Date(b.rawDateTime).getTime();
+  });
+
   // Check if any recipients have codes or links (for presale)
-  const hasCodes = recipients.some(r => r.code);
-  const hasLinks = recipients.some(r => r.link);
+  const hasCodes = sortedRecipients.some(r => r.code);
+  const hasLinks = sortedRecipients.some(r => r.link);
   const includeCodeColumns = contentType === 'presale' && (hasCodes || hasLinks);
 
   // Build dynamic header based on content
@@ -230,8 +239,8 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   const spreadsheetId = createResponse.data.spreadsheetId!;
   const spreadsheetUrl = createResponse.data.spreadsheetUrl!;
 
-  // Build the data rows dynamically
-  const dataRows = recipients.map(r => {
+  // Build the data rows dynamically (using sorted recipients)
+  const dataRows = sortedRecipients.map(r => {
     if (includeCodeColumns) {
       return [
         r.email,

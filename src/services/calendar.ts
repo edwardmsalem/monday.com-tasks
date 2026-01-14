@@ -277,29 +277,48 @@ export async function createScanAppointmentEvents(
     return [];
   }
 
-  // Group recipients by time slot (rawDateTime)
-  const timeSlotMap = new Map<string, string[]>();
+  // Sort by time ascending
+  recipientsWithTime.sort((a, b) => {
+    const timeA = new Date(a.rawDateTime!).getTime();
+    const timeB = new Date(b.rawDateTime!).getTime();
+    return timeA - timeB;
+  });
+
+  // Group recipients by time slot, merging times within 15 minutes of each other
+  const MERGE_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+  const timeSlotGroups: Array<{ startTime: Date; emails: string[] }> = [];
+
   for (const recipient of recipientsWithTime) {
-    const timeSlot = recipient.rawDateTime!;
-    if (!timeSlotMap.has(timeSlot)) {
-      timeSlotMap.set(timeSlot, []);
+    const recipientTime = new Date(recipient.rawDateTime!);
+
+    // Check if this recipient fits into an existing group (within 15 min of group start)
+    let addedToGroup = false;
+    for (const group of timeSlotGroups) {
+      const timeDiff = recipientTime.getTime() - group.startTime.getTime();
+      if (timeDiff >= 0 && timeDiff <= MERGE_WINDOW_MS) {
+        group.emails.push(recipient.email);
+        addedToGroup = true;
+        break;
+      }
     }
-    timeSlotMap.get(timeSlot)!.push(recipient.email);
+
+    // If not added to existing group, create a new group
+    if (!addedToGroup) {
+      timeSlotGroups.push({
+        startTime: recipientTime,
+        emails: [recipient.email],
+      });
+    }
   }
 
-  console.log(`[Calendar] Creating ${timeSlotMap.size} calendar events for ${recipientsWithTime.length} appointments...`);
+  console.log(`[Calendar] Creating ${timeSlotGroups.length} calendar events for ${recipientsWithTime.length} appointments (merged within 15min windows)...`);
 
   const results: ScanAppointmentResult[] = [];
   const mondayUrl = monday.getItemUrl(mondayItemId);
   const teamName = extractTeamFromTitle(taskTitle);
 
-  for (const [timeSlot, emails] of timeSlotMap) {
-    // Parse the ISO datetime
-    const startTime = new Date(timeSlot);
-    if (isNaN(startTime.getTime())) {
-      console.error('[Calendar] Invalid datetime for scan appointment:', timeSlot);
-      continue;
-    }
+  for (const group of timeSlotGroups) {
+    const { startTime, emails } = group;
 
     // End time is 30 minutes after start
     const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
@@ -349,19 +368,20 @@ export async function createScanAppointmentEvents(
         sendUpdates: 'all', // Send email invites to attendees
       });
 
-      console.log(`[Calendar] Created event for ${emails.length} accounts at ${timeSlot}:`, response.data.id);
+      const timeSlotStr = startTime.toISOString();
+      console.log(`[Calendar] Created event for ${emails.length} accounts at ${timeSlotStr}:`, response.data.id);
 
       results.push({
         eventId: response.data.id!,
         htmlLink: response.data.htmlLink!,
-        timeSlot,
+        timeSlot: timeSlotStr,
         emailCount: emails.length,
       });
     } catch (error) {
-      console.error(`[Calendar] Failed to create event for time slot ${timeSlot}:`, error);
+      console.error(`[Calendar] Failed to create event for time slot ${startTime.toISOString()}:`, error);
     }
   }
 
-  console.log(`[Calendar] Created ${results.length}/${timeSlotMap.size} calendar events`);
+  console.log(`[Calendar] Created ${results.length}/${timeSlotGroups.length} calendar events`);
   return results;
 }
