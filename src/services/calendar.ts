@@ -221,106 +221,40 @@ const SCAN_APPOINTMENT_INVITEES = [
   'operations@salemseats.com',
 ];
 
-export interface ScanAppointmentInput {
-  title: string;           // e.g., "Astros Relocation - john@client.com"
-  email: string;           // Recipient email
-  dateTime: string;        // ISO 8601 format: "2025-12-20T14:00:00"
-  sheetUrl?: string;       // Link to tracking sheet
-  mondayItemId: string;
-}
-
 export interface ScanAppointmentResult {
   eventId: string;
   htmlLink: string;
-  email: string;
+  timeSlot: string;
+  emailCount: number;
 }
 
 /**
- * Create a calendar event for a /scan appointment
- * - Invites the team (edward, michael, operations)
- * - 1 hour reminder
- * - 30 minute duration
+ * Extract team name from task title (e.g., "Astros Relocation Selection" -> "Astros")
  */
-export async function createScanAppointmentEvent(
-  input: ScanAppointmentInput
-): Promise<ScanAppointmentResult | null> {
-  const client = getClient();
+function extractTeamFromTitle(title: string): string {
+  // Common words to remove to find the team name
+  const wordsToRemove = ['relocation', 'selection', 'presale', 'pre-sale', 'appointment', 'meeting'];
+  const words = title.split(/\s+/);
 
-  if (!client) {
-    console.log('[Calendar] Google Calendar not configured, skipping scan appointment event');
-    return null;
+  // Filter out common words and take the first remaining word(s) as team
+  const teamWords = words.filter(w => !wordsToRemove.includes(w.toLowerCase()));
+
+  if (teamWords.length > 0) {
+    // Return first 1-2 words as team name
+    return teamWords.slice(0, 2).join(' ');
   }
 
-  const mondayUrl = monday.getItemUrl(input.mondayItemId);
-
-  // Parse the ISO datetime
-  const startTime = new Date(input.dateTime);
-  if (isNaN(startTime.getTime())) {
-    console.error('[Calendar] Invalid datetime for scan appointment:', input.dateTime);
-    return null;
-  }
-
-  // End time is 30 minutes after start
-  const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
-
-  // Build description
-  const descriptionParts = [
-    `Recipient: ${input.email}`,
-    '',
-    '---',
-    `Monday.com: ${mondayUrl}`,
-  ];
-  if (input.sheetUrl) {
-    descriptionParts.push(`Tracking Sheet: ${input.sheetUrl}`);
-  }
-
-  const event: calendar_v3.Schema$Event = {
-    summary: input.title,
-    description: descriptionParts.join('\n'),
-    start: {
-      dateTime: startTime.toISOString(),
-      timeZone: config.google.timeZone,
-    },
-    end: {
-      dateTime: endTime.toISOString(),
-      timeZone: config.google.timeZone,
-    },
-    attendees: SCAN_APPOINTMENT_INVITEES.map(email => ({ email })),
-    reminders: {
-      useDefault: false,
-      overrides: [
-        { method: 'popup', minutes: 60 }, // 1 hour before
-      ],
-    },
-    source: {
-      title: 'Monday.com Task',
-      url: mondayUrl,
-    },
-  };
-
-  try {
-    const response = await client.events.insert({
-      calendarId: config.google.calendarId,
-      requestBody: event,
-      sendUpdates: 'all', // Send email invites to attendees
-    });
-
-    console.log(`[Calendar] Scan appointment event created for ${input.email}:`, response.data.id);
-
-    return {
-      eventId: response.data.id!,
-      htmlLink: response.data.htmlLink!,
-      email: input.email,
-    };
-  } catch (error) {
-    console.error(`[Calendar] Failed to create scan appointment event for ${input.email}:`, error);
-    return null;
-  }
+  // Fallback to first word of title
+  return words[0] || 'Team';
 }
 
 /**
- * Create calendar events for all /scan recipients with appointments
- * Returns array of created events
+ * Create calendar events for /scan appointments, grouped by time slot
+ * - One event per unique time slot
+ * - Lists all emails for that time slot in description
+ * - Title: "{Team} Relocation"
+ * - Invites the team (edward, michael, operations)
+ * - 1 hour reminder, 30 minute duration
  */
 export async function createScanAppointmentEvents(
   taskTitle: string,
@@ -335,8 +269,6 @@ export async function createScanAppointmentEvents(
     return [];
   }
 
-  const results: ScanAppointmentResult[] = [];
-
   // Filter to only recipients with valid datetime
   const recipientsWithTime = recipients.filter(r => r.rawDateTime);
 
@@ -345,22 +277,89 @@ export async function createScanAppointmentEvents(
     return [];
   }
 
-  console.log(`[Calendar] Creating ${recipientsWithTime.length} calendar events for scan appointments...`);
-
+  // Group recipients by time slot (rawDateTime)
+  const timeSlotMap = new Map<string, string[]>();
   for (const recipient of recipientsWithTime) {
-    const result = await createScanAppointmentEvent({
-      title: `${taskTitle} - ${recipient.email}`,
-      email: recipient.email,
-      dateTime: recipient.rawDateTime!,
-      sheetUrl,
-      mondayItemId,
-    });
+    const timeSlot = recipient.rawDateTime!;
+    if (!timeSlotMap.has(timeSlot)) {
+      timeSlotMap.set(timeSlot, []);
+    }
+    timeSlotMap.get(timeSlot)!.push(recipient.email);
+  }
 
-    if (result) {
-      results.push(result);
+  console.log(`[Calendar] Creating ${timeSlotMap.size} calendar events for ${recipientsWithTime.length} appointments...`);
+
+  const results: ScanAppointmentResult[] = [];
+  const mondayUrl = monday.getItemUrl(mondayItemId);
+  const teamName = extractTeamFromTitle(taskTitle);
+
+  for (const [timeSlot, emails] of timeSlotMap) {
+    // Parse the ISO datetime
+    const startTime = new Date(timeSlot);
+    if (isNaN(startTime.getTime())) {
+      console.error('[Calendar] Invalid datetime for scan appointment:', timeSlot);
+      continue;
+    }
+
+    // End time is 30 minutes after start
+    const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
+
+    // Build description with all emails for this time slot
+    const descriptionParts = [
+      `Accounts (${emails.length}):`,
+      ...emails.map(e => `• ${e}`),
+      '',
+      '---',
+      `Monday.com: ${mondayUrl}`,
+    ];
+    if (sheetUrl) {
+      descriptionParts.push(`Tracking Sheet: ${sheetUrl}`);
+    }
+
+    const event: calendar_v3.Schema$Event = {
+      summary: `${teamName} Relocation`,
+      description: descriptionParts.join('\n'),
+      start: {
+        dateTime: startTime.toISOString(),
+        timeZone: config.google.timeZone,
+      },
+      end: {
+        dateTime: endTime.toISOString(),
+        timeZone: config.google.timeZone,
+      },
+      attendees: SCAN_APPOINTMENT_INVITEES.map(email => ({ email })),
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'popup', minutes: 60 }, // 1 hour before
+        ],
+      },
+      source: {
+        title: 'Monday.com Task',
+        url: mondayUrl,
+      },
+    };
+
+    try {
+      const response = await client.events.insert({
+        calendarId: config.google.calendarId,
+        requestBody: event,
+        sendUpdates: 'all', // Send email invites to attendees
+      });
+
+      console.log(`[Calendar] Created event for ${emails.length} accounts at ${timeSlot}:`, response.data.id);
+
+      results.push({
+        eventId: response.data.id!,
+        htmlLink: response.data.htmlLink!,
+        timeSlot,
+        emailCount: emails.length,
+      });
+    } catch (error) {
+      console.error(`[Calendar] Failed to create event for time slot ${timeSlot}:`, error);
     }
   }
 
-  console.log(`[Calendar] Created ${results.length}/${recipientsWithTime.length} calendar events`);
+  console.log(`[Calendar] Created ${results.length}/${timeSlotMap.size} calendar events`);
   return results;
 }
