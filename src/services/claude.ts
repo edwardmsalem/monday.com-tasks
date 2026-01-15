@@ -141,7 +141,7 @@ function buildExtractTaskTool(userNames: string): Anthropic.Tool {
         },
         meetingDateTime: {
           type: 'string',
-          description: 'If meeting requested, the proposed date and time in ISO 8601 format (e.g., "2025-12-20T14:00:00"). Null if no specific time mentioned.',
+          description: `If meeting requested, the proposed date and time in ISO 8601 format (e.g., "${new Date().getFullYear()}-12-20T14:00:00"). Null if no specific time mentioned.`,
         },
         meetingDateTimeAlt: {
           type: 'string',
