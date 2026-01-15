@@ -871,8 +871,8 @@ Your job:
 
 Rules:
 - Only detect teams that are EXPLICITLY mentioned in the name
-- Common teams: Yankees, Mets, Dodgers, Cubs, Red Sox, Astros, Rangers, Lakers, Knicks, Celtics, Cowboys, Giants, Eagles, Rockets, Texans, etc.
-- NCAA teams: Georgia Tech, Alabama, Texas, Ohio State, etc.
+- Always use FULL team names with city (e.g., "New York Yankees", "Houston Astros", "Tampa Bay Buccaneers", "Los Angeles Lakers")
+- NCAA teams: Georgia Tech Yellow Jackets, Alabama Crimson Tide, Texas Longhorns, Ohio State Buckeyes, etc.
 - Return null for detectedTeam if no team is found
 - Return null for suggestedName if name already has [Team] prefix or no team detected`;
 
@@ -897,7 +897,7 @@ Analyze this task name and return:
               detectedTeam: {
                 type: 'string',
                 nullable: true,
-                description: 'Sports team name if detected, null otherwise',
+                description: 'Full sports team name with city (e.g., "Tampa Bay Buccaneers", "Houston Astros"), null otherwise',
               },
               suggestedName: {
                 type: 'string',
