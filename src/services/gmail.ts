@@ -431,6 +431,9 @@ async function extractAppointmentTime(emailBody: string): Promise<{
     const client = getAnthropicClient();
 
     // Wrapped in circuit breaker (TD-05)
+    // Use current year for date examples to avoid Claude defaulting to old years
+    const currentYear = new Date().getFullYear();
+
     const response = await claudeCircuit.execute(() =>
       client.messages.create({
         model: 'claude-sonnet-4-20250514',
@@ -441,10 +444,12 @@ async function extractAppointmentTime(emailBody: string): Promise<{
 - Selection appointments
 - Scheduled times for ticket-related events
 
+Today's date is ${new Date().toISOString().split('T')[0]}. When dates don't specify a year, use ${currentYear} (or ${currentYear + 1} if the date has clearly passed this year).
+
 Return ONLY a JSON object with:
-- appointmentDate: Human readable DATE only like "Tue Dec 20" or "December 20, 2025" or null if not found
+- appointmentDate: Human readable DATE only like "Tue Dec 20" or "December 20, ${currentYear}" or null if not found
 - appointmentTime: Human readable TIME only like "2:00 PM" or "14:00" or null if not found
-- rawDateTime: ISO 8601 format like "2025-12-20T14:00:00" or null if not found
+- rawDateTime: ISO 8601 format like "${currentYear}-12-20T14:00:00" or null if not found
 
 If no appointment is mentioned, return null for all fields.`,
         messages: [
