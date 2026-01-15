@@ -149,7 +149,7 @@ function buildExtractTaskTool(userNames: string): Anthropic.Tool {
         },
         team: {
           type: 'string',
-          description: 'Sports team name ONLY if explicitly mentioned (MLB, NFL, NBA, NHL, MLS, NCAA D1). Return null if not clearly stated - never guess.',
+          description: 'Full sports team name with city (e.g., "Tampa Bay Buccaneers", "Houston Astros", "Los Angeles Lakers"). ONLY if explicitly mentioned (MLB, NFL, NBA, NHL, MLS, NCAA D1). Return null if not clearly stated - never guess.',
         },
       },
       required: ['owner', 'dueDate', 'taskType', 'priority', 'notes', 'confidence', 'hasMeetingRequest'],
@@ -546,7 +546,7 @@ function buildSlackTaskTool(userNames: string): Anthropic.Tool {
         team: {
           type: 'string',
           nullable: true,
-          description: 'Sports team if explicitly mentioned. Null if not clearly stated.',
+          description: 'Full sports team name with city (e.g., "Tampa Bay Buccaneers", "Houston Astros"). Null if not clearly stated.',
         },
         confidence: {
           type: 'number',
@@ -747,7 +747,7 @@ Be flexible with input formats. Users might say:
       properties: {
         team: {
           type: 'string',
-          description: 'The sports team name (e.g., "astros", "houston astros", "rockets")',
+          description: 'Full sports team name with city (e.g., "Houston Astros", "Tampa Bay Buccaneers", "Houston Rockets")',
         },
         emails: {
           type: 'array',
