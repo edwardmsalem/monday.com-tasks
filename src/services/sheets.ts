@@ -85,6 +85,43 @@ async function safeShareSheet(spreadsheetId: string): Promise<boolean> {
   }
 }
 
+/**
+ * Convert ISO datetime string to Google Sheets date serial number
+ * Google Sheets uses days since Dec 30, 1899
+ */
+function isoToSheetDate(isoDateTime: string | null | undefined): number | string {
+  if (!isoDateTime) return '';
+  try {
+    const date = new Date(isoDateTime);
+    if (isNaN(date.getTime())) return '';
+    // Google Sheets epoch is Dec 30, 1899
+    const sheetsEpoch = new Date(1899, 11, 30);
+    const days = (date.getTime() - sheetsEpoch.getTime()) / (1000 * 60 * 60 * 24);
+    return days;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Convert ISO datetime string to Google Sheets time serial number
+ * Time is represented as fraction of a day (0.5 = noon)
+ */
+function isoToSheetTime(isoDateTime: string | null | undefined): number | string {
+  if (!isoDateTime) return '';
+  try {
+    const date = new Date(isoDateTime);
+    if (isNaN(date.getTime())) return '';
+    // Get time as fraction of day
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    const seconds = date.getSeconds();
+    return (hours + minutes / 60 + seconds / 3600) / 24;
+  } catch {
+    return '';
+  }
+}
+
 export interface SheetResult {
   spreadsheetId: string;
   spreadsheetUrl: string;
@@ -139,31 +176,33 @@ export async function createRecipientSheet(
   const spreadsheetId = createResponse.data.spreadsheetId!;
   const spreadsheetUrl = createResponse.data.spreadsheetUrl!;
 
-  // Build the data rows
+  // Build the data rows with proper date/time values
   const headerRow = ['Email', 'Date', 'Time', 'Status', 'Notes'];
   const dataRows = recipients.map(r => [
     r.email,
-    r.appointmentDate || '',
-    r.appointmentTime || '',
+    isoToSheetDate(r.rawDateTime),
+    isoToSheetTime(r.rawDateTime),
     '', // Status column for manual tracking
     '', // Notes column
   ]);
 
-  // Add data to the sheet
+  // Add data to the sheet (USER_ENTERED allows Google Sheets to interpret numbers)
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: 'Recipients!A1',
-    valueInputOption: 'RAW',
+    valueInputOption: 'USER_ENTERED',
     requestBody: {
       values: [headerRow, ...dataRows],
     },
   });
 
-  // Format the header row (bold, background color)
+  // Format the header row and apply date/time formatting
+  const dataRowCount = recipients.length;
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: {
       requests: [
+        // Header row formatting (bold, background color)
         {
           repeatCell: {
             range: {
@@ -178,6 +217,48 @@ export async function createRecipientSheet(
               },
             },
             fields: 'userEnteredFormat(backgroundColor,textFormat)',
+          },
+        },
+        // Date column formatting (column B = index 1)
+        {
+          repeatCell: {
+            range: {
+              sheetId: 0,
+              startRowIndex: 1,
+              endRowIndex: dataRowCount + 1,
+              startColumnIndex: 1,
+              endColumnIndex: 2,
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: {
+                  type: 'DATE',
+                  pattern: 'ddd M/d',
+                },
+              },
+            },
+            fields: 'userEnteredFormat.numberFormat',
+          },
+        },
+        // Time column formatting (column C = index 2)
+        {
+          repeatCell: {
+            range: {
+              sheetId: 0,
+              startRowIndex: 1,
+              endRowIndex: dataRowCount + 1,
+              startColumnIndex: 2,
+              endColumnIndex: 3,
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: {
+                  type: 'TIME',
+                  pattern: 'h:mm AM/PM',
+                },
+              },
+            },
+            fields: 'userEnteredFormat.numberFormat',
           },
         },
         // Auto-resize columns
@@ -270,12 +351,15 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   const sheetId = createResponse.data.sheets?.[0]?.properties?.sheetId ?? 0;
 
   // Build the data rows dynamically (using sorted recipients)
+  // Use rawDateTime for proper date/time values that sort correctly
   const dataRows = sortedRecipients.map(r => {
+    const dateValue = isoToSheetDate(r.rawDateTime);
+    const timeValue = isoToSheetTime(r.rawDateTime);
     if (includeCodeColumns) {
       return [
         r.email,
-        r.appointmentDate || '',
-        r.appointmentTime || '',
+        dateValue,
+        timeValue,
         r.code || '',
         r.link || '',
         '', // Status
@@ -284,29 +368,31 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     } else {
       return [
         r.email,
-        r.appointmentDate || '',
-        r.appointmentTime || '',
+        dateValue,
+        timeValue,
         '', // Status
         '', // Notes
       ];
     }
   });
 
-  // Add data to the sheet
+  // Add data to the sheet (USER_ENTERED allows Google Sheets to interpret numbers)
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: 'Recipients!A1',
-    valueInputOption: 'RAW',
+    valueInputOption: 'USER_ENTERED',
     requestBody: {
       values: [headerRow, ...dataRows],
     },
   });
 
-  // Format the header row (bold, background color)
+  // Format the header row and apply date/time formatting
+  const dataRowCount = sortedRecipients.length;
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: {
       requests: [
+        // Header row formatting (bold, background color)
         {
           repeatCell: {
             range: {
@@ -321,6 +407,48 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
               },
             },
             fields: 'userEnteredFormat(backgroundColor,textFormat)',
+          },
+        },
+        // Date column formatting (column B = index 1)
+        {
+          repeatCell: {
+            range: {
+              sheetId,
+              startRowIndex: 1,
+              endRowIndex: dataRowCount + 1,
+              startColumnIndex: 1,
+              endColumnIndex: 2,
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: {
+                  type: 'DATE',
+                  pattern: 'ddd M/d',
+                },
+              },
+            },
+            fields: 'userEnteredFormat.numberFormat',
+          },
+        },
+        // Time column formatting (column C = index 2)
+        {
+          repeatCell: {
+            range: {
+              sheetId,
+              startRowIndex: 1,
+              endRowIndex: dataRowCount + 1,
+              startColumnIndex: 2,
+              endColumnIndex: 3,
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: {
+                  type: 'TIME',
+                  pattern: 'h:mm AM/PM',
+                },
+              },
+            },
+            fields: 'userEnteredFormat.numberFormat',
           },
         },
         // Auto-resize columns
