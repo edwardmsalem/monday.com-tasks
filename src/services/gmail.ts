@@ -323,7 +323,7 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
 
       const appointmentResults = await batchWithConcurrency(
         messagesToProcess,
-        async (msg) => extractAppointmentTime(msg.bodyText),
+        async (msg) => extractAppointmentTime(msg.bodyText, normalizedSubject),
         3 // lower concurrency for Claude API
       );
 
@@ -417,8 +417,9 @@ function extractEmailBody(payload: any): string {
 
 /**
  * Use Claude to extract appointment date/time from email body
+ * Times are converted to Eastern Time based on the team mentioned in the email
  */
-async function extractAppointmentTime(emailBody: string): Promise<{
+async function extractAppointmentTime(emailBody: string, subject?: string): Promise<{
   appointmentDate: string | null;
   appointmentTime: string | null;
   rawDateTime: string | null;
@@ -434,6 +435,11 @@ async function extractAppointmentTime(emailBody: string): Promise<{
     // Use current year for date examples to avoid Claude defaulting to old years
     const currentYear = new Date().getFullYear();
 
+    // Include subject in the prompt if available for better team detection
+    const emailContent = subject
+      ? `Subject: ${subject}\n\n${emailBody.slice(0, 1900)}`
+      : emailBody.slice(0, 2000);
+
     const response = await claudeCircuit.execute(() =>
       client.messages.create({
         model: 'claude-sonnet-4-20250514',
@@ -444,18 +450,29 @@ async function extractAppointmentTime(emailBody: string): Promise<{
 - Selection appointments
 - Scheduled times for ticket-related events
 
+IMPORTANT TIMEZONE HANDLING:
+1. Identify the sports team mentioned (e.g., Lakers, Buccaneers, Astros)
+2. Use your knowledge of the team's home city to determine their timezone:
+   - Eastern: Buccaneers, Rays, Lightning, Heat, Marlins, Dolphins, Panthers, Magic, Jaguars, Braves, Hawks, Falcons, Hornets, Yankees, Mets, Knicks, Nets, Rangers, Islanders, Devils, Giants, Jets, Eagles, Phillies, Flyers, 76ers, Celtics, Red Sox, Bruins, Patriots, Nationals, Wizards, Capitals, Orioles, Ravens, Pirates, Steelers, Penguins, Cavaliers, Guardians, Browns, Bengals, Reds, Tigers, Lions, Pistons, Red Wings, Blue Jackets, Pacers, Colts, Bucks, Brewers, Twins, Timberwolves, Wild, etc.
+   - Central: Astros, Rockets, Texans, Dynamo, Rangers (Texas), Mavericks, Stars, Cowboys, Spurs, Saints, Pelicans, Grizzlies, Predators, Titans, Cardinals (STL), Blues, Chiefs, Royals, Cubs, White Sox, Bears, Bulls, Blackhawks, Brewers, Packers, etc.
+   - Mountain: Diamondbacks, Suns, Cardinals (AZ), Coyotes, Broncos, Nuggets, Avalanche, Rockies, Jazz, etc.
+   - Pacific: Lakers, Clippers, Dodgers, Angels, Rams, Chargers, Padres, Kings (LA), Ducks, Galaxy, 49ers, Giants (SF), Warriors, Raiders, Athletics, Sharks, Mariners, Seahawks, Sounders, Kraken, Trail Blazers, Timbers, etc.
+3. Convert the appointment time to Eastern Time (ET)
+
 Today's date is ${new Date().toISOString().split('T')[0]}. When dates don't specify a year, use ${currentYear} (or ${currentYear + 1} if the date has clearly passed this year).
 
 Return ONLY a JSON object with:
 - appointmentDate: Human readable DATE only like "Tue Dec 20" or "December 20, ${currentYear}" or null if not found
-- appointmentTime: Human readable TIME only like "2:00 PM" or "14:00" or null if not found
-- rawDateTime: ISO 8601 format like "${currentYear}-12-20T14:00:00" or null if not found
+- appointmentTime: Human readable TIME in Eastern Time like "2:00 PM ET" or null if not found
+- rawDateTime: ISO 8601 format in Eastern Time like "${currentYear}-12-20T14:00:00" or null if not found
+- detectedTeam: The team name detected, or null if none found
+- originalTimezone: The original timezone detected (e.g., "PT", "CT", "ET"), or null
 
 If no appointment is mentioned, return null for all fields.`,
         messages: [
           {
             role: 'user',
-            content: `Extract the appointment date/time from this email:\n\n${emailBody.slice(0, 2000)}`,
+            content: `Extract the appointment date/time from this email:\n\n${emailContent}`,
           },
         ],
       })
@@ -470,6 +487,12 @@ If no appointment is mentioned, return null for all fields.`,
     const jsonMatch = textContent.text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
+
+      // Log timezone conversion for debugging
+      if (parsed.detectedTeam && parsed.originalTimezone) {
+        console.log(`[Gmail] Timezone conversion: ${parsed.detectedTeam} (${parsed.originalTimezone}) → ET, time: ${parsed.rawDateTime}`);
+      }
+
       return {
         appointmentDate: parsed.appointmentDate || null,
         appointmentTime: parsed.appointmentTime || null,
