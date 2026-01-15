@@ -615,9 +615,10 @@ router.post(
             if (scannedRecipients.length > 0) {
               console.log(`[Background Scan] Found ${scannedRecipients.length} related recipients, creating Google Sheet...`);
 
-              // Create Google Sheet
+              // Create Google Sheet - use detected team name for title
+              const teamForTitle = analysisResult.team || 'Team';
               const sheetResult = await createScanSheet({
-                title: subject,
+                title: teamForTitle,
                 recipients: scannedRecipients,
                 contentType,
               });
@@ -628,14 +629,14 @@ router.post(
                 `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
               );
 
-              // Create calendar events
+              // Create calendar events - use detected team name
               let calendarEventCount = 0;
               const calendar = await import('../services/calendar.js');
               if (calendar.isCalendarEnabled()) {
                 console.log('[Background Scan] Creating calendar events...');
                 try {
                   const calendarEvents = await calendar.createScanAppointmentEvents(
-                    subject,
+                    teamForTitle,
                     scannedRecipients,
                     mondayItem.id,
                     sheetUrl

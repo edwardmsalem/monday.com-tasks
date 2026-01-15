@@ -118,7 +118,7 @@ export async function createTaskEvent(input: CalendarEventInput): Promise<Calend
     const response = await client.events.insert({
       calendarId: config.google.calendarId,
       requestBody: event,
-      sendUpdates: 'all', // Send email invites to attendees
+      sendUpdates: 'none', // Don't send email notifications
     });
 
     console.log('Calendar event created:', response.data.id);
@@ -229,23 +229,14 @@ export interface ScanAppointmentResult {
 }
 
 /**
- * Extract team name from task title (e.g., "Astros Relocation Selection" -> "Astros")
+ * Clean up team name - removes common prefixes if still present
+ * Now expects the team name to be passed directly (e.g., "Buccaneers")
  */
 function extractTeamFromTitle(title: string): string {
-  // Common words to remove to find the team name
-  const wordsToRemove = ['relocation', 'selection', 'presale', 'pre-sale', 'appointment', 'meeting'];
-  const words = title.split(/\s+/);
-
-  // Filter out common words and take the first remaining word(s) as team
-  const teamWords = words.filter(w => !wordsToRemove.includes(w.toLowerCase()));
-
-  if (teamWords.length > 0) {
-    // Return first 1-2 words as team name
-    return teamWords.slice(0, 2).join(' ');
-  }
-
-  // Fallback to first word of title
-  return words[0] || 'Team';
+  // Remove any remaining email prefixes just in case
+  return title
+    .replace(/^(fwd:|fw:|re:)\s*/gi, '')
+    .trim() || 'Team';
 }
 
 /**
@@ -400,7 +391,7 @@ export async function createScanAppointmentEvents(
       const response = await client.events.insert({
         calendarId: config.google.calendarId,
         requestBody: event,
-        sendUpdates: 'all', // Send email invites to attendees
+        sendUpdates: 'none', // Don't send email notifications
       });
 
       console.log(`[Calendar] Created event for ${emails.length} accounts at ${startTimeStr}:`, response.data.id);
