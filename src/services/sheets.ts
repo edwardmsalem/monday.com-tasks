@@ -303,8 +303,15 @@ export interface ScanSheetOptions {
  * - Relocations/Generic: Email | Date | Time | Status | Notes
  */
 export async function createScanSheet(options: ScanSheetOptions): Promise<SheetResult> {
-  const { title, recipients, contentType } = options;
+  const { title: rawTitle, recipients, contentType } = options;
   const sheets = await getSheetsClient();
+
+  // Format title as "{Team} Relocation {Year}"
+  const currentYear = new Date().getFullYear();
+  const hasRelocation = rawTitle.toLowerCase().includes('relocation');
+  const title = hasRelocation
+    ? `${rawTitle} ${currentYear}`
+    : `${rawTitle} Relocation ${currentYear}`;
 
   // Sort recipients by appointment time ascending (earliest first)
   const sortedRecipients = [...recipients].sort((a, b) => {

@@ -249,6 +249,37 @@ function extractTeamFromTitle(title: string): string {
 }
 
 /**
+ * Add minutes to an ISO datetime string, keeping it as local time (no Z suffix)
+ * This ensures Google Calendar interprets the time in the specified timezone
+ */
+function addMinutesToIsoString(isoString: string, minutes: number): string {
+  // Parse the ISO string and add minutes
+  const date = new Date(isoString);
+  date.setMinutes(date.getMinutes() + minutes);
+
+  // Format back as local ISO string (no Z suffix)
+  // This is important: Google Calendar will interpret this as local time in the specified timeZone
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/**
+ * Ensure an ISO datetime string has seconds for Google Calendar API
+ * Input: "2026-01-15T14:00" or "2026-01-15T14:00:00"
+ * Output: "2026-01-15T14:00:00" (always with seconds, never with Z suffix)
+ */
+function normalizeIsoString(isoString: string): string {
+  // Remove any Z or timezone offset suffix
+  const withoutZ = isoString.replace(/Z$/, '').replace(/[+-]\d{2}:\d{2}$/, '');
+
+  // Add seconds if missing
+  if (withoutZ.length === 16) {
+    return withoutZ + ':00';
+  }
+  return withoutZ;
+}
+
+/**
  * Create calendar events for /scan appointments, grouped by time slot
  * - One event per unique time slot
  * - Lists all emails for that time slot in description
@@ -286,7 +317,8 @@ export async function createScanAppointmentEvents(
 
   // Group recipients by time slot, merging times within 15 minutes of each other
   const MERGE_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-  const timeSlotGroups: Array<{ startTime: Date; emails: string[] }> = [];
+  // Store both the Date (for sorting/merging) and the original ISO string (for timezone-correct API calls)
+  const timeSlotGroups: Array<{ startTime: Date; rawDateTime: string; emails: string[] }> = [];
 
   for (const recipient of recipientsWithTime) {
     const recipientTime = new Date(recipient.rawDateTime!);
@@ -306,6 +338,7 @@ export async function createScanAppointmentEvents(
     if (!addedToGroup) {
       timeSlotGroups.push({
         startTime: recipientTime,
+        rawDateTime: recipient.rawDateTime!,
         emails: [recipient.email],
       });
     }
@@ -316,36 +349,38 @@ export async function createScanAppointmentEvents(
   const results: ScanAppointmentResult[] = [];
   const mondayUrl = monday.getItemUrl(mondayItemId);
   const teamName = extractTeamFromTitle(taskTitle);
+  const currentYear = new Date().getFullYear();
 
   for (const group of timeSlotGroups) {
-    const { startTime, emails } = group;
+    const { rawDateTime, emails } = group;
 
-    // End time is 30 minutes after start
-    const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
+    // Normalize the rawDateTime to ensure proper format (with seconds, no Z suffix)
+    // This ensures Google Calendar interprets the time in the specified timeZone
+    const startTimeStr = normalizeIsoString(rawDateTime);
+    const endTimeStr = addMinutesToIsoString(rawDateTime, 30);
 
-    // Build description with all emails for this time slot
+    // Build description with sheet link and Monday link (accounts are in the sheet)
     const descriptionParts: string[] = [];
     if (sheetUrl) {
       descriptionParts.push(`Tracking Sheet: ${sheetUrl}`);
       descriptionParts.push('');
     }
     descriptionParts.push(
-      `Accounts (${emails.length}):`,
-      ...emails.map(e => `• ${e}`),
+      `${emails.length} accounts scheduled for this time slot`,
       '',
       '---',
       `Monday.com: ${mondayUrl}`
     );
 
     const event: calendar_v3.Schema$Event = {
-      summary: `${teamName} Relocation`,
+      summary: `${teamName} Relocation ${currentYear}`,
       description: descriptionParts.join('\n'),
       start: {
-        dateTime: startTime.toISOString(),
+        dateTime: startTimeStr,
         timeZone: config.google.timeZone,
       },
       end: {
-        dateTime: endTime.toISOString(),
+        dateTime: endTimeStr,
         timeZone: config.google.timeZone,
       },
       attendees: SCAN_APPOINTMENT_INVITEES.map(email => ({ email })),
@@ -368,17 +403,16 @@ export async function createScanAppointmentEvents(
         sendUpdates: 'all', // Send email invites to attendees
       });
 
-      const timeSlotStr = startTime.toISOString();
-      console.log(`[Calendar] Created event for ${emails.length} accounts at ${timeSlotStr}:`, response.data.id);
+      console.log(`[Calendar] Created event for ${emails.length} accounts at ${startTimeStr}:`, response.data.id);
 
       results.push({
         eventId: response.data.id!,
         htmlLink: response.data.htmlLink!,
-        timeSlot: timeSlotStr,
+        timeSlot: startTimeStr,
         emailCount: emails.length,
       });
     } catch (error) {
-      console.error(`[Calendar] Failed to create event for time slot ${startTime.toISOString()}:`, error);
+      console.error(`[Calendar] Failed to create event for time slot ${startTimeStr}:`, error);
     }
   }
 
