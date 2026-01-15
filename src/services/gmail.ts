@@ -294,6 +294,7 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
     // Process successful fetches - extract recipients and prepare for appointment extraction
     interface MessageWithBody {
       toEmails: string[];
+      fromEmail: string;
       bodyText: string;
       bodyHtml: string | null;
     }
@@ -305,15 +306,17 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
       const msgData = result.value;
       const headers = msgData.payload?.headers ?? [];
       const toHeader = headers.find((h: any) => h.name === 'To');
+      const fromHeader = headers.find((h: any) => h.name === 'From');
 
       if (!toHeader?.value) continue;
 
       const recipientEmails = extractEmailAddresses(toHeader.value);
+      const fromEmail = fromHeader?.value || '';
       // Always extract body for appointments, optionally for codes/links
       const bodyText = extractEmailBody(msgData.payload);
       const bodyHtml = extractCodesAndLinks ? extractEmailBodyHtml(msgData.payload) : null;
 
-      messagesToProcess.push({ toEmails: recipientEmails, bodyText, bodyHtml });
+      messagesToProcess.push({ toEmails: recipientEmails, fromEmail, bodyText, bodyHtml });
     }
 
     // Always extract appointments with Claude (3 concurrent to avoid API limits)
@@ -323,7 +326,7 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
 
       const appointmentResults = await batchWithConcurrency(
         messagesToProcess,
-        async (msg) => extractAppointmentTime(msg.bodyText, normalizedSubject),
+        async (msg) => extractAppointmentTime(msg.bodyText, normalizedSubject, msg.fromEmail),
         3 // lower concurrency for Claude API
       );
 
@@ -419,7 +422,7 @@ function extractEmailBody(payload: any): string {
  * Use Claude to extract appointment date/time from email body
  * Times are converted to Eastern Time based on the team mentioned in the email
  */
-async function extractAppointmentTime(emailBody: string, subject?: string): Promise<{
+async function extractAppointmentTime(emailBody: string, subject?: string, fromEmail?: string): Promise<{
   appointmentDate: string | null;
   appointmentTime: string | null;
   rawDateTime: string | null;
@@ -435,10 +438,16 @@ async function extractAppointmentTime(emailBody: string, subject?: string): Prom
     // Use current year for date examples to avoid Claude defaulting to old years
     const currentYear = new Date().getFullYear();
 
-    // Include subject in the prompt if available for better team detection
-    const emailContent = subject
-      ? `Subject: ${subject}\n\n${emailBody.slice(0, 1900)}`
-      : emailBody.slice(0, 2000);
+    // Build email content with from address (most reliable for team detection via domain)
+    const emailParts: string[] = [];
+    if (fromEmail) {
+      emailParts.push(`From: ${fromEmail}`);
+    }
+    if (subject) {
+      emailParts.push(`Subject: ${subject}`);
+    }
+    emailParts.push('', emailBody.slice(0, 1800));
+    const emailContent = emailParts.join('\n');
 
     const response = await claudeCircuit.execute(() =>
       client.messages.create({
@@ -450,14 +459,19 @@ async function extractAppointmentTime(emailBody: string, subject?: string): Prom
 - Selection appointments
 - Scheduled times for ticket-related events
 
-IMPORTANT TIMEZONE HANDLING:
-1. Identify the sports team mentioned (e.g., Lakers, Buccaneers, Astros)
-2. Use your knowledge of the team's home city to determine their timezone:
-   - Eastern: Buccaneers, Rays, Lightning, Heat, Marlins, Dolphins, Panthers, Magic, Jaguars, Braves, Hawks, Falcons, Hornets, Yankees, Mets, Knicks, Nets, Rangers, Islanders, Devils, Giants, Jets, Eagles, Phillies, Flyers, 76ers, Celtics, Red Sox, Bruins, Patriots, Nationals, Wizards, Capitals, Orioles, Ravens, Pirates, Steelers, Penguins, Cavaliers, Guardians, Browns, Bengals, Reds, Tigers, Lions, Pistons, Red Wings, Blue Jackets, Pacers, Colts, Bucks, Brewers, Twins, Timberwolves, Wild, etc.
-   - Central: Astros, Rockets, Texans, Dynamo, Rangers (Texas), Mavericks, Stars, Cowboys, Spurs, Saints, Pelicans, Grizzlies, Predators, Titans, Cardinals (STL), Blues, Chiefs, Royals, Cubs, White Sox, Bears, Bulls, Blackhawks, Brewers, Packers, etc.
-   - Mountain: Diamondbacks, Suns, Cardinals (AZ), Coyotes, Broncos, Nuggets, Avalanche, Rockies, Jazz, etc.
-   - Pacific: Lakers, Clippers, Dodgers, Angels, Rams, Chargers, Padres, Kings (LA), Ducks, Galaxy, 49ers, Giants (SF), Warriors, Raiders, Athletics, Sharks, Mariners, Seahawks, Sounders, Kraken, Trail Blazers, Timbers, etc.
-3. Convert the appointment time to Eastern Time (ET)
+IMPORTANT - TEAM DETECTION (in priority order):
+1. FIRST: Look for the team name explicitly mentioned in the email BODY (most reliable)
+2. SECOND: Check the From email domain (e.g., @astros.com = Astros, @buccaneers.com = Buccaneers)
+3. THIRD: Fall back to the subject line if needed
+
+TIMEZONE HANDLING:
+Once you identify the team, determine their timezone by their home city:
+- Eastern (ET): Buccaneers, Rays, Lightning, Heat, Marlins, Dolphins, Panthers, Magic, Jaguars, Braves, Hawks, Falcons, Hornets, Yankees, Mets, Knicks, Nets, Rangers, Islanders, Devils, Giants, Jets, Eagles, Phillies, Flyers, 76ers, Celtics, Red Sox, Bruins, Patriots, Nationals, Wizards, Capitals, Orioles, Ravens, Pirates, Steelers, Penguins, Cavaliers, Guardians, Browns, Bengals, Reds, Tigers, Lions, Pistons, Red Wings, Blue Jackets, Pacers, Colts, Bucks, Brewers, etc.
+- Central (CT): Astros, Rockets, Texans, Dynamo, Rangers (Texas), Mavericks, Stars, Cowboys, Spurs, Saints, Pelicans, Grizzlies, Predators, Titans, Cardinals (STL), Blues, Chiefs, Royals, Cubs, White Sox, Bears, Bulls, Blackhawks, Packers, Twins, Timberwolves, Wild, etc.
+- Mountain (MT): Diamondbacks, Suns, Cardinals (AZ), Coyotes, Broncos, Nuggets, Avalanche, Rockies, Jazz, etc.
+- Pacific (PT): Lakers, Clippers, Dodgers, Angels, Rams, Chargers, Padres, Kings (LA), Ducks, Galaxy, 49ers, Giants (SF), Warriors, Raiders, Athletics, Sharks, Mariners, Seahawks, Sounders, Kraken, Trail Blazers, Timbers, etc.
+
+Convert the appointment time to Eastern Time (ET).
 
 Today's date is ${new Date().toISOString().split('T')[0]}. When dates don't specify a year, use ${currentYear} (or ${currentYear + 1} if the date has clearly passed this year).
 
