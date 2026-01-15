@@ -200,6 +200,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Step 8.6: Check for /scan command in email body
   // If present, search Gmail for related recipients and create a Google Sheet (no subtasks)
   let sheetUrl: string | null = null;
+  let scanSummary: { recipientCount: number; calendarEventCount: number; sheetUrl: string } | null = null;
   if (shouldScanForRecipients(email.text)) {
     log.log('/scan detected - searching for related recipients...');
     try {
@@ -229,6 +230,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
           );
 
           // Create calendar events for appointments (1 per recipient with a time)
+          let calendarEventCount = 0;
           if (calendar.isCalendarEnabled()) {
             log.log('Creating calendar events for scan appointments...');
             try {
@@ -238,6 +240,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
                 mondayItem.id,
                 sheetUrl
               );
+              calendarEventCount = calendarEvents.length;
               if (calendarEvents.length > 0) {
                 log.log(`Created ${calendarEvents.length} calendar events`);
                 await monday.createUpdate(
@@ -249,6 +252,13 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
               log.error('Failed to create calendar events:', calendarError);
             }
           }
+
+          // Track scan summary for Slack notification
+          scanSummary = {
+            recipientCount: recipients.length,
+            calendarEventCount,
+            sheetUrl,
+          };
         } catch (sheetError) {
           log.error('Failed to create Google Sheet:', sheetError);
         }
@@ -284,6 +294,25 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
 
   // Post Run ID to Slack thread for debugging/tracing
   await postRunIdToSlack(slackMessage.ts, runId);
+
+  // Post scan summary to Slack thread if scan was performed
+  if (scanSummary) {
+    try {
+      const scanSummaryText = [
+        `✅ *Scan Complete*`,
+        `• ${scanSummary.recipientCount} accounts found`,
+        scanSummary.calendarEventCount > 0
+          ? `• ${scanSummary.calendarEventCount} calendar event(s) created`
+          : `• No calendar events (calendar disabled or no appointment times)`,
+        `• <${scanSummary.sheetUrl}|View Tracking Sheet>`,
+      ].join('\n');
+
+      await slack.postToThread(slackMessage.ts, scanSummaryText);
+      log.log('Posted scan summary to Slack thread');
+    } catch (summaryError) {
+      log.error('Failed to post scan summary to Slack:', summaryError);
+    }
+  }
 
   // Step 11: Upload PDF - Slack first (human value), then Monday (best effort with retry)
   // Attachment failures do NOT fail the workflow

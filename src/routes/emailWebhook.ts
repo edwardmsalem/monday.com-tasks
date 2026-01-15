@@ -522,6 +522,7 @@ router.post(
 
       let sheetUrl: string | null = null;
       let scannedRecipients: Array<{ email: string; appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; code: string | null; link: string | null }> = [];
+      let scanSummary: { recipientCount: number; calendarEventCount: number; sheetUrl: string } | null = null;
       const scanDetected = shouldScanForRecipients(bodyText);
       console.log('=== /SCAN DETECTION ===');
       console.log('shouldScanForRecipients result:', scanDetected);
@@ -554,6 +555,7 @@ router.post(
               );
 
               // Create calendar events for appointments (1 per recipient with a time)
+              let calendarEventCount = 0;
               const calendar = await import('../services/calendar.js');
               if (calendar.isCalendarEnabled()) {
                 console.log('Creating calendar events for scan appointments...');
@@ -564,6 +566,7 @@ router.post(
                     mondayItem.id,
                     sheetUrl
                   );
+                  calendarEventCount = calendarEvents.length;
                   if (calendarEvents.length > 0) {
                     console.log(`Created ${calendarEvents.length} calendar events`);
                     await monday.createUpdate(
@@ -575,6 +578,13 @@ router.post(
                   console.error('Failed to create calendar events:', calendarError);
                 }
               }
+
+              // Track scan summary for Slack notification
+              scanSummary = {
+                recipientCount: scannedRecipients.length,
+                calendarEventCount,
+                sheetUrl,
+              };
             } catch (sheetError) {
               console.error('Failed to create Google Sheet:', sheetError);
             }
@@ -634,6 +644,25 @@ router.post(
               console.warn(`Failed to notify supporter ${supporter.name} in their channel`);
             }
           }
+        }
+      }
+
+      // Post scan summary to Slack thread if scan was performed
+      if (scanSummary) {
+        try {
+          const scanSummaryText = [
+            `✅ *Scan Complete*`,
+            `• ${scanSummary.recipientCount} accounts found`,
+            scanSummary.calendarEventCount > 0
+              ? `• ${scanSummary.calendarEventCount} calendar event(s) created`
+              : `• No calendar events (calendar disabled or no appointment times)`,
+            `• <${scanSummary.sheetUrl}|View Tracking Sheet>`,
+          ].join('\n');
+
+          await slack.postToThread(slackMessage.ts, scanSummaryText);
+          console.log('Posted scan summary to Slack thread');
+        } catch (summaryError) {
+          console.error('Failed to post scan summary to Slack:', summaryError);
         }
       }
 

@@ -349,6 +349,7 @@ export async function createScanAppointmentEvents(
   const results: ScanAppointmentResult[] = [];
   const mondayUrl = monday.getItemUrl(mondayItemId);
   const teamName = extractTeamFromTitle(taskTitle);
+  const currentYear = new Date().getFullYear();
 
   for (const group of timeSlotGroups) {
     const { rawDateTime, emails } = group;
@@ -358,22 +359,21 @@ export async function createScanAppointmentEvents(
     const startTimeStr = normalizeIsoString(rawDateTime);
     const endTimeStr = addMinutesToIsoString(rawDateTime, 30);
 
-    // Build description with all emails for this time slot
+    // Build description with sheet link and Monday link (accounts are in the sheet)
     const descriptionParts: string[] = [];
     if (sheetUrl) {
       descriptionParts.push(`Tracking Sheet: ${sheetUrl}`);
       descriptionParts.push('');
     }
     descriptionParts.push(
-      `Accounts (${emails.length}):`,
-      ...emails.map(e => `• ${e}`),
+      `${emails.length} accounts scheduled for this time slot`,
       '',
       '---',
       `Monday.com: ${mondayUrl}`
     );
 
     const event: calendar_v3.Schema$Event = {
-      summary: `${teamName} Relocation`,
+      summary: `${teamName} Relocation ${currentYear}`,
       description: descriptionParts.join('\n'),
       start: {
         dateTime: startTimeStr,
