@@ -243,7 +243,7 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
       gmail.users.messages.list({
         userId: 'me',
         q: query,
-        maxResults: 50,
+        maxResults: 200,
       })
     );
 
@@ -602,7 +602,7 @@ export async function searchEmailsBySubject(
       gmail.users.messages.list({
         userId: 'me',
         q: query,
-        maxResults: 50,
+        maxResults: 200,
       })
     );
 
