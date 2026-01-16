@@ -520,84 +520,10 @@ router.post(
       const { shouldScanForRecipients, findRelatedRecipients } = await import('../services/gmail.js');
       const { createScanSheet, detectContentType } = await import('../services/sheets.js');
 
-      let sheetUrl: string | null = null;
-      let scannedRecipients: Array<{ email: string; appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; code: string | null; link: string | null }> = [];
-      let scanSummary: { recipientCount: number; calendarEventCount: number; sheetUrl: string } | null = null;
+      // Just detect if scan is needed - we'll run it AFTER sending the response
       const scanDetected = shouldScanForRecipients(bodyText);
       console.log('=== /SCAN DETECTION ===');
       console.log('shouldScanForRecipients result:', scanDetected);
-      console.log('bodyText for scan check:', JSON.stringify(bodyText));
-
-      if (scanDetected) {
-        console.log('/scan detected - searching for related recipients...');
-        try {
-          // Detect content type to determine if we should extract codes/links
-          const contentType = detectContentType(subject);
-          const extractCodesAndLinks = contentType === 'presale';
-          console.log(`Content type: ${contentType}, extracting codes/links: ${extractCodesAndLinks}`);
-
-          scannedRecipients = await findRelatedRecipients(subject, extractCodesAndLinks);
-          if (scannedRecipients.length > 0) {
-            console.log(`Found ${scannedRecipients.length} related recipients, creating Google Sheet...`);
-
-            // Always create Google Sheet for /scan (no subtasks)
-            try {
-              const sheetResult = await createScanSheet({
-                title: subject,
-                recipients: scannedRecipients,
-                contentType,
-              });
-              sheetUrl = sheetResult.spreadsheetUrl;
-              console.log('Google Sheet created:', sheetUrl);
-              await monday.createUpdate(
-                mondayItem.id,
-                `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
-              );
-
-              // Create calendar events for appointments (1 per recipient with a time)
-              let calendarEventCount = 0;
-              const calendar = await import('../services/calendar.js');
-              if (calendar.isCalendarEnabled()) {
-                console.log('Creating calendar events for scan appointments...');
-                try {
-                  const calendarEvents = await calendar.createScanAppointmentEvents(
-                    subject,
-                    scannedRecipients,
-                    mondayItem.id,
-                    sheetUrl
-                  );
-                  calendarEventCount = calendarEvents.length;
-                  if (calendarEvents.length > 0) {
-                    console.log(`Created ${calendarEvents.length} calendar events`);
-                    await monday.createUpdate(
-                      mondayItem.id,
-                      `📅 Created ${calendarEvents.length} calendar event(s) for appointments`
-                    );
-                  }
-                } catch (calendarError) {
-                  console.error('Failed to create calendar events:', calendarError);
-                }
-              }
-
-              // Track scan summary for Slack notification
-              scanSummary = {
-                recipientCount: scannedRecipients.length,
-                calendarEventCount,
-                sheetUrl,
-              };
-            } catch (sheetError) {
-              console.error('Failed to create Google Sheet:', sheetError);
-            }
-          } else {
-            console.log('No related recipients found in the last 48 hours');
-          }
-        } catch (scanError) {
-          console.error('/scan failed:', scanError);
-          // Don't fail the whole workflow if scan fails
-        }
-      } else {
-        console.log('/scan NOT detected in body text');
-      }
 
       console.log('Sending Slack notification...');
       const supportSlackIds = supportUsers
@@ -647,39 +573,6 @@ router.post(
         }
       }
 
-      // Post scan summary to Slack thread if scan was performed
-      if (scanSummary) {
-        try {
-          const scanSummaryText = [
-            `✅ *Scan Complete*`,
-            `• ${scanSummary.recipientCount} accounts found`,
-            scanSummary.calendarEventCount > 0
-              ? `• ${scanSummary.calendarEventCount} calendar event(s) created`
-              : `• No calendar events (calendar disabled or no appointment times)`,
-            `• <${scanSummary.sheetUrl}|View Tracking Sheet>`,
-          ].join('\n');
-
-          await slack.postToThread(slackMessage.ts, scanSummaryText);
-          console.log('Posted scan summary to Slack thread');
-        } catch (summaryError) {
-          console.error('Failed to post scan summary to Slack:', summaryError);
-        }
-      }
-
-      // Post scanned email list to Slack thread if we found recipients
-      if (scannedRecipients.length > 0) {
-        const teamName = analysisResult.team || 'this team';
-        const emailList = scannedRecipients.map(r => `• ${r.email}`).join('\n');
-        const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
-
-        try {
-          await slack.postToThread(slackMessage.ts, scanMessage);
-          console.log('Posted email list to Slack thread');
-        } catch (threadErr) {
-          console.error('Failed to post email list to Slack thread:', threadErr);
-        }
-      }
-
       if (pdfBuffer) {
         console.log('Uploading PDF to Monday and Slack...');
 
@@ -700,13 +593,103 @@ router.post(
 
       await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts);
 
-      console.log('Workflow completed successfully!');
+      console.log('Workflow completed successfully - sending response to Make.com');
 
+      // Send response FIRST so Make.com doesn't timeout
       res.json({
         success: true,
         mondayItemId: mondayItem.id,
         slackThreadTs: slackMessage.ts,
       });
+
+      // Run scan AFTER response is sent (async, won't block Make.com)
+      if (scanDetected) {
+        console.log('/scan detected - running scan in background...');
+        setImmediate(async () => {
+          try {
+            const contentType = detectContentType(subject);
+            const extractCodesAndLinks = contentType === 'presale';
+            console.log(`[Background Scan] Content type: ${contentType}, extracting codes/links: ${extractCodesAndLinks}`);
+
+            const scannedRecipients = await findRelatedRecipients(subject, extractCodesAndLinks);
+            if (scannedRecipients.length > 0) {
+              console.log(`[Background Scan] Found ${scannedRecipients.length} related recipients, creating Google Sheet...`);
+
+              // Create Google Sheet - use detected team name for title
+              const teamForTitle = analysisResult.team || 'Team';
+              const sheetResult = await createScanSheet({
+                title: teamForTitle,
+                recipients: scannedRecipients,
+                contentType,
+              });
+              const sheetUrl = sheetResult.spreadsheetUrl;
+              console.log('[Background Scan] Google Sheet created:', sheetUrl);
+              await monday.createUpdate(
+                mondayItem.id,
+                `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
+              );
+
+              // Create calendar events - use detected team name
+              let calendarEventCount = 0;
+              const calendar = await import('../services/calendar.js');
+              if (calendar.isCalendarEnabled()) {
+                console.log('[Background Scan] Creating calendar events...');
+                try {
+                  const calendarEvents = await calendar.createScanAppointmentEvents(
+                    teamForTitle,
+                    scannedRecipients,
+                    mondayItem.id,
+                    sheetUrl
+                  );
+                  calendarEventCount = calendarEvents.length;
+                  if (calendarEvents.length > 0) {
+                    console.log(`[Background Scan] Created ${calendarEvents.length} calendar events`);
+                    await monday.createUpdate(
+                      mondayItem.id,
+                      `📅 Created ${calendarEvents.length} calendar event(s) for appointments`
+                    );
+                  }
+                } catch (calendarError) {
+                  console.error('[Background Scan] Failed to create calendar events:', calendarError);
+                }
+              }
+
+              // Post scan summary to Slack thread
+              try {
+                const scanSummaryText = [
+                  `✅ *Scan Complete*`,
+                  `• ${scannedRecipients.length} accounts found`,
+                  calendarEventCount > 0
+                    ? `• ${calendarEventCount} calendar event(s) created`
+                    : `• No calendar events (calendar disabled or no appointment times)`,
+                  `• <${sheetUrl}|View Tracking Sheet>`,
+                ].join('\n');
+                await slack.postToThread(slackMessage.ts, scanSummaryText);
+                console.log('[Background Scan] Posted scan summary to Slack thread');
+              } catch (summaryError) {
+                console.error('[Background Scan] Failed to post scan summary:', summaryError);
+              }
+
+              // Post email list to Slack thread
+              try {
+                const teamName = analysisResult.team || 'this team';
+                const emailList = scannedRecipients.map(r => `• ${r.email}`).join('\n');
+                const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
+                await slack.postToThread(slackMessage.ts, scanMessage);
+                console.log('[Background Scan] Posted email list to Slack thread');
+              } catch (threadErr) {
+                console.error('[Background Scan] Failed to post email list:', threadErr);
+              }
+
+              console.log('[Background Scan] Scan completed successfully!');
+            } else {
+              console.log('[Background Scan] No related recipients found in the last 48 hours');
+            }
+          } catch (scanError) {
+            console.error('[Background Scan] Scan failed:', scanError);
+          }
+        });
+      }
     } catch (error) {
       console.error('Make.com parsed webhook error:', error);
       res.status(500).json({
