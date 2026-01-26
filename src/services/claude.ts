@@ -3,6 +3,10 @@
  *
  * Uses Claude to extract task details from natural language emails,
  * eliminating the need for rigid line-by-line formatting.
+ *
+ * NOTE: This service still uses the direct Anthropic SDK because it requires
+ * advanced tool_use features (tool_choice, custom tools). When core-api adds
+ * a /claude/tool-use endpoint, this can be migrated to use coreApi.claude.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -10,6 +14,7 @@ import { config } from '../config/environment.js';
 import { TASK_TYPE_MAPPINGS } from '../config/taskTypes.js';
 import { getUserNamesString } from './userResolver.js';
 import type { TaskDetails } from '../types/index.js';
+// Future: import { claude as coreApiClaude } from './coreApi.js';
 
 let anthropicClient: Anthropic | null = null;
 

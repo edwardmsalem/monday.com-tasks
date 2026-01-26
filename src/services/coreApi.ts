@@ -114,6 +114,64 @@ export const slack = {
   async getUsers(): Promise<Record<string, string>> {
     return coreApiRequest('/slack/users', { method: 'GET' });
   },
+
+  async uploadFile(params: {
+    channel: string;
+    threadTs?: string;
+    filename: string;
+    fileData: string; // base64
+    title?: string;
+  }): Promise<{ ok: boolean; files: unknown[] }> {
+    return coreApiRequest('/slack/file-upload', {
+      body: params as Record<string, unknown>,
+    });
+  },
+
+  async listUsers(params?: { limit?: number; cursor?: string }): Promise<{
+    ok: boolean;
+    members: unknown[];
+    response_metadata?: { next_cursor?: string };
+  }> {
+    const searchParams = new URLSearchParams();
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    if (params?.cursor) searchParams.set('cursor', params.cursor);
+    const query = searchParams.toString();
+    return coreApiRequest(`/slack/users/list${query ? `?${query}` : ''}`, {
+      method: 'GET',
+    });
+  },
+
+  async setReminder(params: {
+    userId: string;
+    text: string;
+    time: string | number;
+  }): Promise<{ ok: boolean; reminder: unknown }> {
+    return coreApiRequest('/slack/reminders', {
+      body: params as Record<string, unknown>,
+    });
+  },
+
+  async getConversationHistory(params: {
+    channel: string;
+    limit?: number;
+    oldest?: string;
+    latest?: string;
+    inclusive?: boolean;
+  }): Promise<{
+    ok: boolean;
+    messages: unknown[];
+    has_more?: boolean;
+  }> {
+    const searchParams = new URLSearchParams();
+    searchParams.set('channel', params.channel);
+    if (params.limit) searchParams.set('limit', String(params.limit));
+    if (params.oldest) searchParams.set('oldest', params.oldest);
+    if (params.latest) searchParams.set('latest', params.latest);
+    if (params.inclusive) searchParams.set('inclusive', 'true');
+    return coreApiRequest(`/slack/conversations/history?${searchParams.toString()}`, {
+      method: 'GET',
+    });
+  },
 };
 
 // ============================================
@@ -186,6 +244,24 @@ export interface MondayItem {
   name: string;
 }
 
+export interface MondayUpdate {
+  id: string;
+  body: string;
+  text_body?: string;
+  created_at: string;
+  creator?: { id: string; name: string };
+  assets?: Array<{ id: string; name: string; url: string; file_extension: string; file_size: number }>;
+}
+
+export interface MondayUser {
+  id: string;
+  name: string;
+  email: string;
+  photo_thumb?: string;
+  title?: string;
+  enabled: boolean;
+}
+
 export const monday = {
   async createItem(params: {
     boardId: string;
@@ -218,11 +294,11 @@ export const monday = {
     });
   },
 
-  async getBoardItems(boardId: string): Promise<MondayItem[]> {
-    const result = await coreApiRequest<{ items: MondayItem[] }>(`/monday/boards/${boardId}/items`, {
+  async getBoardItems(boardId: string, limit?: number): Promise<MondayItem[]> {
+    const query = limit ? `?limit=${limit}` : '';
+    return coreApiRequest<MondayItem[]>(`/monday/boards/${boardId}/items${query}`, {
       method: 'GET',
     });
-    return result.items;
   },
 
   async searchItems(params: {
@@ -230,7 +306,7 @@ export const monday = {
     columnId: string;
     value: string;
   }): Promise<MondayItem[]> {
-    const result = await coreApiRequest<{ items: MondayItem[] }>(
+    return coreApiRequest<MondayItem[]>(
       `/monday/boards/${params.boardId}/search`,
       {
         body: {
@@ -239,15 +315,80 @@ export const monday = {
         },
       }
     );
-    return result.items;
   },
 
   async getBoardColumns(boardId: string): Promise<unknown[]> {
-    const result = await coreApiRequest<{ columns: unknown[] }>(
+    return coreApiRequest<unknown[]>(
       `/monday/boards/${boardId}/columns`,
       { method: 'GET' }
     );
-    return result.columns;
+  },
+
+  async createUpdate(params: { itemId: string; body: string }): Promise<MondayUpdate> {
+    return coreApiRequest<MondayUpdate>(`/monday/items/${params.itemId}/updates`, {
+      body: { body: params.body },
+    });
+  },
+
+  async getItemUpdates(itemId: string, limit?: number): Promise<MondayUpdate[]> {
+    const query = limit ? `?limit=${limit}` : '';
+    return coreApiRequest<MondayUpdate[]>(`/monday/items/${itemId}/updates${query}`, {
+      method: 'GET',
+    });
+  },
+
+  async uploadFileToItem(params: {
+    itemId: string;
+    columnId: string;
+    filename: string;
+    fileData: string; // base64
+  }): Promise<{ id: string; name: string; url: string }> {
+    return coreApiRequest(`/monday/items/${params.itemId}/files`, {
+      body: {
+        columnId: params.columnId,
+        filename: params.filename,
+        fileData: params.fileData,
+      },
+    });
+  },
+
+  async uploadFileToUpdate(params: {
+    updateId: string;
+    filename: string;
+    fileData: string; // base64
+  }): Promise<{ id: string; name: string; url: string }> {
+    return coreApiRequest(`/monday/updates/${params.updateId}/files`, {
+      body: {
+        filename: params.filename,
+        fileData: params.fileData,
+      },
+    });
+  },
+
+  async getAllUsers(): Promise<MondayUser[]> {
+    return coreApiRequest<MondayUser[]>('/monday/users', {
+      method: 'GET',
+    });
+  },
+
+  async findUserByEmail(email: string): Promise<MondayUser | null> {
+    try {
+      return await coreApiRequest<MondayUser>('/monday/users/find-by-email', {
+        body: { email },
+      });
+    } catch (error) {
+      // Return null if user not found
+      if (error instanceof Error && error.message.includes('404')) {
+        return null;
+      }
+      throw error;
+    }
+  },
+
+  async query(query: string, variables?: Record<string, unknown>): Promise<unknown> {
+    return coreApiRequest('/monday/query', {
+      body: { query, variables },
+    });
   },
 };
 
@@ -330,6 +471,15 @@ export const google = {
         body: params as Record<string, unknown>,
       });
     },
+
+    async create(params: {
+      title: string;
+      sheetTitle?: string;
+    }): Promise<{ spreadsheetId: string; spreadsheetUrl: string; title: string }> {
+      return coreApiRequest('/google/sheets', {
+        body: params,
+      });
+    },
   },
 
   docs: {
@@ -344,6 +494,68 @@ export const google = {
         method: 'GET',
       });
     },
+  },
+
+  drive: {
+    async shareFile(
+      fileId: string,
+      params: {
+        email?: string;
+        role?: 'reader' | 'writer' | 'commenter';
+        type?: 'user' | 'anyone';
+      }
+    ): Promise<{ ok: boolean; permissionId: string }> {
+      return coreApiRequest('/google/drive/share', {
+        body: {
+          fileId,
+          email: params.email,
+          role: params.role || 'reader',
+          type: params.type || 'user',
+        },
+      });
+    },
+  },
+};
+
+// ============================================
+// ConvertAPI (PDF conversion)
+// ============================================
+
+export interface ConvertedFile {
+  filename: string;
+  data: string; // base64
+  url: string;
+}
+
+export const convertApi = {
+  async emlToPdf(params: { emlContent: string; filename: string }): Promise<ConvertedFile> {
+    return coreApiRequest<ConvertedFile>('/convertapi/eml-to-pdf', {
+      body: params,
+    });
+  },
+
+  async htmlToPdf(params: { htmlContent: string; filename: string }): Promise<ConvertedFile> {
+    return coreApiRequest<ConvertedFile>('/convertapi/html-to-pdf', {
+      body: params,
+    });
+  },
+
+  async textToPdf(params: {
+    textContent: string;
+    subject: string;
+    from?: string;
+    date?: string;
+  }): Promise<ConvertedFile> {
+    return coreApiRequest<ConvertedFile>('/convertapi/text-to-pdf', {
+      body: params,
+    });
+  },
+
+  async downloadPdf(url: string): Promise<Buffer> {
+    const result = await coreApiRequest<{ data: string }>('/convertapi/download', {
+      body: { url },
+    });
+    return Buffer.from(result.data, 'base64');
   },
 };
 
@@ -414,4 +626,4 @@ export async function getConfig(): Promise<{
   return coreApiRequest('/config', { method: 'GET' });
 }
 
-export default { slack, claude, monday, google, sms, getConfig };
+export default { slack, claude, monday, google, sms, convertApi, getConfig };

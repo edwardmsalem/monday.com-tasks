@@ -4,16 +4,49 @@
  * Searches the forwarding inbox for related emails by subject
  * Used for the /scan feature to find all recipients with their appointment times
  *
- * Uses OAuth2 with refresh token (no domain-wide delegation needed)
+ * Migrated to use core-api instead of direct googleapis
  */
 
-import { google } from 'googleapis';
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config/environment.js';
 import { gmailCircuit, claudeCircuit } from './circuitBreaker.js';
+import { google as coreApiGoogle, claude as coreApiClaude } from './coreApi.js';
 
-let gmailClient: ReturnType<typeof google.gmail> | null = null;
-let anthropicClient: Anthropic | null = null;
+// ============================================================================
+// Gmail API Types (from core-api responses)
+// ============================================================================
+
+interface GmailMessageListItem {
+  id: string;
+  threadId: string;
+}
+
+interface GmailHeader {
+  name: string;
+  value: string;
+}
+
+interface GmailMessagePart {
+  partId?: string;
+  mimeType?: string;
+  filename?: string;
+  headers?: GmailHeader[];
+  body?: {
+    size: number;
+    data?: string;
+  };
+  parts?: GmailMessagePart[];
+}
+
+interface GmailMessageFull {
+  id: string;
+  threadId: string;
+  labelIds?: string[];
+  snippet?: string;
+  internalDate?: string;
+  payload?: GmailMessagePart & {
+    headers?: GmailHeader[];
+  };
+}
 
 // ============================================================================
 // Batch Processing Utilities
@@ -56,43 +89,8 @@ async function batchWithConcurrency<T, R>(
   return results;
 }
 
-/**
- * Initialize Gmail API client with OAuth2 refresh token
- */
-async function getGmailClient() {
-  if (gmailClient) return gmailClient;
-
-  const { clientId, clientSecret, refreshToken } = config.google;
-
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error(
-      'Gmail OAuth not configured. Required: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN'
-    );
-  }
-
-  const oauth2Client = new google.auth.OAuth2(
-    clientId,
-    clientSecret,
-    'https://developers.google.com/oauthplayground' // redirect URI used during token generation
-  );
-
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
-
-  return gmailClient;
-}
-
-function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({
-      apiKey: config.anthropic.apiKey,
-    });
-  }
-  return anthropicClient;
-}
+// Gmail client is now accessed via coreApi.google.gmail
+// Claude client is now accessed via coreApi.claude
 
 /**
  * Normalize subject by removing FWD:, Fwd:, RE:, Re:, etc.
@@ -223,8 +221,6 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
  * @param extractCodesAndLinks - If true, also extract presale codes and links (default: false)
  */
 export async function findRelatedRecipients(subject: string, extractCodesAndLinks: boolean = false): Promise<RecipientWithAppointment[]> {
-  const gmail = await getGmailClient();
-
   const normalizedSubject = normalizeSubject(subject);
 
   console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}`);
@@ -238,16 +234,15 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
   console.log(`Gmail search query: ${query}`);
 
   try {
-    // Search for messages (wrapped in circuit breaker TD-05)
+    // Search for messages via core-api (wrapped in circuit breaker TD-05)
     const searchResponse = await gmailCircuit.execute(() =>
-      gmail.users.messages.list({
-        userId: 'me',
-        q: query,
+      coreApiGoogle.gmail.listMessages({
         maxResults: 200,
+        q: query,
       })
     );
 
-    const messages = searchResponse.data.messages ?? [];
+    const messages = ((searchResponse as { messages?: GmailMessageListItem[] }).messages ?? []) as GmailMessageListItem[];
     console.log(`Found ${messages.length} related emails`);
 
     if (messages.length === 0) {
@@ -258,23 +253,19 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
     const recipientMap = new Map<string, RecipientWithAppointment>();
 
     // Filter messages with valid IDs
-    const validMessages = messages.filter(m => m.id);
+    const validMessages = messages.filter((m: GmailMessageListItem) => m.id);
     const startTime = Date.now();
 
     // Batch fetch all messages with concurrency control (5 concurrent requests)
-    // Each fetch wrapped in circuit breaker (TD-05)
+    // Each fetch wrapped in circuit breaker via core-api (TD-05)
     console.log(`[Gmail] Fetching ${validMessages.length} messages with concurrency=5...`);
     const fetchResults = await batchWithConcurrency(
       validMessages,
-      async (message) => {
+      async (message: GmailMessageListItem) => {
         const msgResponse = await gmailCircuit.execute(() =>
-          gmail.users.messages.get({
-            userId: 'me',
-            id: message.id!,
-            format: 'full',
-          })
+          coreApiGoogle.gmail.getMessage(message.id!)
         );
-        return msgResponse.data;
+        return msgResponse as GmailMessageFull;
       },
       5 // concurrency limit to avoid Gmail rate limits
     );
@@ -303,10 +294,10 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
     for (const result of fetchResults) {
       if (!result.success) continue;
 
-      const msgData = result.value;
+      const msgData = result.value as GmailMessageFull;
       const headers = msgData.payload?.headers ?? [];
-      const toHeader = headers.find((h: any) => h.name === 'To');
-      const fromHeader = headers.find((h: any) => h.name === 'From');
+      const toHeader = headers.find((h: GmailHeader) => h.name === 'To');
+      const fromHeader = headers.find((h: GmailHeader) => h.name === 'From');
 
       if (!toHeader?.value) continue;
 
@@ -419,7 +410,7 @@ function extractEmailBody(payload: any): string {
 }
 
 /**
- * Use Claude to extract appointment date/time from email body
+ * Use Claude via core-api to extract appointment date/time from email body
  * Times are converted to Eastern Time based on the team mentioned in the email
  */
 async function extractAppointmentTime(emailBody: string, subject?: string, fromEmail?: string): Promise<{
@@ -432,9 +423,6 @@ async function extractAppointmentTime(emailBody: string, subject?: string, fromE
   }
 
   try {
-    const client = getAnthropicClient();
-
-    // Wrapped in circuit breaker (TD-05)
     // Use current year for date examples to avoid Claude defaulting to old years
     const currentYear = new Date().getFullYear();
 
@@ -449,11 +437,7 @@ async function extractAppointmentTime(emailBody: string, subject?: string, fromE
     emailParts.push('', emailBody.slice(0, 1800));
     const emailContent = emailParts.join('\n');
 
-    const response = await claudeCircuit.execute(() =>
-      client.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 256,
-        system: `Extract appointment/event date and time from emails. Look for:
+    const systemPrompt = `Extract appointment/event date and time from emails. Look for:
 - Presale appointments
 - Relocation meetings
 - Selection appointments
@@ -482,23 +466,21 @@ Return ONLY a JSON object with:
 - detectedTeam: The team name detected, or null if none found
 - originalTimezone: The original timezone detected (e.g., "PT", "CT", "ET"), or null
 
-If no appointment is mentioned, return null for all fields.`,
-        messages: [
-          {
-            role: 'user',
-            content: `Extract the appointment date/time from this email:\n\n${emailContent}`,
-          },
-        ],
+If no appointment is mentioned, return null for all fields.`;
+
+    // Use core-api Claude analyze endpoint wrapped in circuit breaker (TD-05)
+    const response = await claudeCircuit.execute(() =>
+      coreApiClaude.analyze({
+        content: `Extract the appointment date/time from this email:\n\n${emailContent}`,
+        systemPrompt,
+        maxTokens: 256,
       })
     );
 
-    const textContent = response.content.find(c => c.type === 'text');
-    if (!textContent || textContent.type !== 'text') {
-      return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
-    }
+    const text = (response as any).content || '';
 
     // Parse JSON from response
-    const jsonMatch = textContent.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
 
@@ -602,7 +584,7 @@ function getTodayEastern(): string {
 }
 
 /**
- * Search Gmail for emails by subject
+ * Search Gmail for emails by subject via core-api
  *
  * @param subject - The subject to search for
  * @param matchMode - 'equals' for exact match, 'contains' for partial match
@@ -614,8 +596,6 @@ export async function searchEmailsBySubject(
   matchMode: EmailMatchMode = 'equals',
   daysBack: number = 0
 ): Promise<GmailEmailResult[]> {
-  const gmail = await getGmailClient();
-
   const normalizedSubject = normalizeSubject(subject);
 
   // Build date range for Gmail query
@@ -634,16 +614,15 @@ export async function searchEmailsBySubject(
   console.log(`Gmail search query: ${query} (matchMode: ${matchMode})`);
 
   try {
-    // Wrapped in circuit breaker (TD-05)
+    // Wrapped in circuit breaker via core-api (TD-05)
     const searchResponse = await gmailCircuit.execute(() =>
-      gmail.users.messages.list({
-        userId: 'me',
-        q: query,
+      coreApiGoogle.gmail.listMessages({
         maxResults: 200,
+        q: query,
       })
     );
 
-    const messages = searchResponse.data.messages ?? [];
+    const messages = ((searchResponse as { messages?: GmailMessageListItem[] }).messages ?? []) as GmailMessageListItem[];
     console.log(`Gmail returned ${messages.length} messages`);
 
     if (messages.length === 0) {
@@ -651,23 +630,19 @@ export async function searchEmailsBySubject(
     }
 
     // Filter messages with valid IDs
-    const validMessages = messages.filter(m => m.id);
+    const validMessages = messages.filter((m: GmailMessageListItem) => m.id);
     const startTime = Date.now();
 
     // Batch fetch all messages with concurrency control (5 concurrent requests)
-    // Each fetch wrapped in circuit breaker (TD-05)
+    // Each fetch wrapped in circuit breaker via core-api (TD-05)
     console.log(`[Gmail] Fetching ${validMessages.length} messages with concurrency=5...`);
     const fetchResults = await batchWithConcurrency(
       validMessages,
-      async (message) => {
+      async (message: GmailMessageListItem) => {
         const msgResponse = await gmailCircuit.execute(() =>
-          gmail.users.messages.get({
-            userId: 'me',
-            id: message.id!,
-            format: 'full',
-          })
+          coreApiGoogle.gmail.getMessage(message.id!)
         );
-        return { id: message.id!, data: msgResponse.data };
+        return { id: message.id!, data: msgResponse as GmailMessageFull };
       },
       5 // concurrency limit to avoid Gmail rate limits
     );
@@ -690,12 +665,12 @@ export async function searchEmailsBySubject(
     for (const result of fetchResults) {
       if (!result.success) continue;
 
-      const { id: messageId, data: msgData } = result.value;
+      const { id: messageId, data: msgData } = result.value as { id: string; data: GmailMessageFull };
       const headers = msgData.payload?.headers ?? [];
-      const subjectHeader = headers.find((h: any) => h.name?.toLowerCase() === 'subject');
-      const fromHeader = headers.find((h: any) => h.name?.toLowerCase() === 'from');
-      const toHeader = headers.find((h: any) => h.name?.toLowerCase() === 'to');
-      const dateHeader = headers.find((h: any) => h.name?.toLowerCase() === 'date');
+      const subjectHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'subject');
+      const fromHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'from');
+      const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
+      const dateHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'date');
 
       const emailSubject = subjectHeader?.value || '';
       const normalizedEmailSubject = normalizeSubject(emailSubject);

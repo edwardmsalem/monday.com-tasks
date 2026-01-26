@@ -1,21 +1,17 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import ConvertApi from 'convertapi';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { config } from '../config/environment.js';
+/**
+ * ConvertAPI Service
+ *
+ * PDF conversion via core-api
+ * - EML to PDF
+ * - HTML to PDF
+ * - Plain text to PDF
+ *
+ * Migrated to use core-api instead of direct ConvertAPI SDK
+ */
+
 import type { ConvertedFile } from '../types/index.js';
 import { convertApiCircuit } from './circuitBreaker.js';
-
-// ConvertApi doesn't have proper TypeScript definitions
-let convertApiClient: any = null;
-
-function getClient(): any {
-  if (!convertApiClient) {
-    convertApiClient = new (ConvertApi as any)(config.convertApi.secret);
-  }
-  return convertApiClient;
-}
+import { convertApi as coreApiConvert } from './coreApi.js';
 
 /**
  * Convert an EML file to PDF
@@ -27,8 +23,6 @@ export async function convertEmlToPdf(
   emlContent: Buffer,
   filename: string
 ): Promise<ConvertedFile> {
-  const client = getClient();
-
   // Ensure filename is a string (Make.com can send objects)
   let safeFilename = 'email.eml';
   if (typeof filename === 'string' && filename) {
@@ -65,51 +59,26 @@ export async function convertEmlToPdf(
     }
   }
 
-  console.log('Converting EML to PDF:', safeFilename, safeContent.length, 'bytes');
+  console.log('Converting EML to PDF via core-api:', safeFilename, safeContent.length, 'bytes');
 
-  // Convert EML to PDF using the convertapi library
+  // Convert EML to PDF via core-api
   // Wrapped in circuit breaker (TD-05)
-  const result = await convertApiCircuit.execute<{ files: any[] }>(() =>
-    client.convert(
-      'pdf',
-      {
-        File: { name: safeFilename, data: safeContent },
-        PageSize: 'a4',
-        MarginTop: 5,
-        MarginRight: 5,
-        MarginBottom: 5,
-        MarginLeft: 5,
-        PageOrientation: 'portrait',
-      },
-      'eml'
-    )
+  const result = await convertApiCircuit.execute(() =>
+    coreApiConvert.emlToPdf({
+      emlContent: safeContent.toString('base64'),
+      filename: safeFilename,
+    })
   );
 
-  // Get the converted file
-  const file = result.files[0];
-  if (!file) {
-    throw new Error('ConvertAPI did not return a converted file');
-  }
-
-  // Store the durable URL for potential retries
-  const pdfUrl = file.url as string;
-  console.log('ConvertAPI PDF URL (durable for retries):', pdfUrl);
-
-  // Fetch the file data
-  const response = await fetch(pdfUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to download converted PDF: ${response.statusText}`);
-  }
-
-  const data = Buffer.from(await response.arrayBuffer());
+  console.log('ConvertAPI PDF URL (durable for retries):', result.url);
 
   // Generate PDF filename from the safe filename
   const pdfFilename = safeFilename.replace(/\.eml$/i, '.pdf');
 
   return {
-    filename: pdfFilename,
-    data,
-    url: pdfUrl,  // Include durable URL for retry scenarios
+    filename: result.filename || pdfFilename,
+    data: Buffer.from(result.data, 'base64'),
+    url: result.url,
   };
 }
 
@@ -118,12 +87,8 @@ export async function convertEmlToPdf(
  * Used for retry scenarios where we don't want to reconvert
  */
 export async function downloadPdfFromUrl(url: string): Promise<Buffer> {
-  console.log('Downloading PDF from stored URL:', url);
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download PDF from URL: ${response.statusText}`);
-  }
-  return Buffer.from(await response.arrayBuffer());
+  console.log('Downloading PDF from stored URL via core-api:', url);
+  return coreApiConvert.downloadPdf(url);
 }
 
 /**
@@ -138,8 +103,6 @@ export async function convertHtmlToPdf(
   htmlContent: string,
   filename: string = 'email'
 ): Promise<ConvertedFile> {
-  const client = getClient();
-
   // Validate inputs
   if (typeof htmlContent !== 'string') {
     throw new Error(`htmlContent must be a string, got ${typeof htmlContent}`);
@@ -154,82 +117,24 @@ export async function convertHtmlToPdf(
   const htmlFilename = `${baseFilename}.html`;
   const pdfFilename = `${baseFilename}.pdf`;
 
-  console.log('Converting HTML to PDF:', htmlFilename, htmlContent.length, 'chars');
+  console.log('Converting HTML to PDF via core-api:', htmlFilename, htmlContent.length, 'chars');
 
-  // Write HTML to a temp file (ConvertAPI library has issues with in-memory objects)
-  const tempDir = os.tmpdir();
-  const tempFilePath = path.join(tempDir, `convertapi-${Date.now()}-${htmlFilename}`);
+  // Convert HTML to PDF via core-api
+  // Wrapped in circuit breaker (TD-05)
+  const result = await convertApiCircuit.execute(() =>
+    coreApiConvert.htmlToPdf({
+      htmlContent,
+      filename: htmlFilename,
+    })
+  );
 
-  try {
-    // Write the HTML content to a temp file
-    fs.writeFileSync(tempFilePath, htmlContent, 'utf-8');
-    console.log('[ConvertAPI] Wrote temp file:', tempFilePath);
+  console.log('ConvertAPI PDF URL:', result.url);
 
-    // Convert HTML to PDF using the convertapi library
-    // Wrapped in circuit breaker (TD-05)
-    let result: { files: any[] };
-    try {
-      result = await convertApiCircuit.execute<{ files: any[] }>(() =>
-        client.convert(
-          'pdf',
-          {
-            File: tempFilePath,  // Pass the file path as a string
-            PageSize: 'a4',
-            MarginTop: 10,
-            MarginRight: 10,
-            MarginBottom: 10,
-            MarginLeft: 10,
-            PageOrientation: 'portrait',
-          },
-          'html'
-        )
-      );
-    } catch (error) {
-      // Log detailed error info for debugging
-      console.error('[ConvertAPI] HTML to PDF conversion failed:', {
-        filename: htmlFilename,
-        tempFilePath,
-        htmlLength: htmlContent.length,
-        error: error instanceof Error ? error.message : String(error),
-        circuitState: convertApiCircuit.getStats(),
-      });
-      throw error;
-    }
-
-    // Get the converted file
-    const file = result.files[0];
-    if (!file) {
-      throw new Error('ConvertAPI did not return a converted file');
-    }
-
-    // Store the durable URL for potential retries
-    const pdfUrl = file.url as string;
-    console.log('ConvertAPI PDF URL:', pdfUrl);
-
-    // Fetch the file data
-    const response = await fetch(pdfUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to download converted PDF: ${response.statusText}`);
-    }
-
-    const data = Buffer.from(await response.arrayBuffer());
-
-    return {
-      filename: pdfFilename,
-      data,
-      url: pdfUrl,
-    };
-  } finally {
-    // Clean up temp file
-    try {
-      if (fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-        console.log('[ConvertAPI] Cleaned up temp file:', tempFilePath);
-      }
-    } catch (cleanupError) {
-      console.warn('[ConvertAPI] Failed to clean up temp file:', tempFilePath, cleanupError);
-    }
-  }
+  return {
+    filename: result.filename || pdfFilename,
+    data: Buffer.from(result.data, 'base64'),
+    url: result.url,
+  };
 }
 
 /**
@@ -248,39 +153,24 @@ export async function convertTextToPdf(
   from: string | null,
   date: Date
 ): Promise<ConvertedFile> {
-  // Escape HTML entities
-  const escapeHtml = (text: string) =>
-    text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>');
+  console.log('Converting text to PDF via core-api:', subject);
 
-  // Build minimal HTML
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${escapeHtml(subject)}</title>
-  <style>
-    body { font-family: Arial, sans-serif; font-size: 12pt; line-height: 1.4; padding: 20px; }
-    .header { border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 20px; }
-    .header h1 { font-size: 16pt; margin: 0 0 10px 0; }
-    .header .meta { color: #666; font-size: 10pt; }
-    .body { white-space: pre-wrap; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>${escapeHtml(subject)}</h1>
-    <div class="meta">
-      ${from ? `<div>From: ${escapeHtml(from)}</div>` : ''}
-      <div>Date: ${date.toLocaleString('en-US', { timeZone: 'America/New_York' })}</div>
-    </div>
-  </div>
-  <div class="body">${escapeHtml(textContent)}</div>
-</body>
-</html>`;
+  // Convert text to PDF via core-api
+  // Wrapped in circuit breaker (TD-05)
+  const result = await convertApiCircuit.execute(() =>
+    coreApiConvert.textToPdf({
+      textContent,
+      subject,
+      from: from || undefined,
+      date: date.toISOString(),
+    })
+  );
 
-  return convertHtmlToPdf(html, subject.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50));
+  console.log('ConvertAPI PDF URL:', result.url);
+
+  return {
+    filename: result.filename,
+    data: Buffer.from(result.data, 'base64'),
+    url: result.url,
+  };
 }

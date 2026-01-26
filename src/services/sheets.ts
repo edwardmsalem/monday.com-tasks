@@ -3,17 +3,22 @@
  *
  * Creates spreadsheets for presale/relocation tracking
  * with recipient emails and appointment times
+ *
+ * Uses core-api for basic operations, keeps googleapis for advanced formatting
  */
 
 import { google } from 'googleapis';
 import { config } from '../config/environment.js';
 import type { RecipientWithAppointment } from './gmail.js';
+import { google as coreApiGoogle } from './coreApi.js';
 
+// Keep googleapis client for advanced operations (batchUpdate, spreadsheets.get)
+// that aren't yet supported by core-api
 let sheetsClient: ReturnType<typeof google.sheets> | null = null;
-let driveClient: ReturnType<typeof google.drive> | null = null;
 
 /**
- * Initialize Google Sheets API client with OAuth (same credentials as Gmail)
+ * Initialize Google Sheets API client for advanced operations
+ * (batchUpdate for cell formatting, spreadsheets.get for listing sheets)
  */
 async function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
@@ -37,32 +42,20 @@ async function getSheetsClient() {
   });
 
   sheetsClient = google.sheets({ version: 'v4', auth: oauth2Client });
-  driveClient = google.drive({ version: 'v3', auth: oauth2Client });
 
   return sheetsClient;
 }
 
-async function getDriveClient() {
-  if (!driveClient) {
-    await getSheetsClient(); // This initializes both
-  }
-  return driveClient!;
-}
-
 /**
- * Safely share a sheet with anyone who has the link.
+ * Safely share a sheet with anyone who has the link via core-api.
  * If sharing fails (e.g., due to workspace restrictions), logs a warning but continues.
  * @returns true if sharing succeeded, false if it failed
  */
 async function safeShareSheet(spreadsheetId: string): Promise<boolean> {
   try {
-    const drive = await getDriveClient();
-    await drive.permissions.create({
-      fileId: spreadsheetId,
-      requestBody: {
-        role: 'writer',
-        type: 'anyone',
-      },
+    await coreApiGoogle.drive.shareFile(spreadsheetId, {
+      role: 'writer',
+      type: 'anyone',
     });
     return true;
   } catch (error) {

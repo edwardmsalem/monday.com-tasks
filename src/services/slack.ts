@@ -5,7 +5,10 @@ import { SLACK_RELEASE_DELAY_MS } from '../config/constants.js';
 import type { SlackMessage } from '../types/index.js';
 import * as monday from './monday.js';
 import { slackCircuit } from './circuitBreaker.js';
+import { slack as coreApiSlack } from './coreApi.js';
 
+// Keep WebClient for advanced features not yet in core-api
+// (conversations.replies, auth.test, conversations.open, chat.delete, etc.)
 let slackClient: WebClient | null = null;
 
 export function getClient(): WebClient {
@@ -359,18 +362,19 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   const fallbackText = `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
 
   // Wrapped in circuit breaker to prevent cascading failures (TD-05)
-  const response: ChatPostMessageResponse = await slackCircuit.execute(() =>
-    client.chat.postMessage({
+  // Use core-api for posting messages
+  const response = await slackCircuit.execute(() =>
+    coreApiSlack.postMessage({
       channel: config.slack.channelId,
       text: fallbackText,
       blocks,
-      unfurl_links: false,
-      unfurl_media: false,
+      unfurlLinks: false,
+      unfurlMedia: false,
     })
   );
 
   if (!response.ok || !response.ts) {
-    throw new Error(`Failed to send Slack message: ${response.error}`);
+    throw new Error(`Failed to send Slack message`);
   }
 
   const slackMessage: SlackMessageWithDeferred = {
@@ -424,7 +428,7 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
 }
 
 /**
- * Upload a file to a Slack thread
+ * Upload a file to a Slack thread via core-api
  * Wrapped in circuit breaker (TD-05)
  * @param threadTs - Thread timestamp to upload to
  * @param filename - Name of the file
@@ -439,32 +443,29 @@ export async function uploadFileToThread(
   title?: string,
   channelId?: string
 ): Promise<void> {
-  const client = getClient();
   const channel = channelId || config.slack.channelId;
 
   await slackCircuit.execute(() =>
-    client.filesUploadV2({
-      channel_id: channel,
-      thread_ts: threadTs,
+    coreApiSlack.uploadFile({
+      channel,
+      threadTs,
       filename,
-      file: fileBuffer,
+      fileData: fileBuffer.toString('base64'),
       title: title || filename,
     })
   );
 }
 
 /**
- * Find a Slack user by email
+ * Find a Slack user by email via core-api
  * Wrapped in circuit breaker (TD-05)
  */
 export async function findUserByEmail(email: string): Promise<string | null> {
-  const client = getClient();
-
   try {
     const response = await slackCircuit.execute(() =>
-      client.users.lookupByEmail({ email })
+      coreApiSlack.lookupUserByEmail(email)
     );
-    return response.user?.id ?? null;
+    return (response.user as any)?.id ?? null;
   } catch (error) {
     // User not found (or circuit open)
     console.warn(`Slack user not found for email: ${email}`);
@@ -503,22 +504,21 @@ export interface SlackUser {
 }
 
 /**
- * Fetch all users from Slack workspace
+ * Fetch all users from Slack workspace via core-api
  */
 export async function getAllUsers(): Promise<SlackUser[]> {
-  const client = getClient();
   const users: SlackUser[] = [];
 
   let cursor: string | undefined;
 
   do {
-    const response = await client.users.list({
+    const response = await coreApiSlack.listUsers({
       limit: 200,
       cursor,
     });
 
     if (response.members) {
-      for (const member of response.members) {
+      for (const member of response.members as any[]) {
         // Skip bots and deleted users
         if (member.is_bot || member.deleted || !member.id) continue;
 
@@ -544,13 +544,11 @@ export interface ReminderInput {
 }
 
 /**
- * Set a Slack reminder for a user on the due date
+ * Set a Slack reminder for a user on the due date via core-api
  *
  * The reminder will trigger at 9am on the due date
  */
 export async function setReminder(input: ReminderInput): Promise<boolean> {
-  const client = getClient();
-
   try {
     // Parse the due date and set reminder for 9am
     const [year, month, day] = input.dueDate.split('-').map(Number);
@@ -565,8 +563,8 @@ export async function setReminder(input: ReminderInput): Promise<boolean> {
       return false;
     }
 
-    await client.reminders.add({
-      user: input.userId,
+    await coreApiSlack.setReminder({
+      userId: input.userId,
       text: input.text,
       time: timestamp,
     });
@@ -581,7 +579,7 @@ export async function setReminder(input: ReminderInput): Promise<boolean> {
 }
 
 /**
- * Post a message to an existing thread
+ * Post a message to an existing thread via core-api
  * Wrapped in circuit breaker (TD-05)
  * @param threadTs - Thread timestamp to reply to
  * @param text - Message text
@@ -594,22 +592,21 @@ export async function postToThread(
   channelId?: string,
   blocks?: any[]
 ): Promise<SlackMessage> {
-  const client = getClient();
   const channel = channelId || config.slack.channelId;
 
   const response = await slackCircuit.execute(() =>
-    client.chat.postMessage({
+    coreApiSlack.postMessage({
       channel,
-      thread_ts: threadTs,
+      threadTs,
       text,
       blocks,
-      unfurl_links: false,
-      unfurl_media: false,
+      unfurlLinks: false,
+      unfurlMedia: false,
     })
   );
 
   if (!response.ok || !response.ts) {
-    throw new Error(`Failed to post to Slack thread: ${response.error}`);
+    throw new Error(`Failed to post to Slack thread`);
   }
 
   return {
@@ -619,7 +616,7 @@ export async function postToThread(
 }
 
 /**
- * Add a reaction to a message
+ * Add a reaction to a message via core-api
  * Wrapped in circuit breaker (TD-05)
  */
 export async function addReaction(
@@ -627,15 +624,14 @@ export async function addReaction(
   emoji: string,
   channelId?: string
 ): Promise<void> {
-  const client = getClient();
   const channel = channelId || config.slack.channelId;
 
   try {
     await slackCircuit.execute(() =>
-      client.reactions.add({
+      coreApiSlack.addReaction({
         channel,
-        timestamp: messageTs,
-        name: emoji,
+        ts: messageTs,
+        emoji,
       })
     );
   } catch (error) {
@@ -645,21 +641,19 @@ export async function addReaction(
 }
 
 /**
- * Remove a reaction from a message
+ * Remove a reaction from a message via core-api
  * Wrapped in circuit breaker (TD-05)
  */
 export async function removeReaction(
   messageTs: string,
   emoji: string
 ): Promise<void> {
-  const client = getClient();
-
   try {
     await slackCircuit.execute(() =>
-      client.reactions.remove({
+      coreApiSlack.removeReaction({
         channel: config.slack.channelId,
-        timestamp: messageTs,
-        name: emoji,
+        ts: messageTs,
+        emoji,
       })
     );
   } catch (error) {

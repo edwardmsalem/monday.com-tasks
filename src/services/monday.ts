@@ -1,63 +1,18 @@
 import { config } from '../config/environment.js';
-import { MONDAY_API_TIMEOUT_MS, RETRY_DELAYS_MS, MAX_RETRY_ATTEMPTS } from '../config/constants.js';
+import { RETRY_DELAYS_MS, MAX_RETRY_ATTEMPTS } from '../config/constants.js';
 import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
-import FormData from 'form-data';
 import { mondayCircuit } from './circuitBreaker.js';
 import { addJob, registerProcessor } from './jobQueue.js';
-
-const MONDAY_API_URL = 'https://api.monday.com/v2';
-const MONDAY_FILE_URL = 'https://api.monday.com/v2/file';
-
-interface MondayGraphQLResponse<T> {
-  data?: T;
-  errors?: Array<{ message: string }>;
-}
+import { monday as coreApiMonday } from './coreApi.js';
 
 /**
- * Execute a GraphQL query against the Monday.com API
- * Includes timeout to prevent hanging requests (QW-03)
+ * Execute a GraphQL query against the Monday.com API via core-api
  * Wrapped in circuit breaker to prevent cascading failures (TD-05)
  */
 async function executeQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   return mondayCircuit.execute(async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), MONDAY_API_TIMEOUT_MS);
-
-    try {
-      const response = await fetch(MONDAY_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': config.monday.apiToken,
-          'API-Version': '2024-10',
-        },
-        body: JSON.stringify({ query, variables }),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
-      }
-
-      const result = (await response.json()) as MondayGraphQLResponse<T>;
-
-      if (result.errors && result.errors.length > 0) {
-        throw new Error(`Monday GraphQL error: ${result.errors.map(e => e.message).join(', ')}`);
-      }
-
-      if (!result.data) {
-        throw new Error('Monday API returned no data');
-      }
-
-      return result.data;
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Monday API timeout after ${MONDAY_API_TIMEOUT_MS}ms`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    const result = await coreApiMonday.query(query, variables);
+    return result as T;
   });
 }
 
@@ -290,70 +245,23 @@ export async function addSupporter(itemId: string, supporterMondayId: number): P
 }
 
 /**
- * Upload a file to an item's file column
- * Uses Monday's /v2/file endpoint with proper multipart format
- *
- * Key requirements (per Monday.com docs):
- * - item_id and column_id must be inlined in the mutation
- * - Only $file is passed as a variable
- * - File data uses variables[file] format
- * - Uses form.getHeaders() to ensure correct Content-Type with boundary
+ * Upload a file to an item's file column via core-api
+ * Wrapped in circuit breaker to prevent cascading failures (TD-05)
  */
 export async function uploadFileToItem(
   itemId: string,
   filename: string,
   fileData: Buffer
 ): Promise<void> {
-  // Monday.com file upload requires item_id and column_id inlined in mutation
-  // Only $file is passed as a variable (per Monday docs)
-  const query = `mutation ($file: File!) {
-    add_file_to_column(item_id: ${itemId}, column_id: "${config.monday.fileColumnId}", file: $file) {
-      id
-    }
-  }`;
-
-  const form = new FormData();
-  form.append('query', query);
-  // Use variables[file] format as per Monday.com documentation
-  form.append('variables[file]', fileData, { filename, contentType: 'application/pdf' });
-
-  // Merge FormData headers (includes correct Content-Type with boundary)
-  // Wrapped in circuit breaker to prevent cascading failures (TD-05)
   await mondayCircuit.execute(async () => {
-    const response = await fetch(MONDAY_FILE_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: config.monday.apiToken,
-        'API-Version': '2024-10',  // Use latest stable API version
-        ...form.getHeaders(),
-      },
-      body: form as unknown as BodyInit,
+    console.log('Uploading file to Monday item via core-api:', itemId, filename);
+    const result = await coreApiMonday.uploadFileToItem({
+      itemId,
+      columnId: config.monday.fileColumnId,
+      filename,
+      fileData: fileData.toString('base64'),
     });
-
-    const responseText = await response.text();
-    console.log('Monday file upload response:', response.status, responseText);
-
-    if (!response.ok) {
-      throw new Error(`Monday file upload error: ${response.status} - ${responseText}`);
-    }
-
-    // Check for GraphQL errors in successful response
-    try {
-      const result = JSON.parse(responseText);
-      if (result.errors && result.errors.length > 0) {
-        throw new Error(`Monday file upload GraphQL error: ${result.errors[0].message}`);
-      }
-      if (!result.data?.add_file_to_column?.id) {
-        throw new Error('Monday file upload returned no file ID');
-      }
-      console.log('Monday file uploaded successfully, file ID:', result.data.add_file_to_column.id);
-    } catch (e) {
-      if (e instanceof Error && e.message.includes('Monday file upload')) {
-        throw e;
-      }
-      // If JSON parse fails but response was 200, that's unusual but not fatal
-      console.warn('Could not parse Monday file upload response:', e);
-    }
+    console.log('Monday file uploaded successfully, file ID:', result.id);
   });
 }
 
@@ -615,43 +523,19 @@ export async function createUpdate(itemId: string, body: string): Promise<string
 }
 
 /**
- * Add a file to an existing Monday update (comment)
- * Uses multipart form upload with form-data compatible approach
+ * Add a file to an existing Monday update (comment) via core-api
  */
 export async function addFileToUpdate(
   updateId: string,
   fileBuffer: Buffer,
   filename: string
 ): Promise<void> {
-  // Dynamic import of form-data for Node.js compatibility
-  const FormData = (await import('form-data')).default;
-
-  const query = `mutation AddFileToUpdate($updateId: ID!) { add_file_to_update(update_id: $updateId, file: "file") { id } }`;
-
-  const form = new FormData();
-  form.append('query', query);
-  form.append('variables', JSON.stringify({ updateId }));
-  form.append('file', fileBuffer, { filename });
-
-  const response = await fetch('https://api.monday.com/v2/file', {
-    method: 'POST',
-    headers: {
-      Authorization: config.monday.apiToken,
-      ...form.getHeaders(),
-    },
-    body: form as unknown as BodyInit,
+  console.log('Uploading file to Monday update via core-api:', updateId, filename);
+  await coreApiMonday.uploadFileToUpdate({
+    updateId,
+    filename,
+    fileData: fileBuffer.toString('base64'),
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Monday file upload failed: ${response.status} - ${text}`);
-  }
-
-  const result = await response.json() as { errors?: unknown[] };
-  if (result.errors) {
-    throw new Error(`Monday file upload error: ${JSON.stringify(result.errors)}`);
-  }
-
   console.log(`Uploaded file ${filename} to Monday update ${updateId}`);
 }
 
@@ -693,13 +577,10 @@ export async function getUpdateAssets(updateId: string): Promise<MondayFileAsset
 
 /**
  * Download a file from Monday.com
+ * Note: Monday file URLs are typically public with auth embedded, so direct fetch works
  */
 export async function downloadFile(url: string): Promise<Buffer> {
-  const response = await fetch(url, {
-    headers: {
-      Authorization: config.monday.apiToken,
-    },
-  });
+  const response = await fetch(url);
 
   if (!response.ok) {
     throw new Error(`Failed to download Monday file: ${response.status}`);
