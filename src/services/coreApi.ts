@@ -635,10 +635,10 @@ export const sms = {
 };
 
 // ============================================
-// Config (channel/board IDs)
+// Config (channel/board IDs from core-api)
 // ============================================
 
-export async function getConfig(): Promise<{
+export interface CoreConfig {
   slack: {
     channels: Record<string, string>;
     users: Record<string, string>;
@@ -646,8 +646,48 @@ export async function getConfig(): Promise<{
   monday: {
     boards: Record<string, string>;
   };
-}> {
-  return coreApiRequest('/config', { method: 'GET' });
+  google: {
+    sheets: Record<string, string>;
+  };
 }
 
-export default { slack, claude, monday, google, sms, convertApi, getConfig };
+let cachedConfig: CoreConfig | null = null;
+
+/**
+ * Fetch config from core-api (channels, boards, sheets)
+ * Results are cached after first fetch
+ */
+export async function getConfig(): Promise<CoreConfig> {
+  if (cachedConfig) {
+    return cachedConfig;
+  }
+  cachedConfig = await coreApiRequest<CoreConfig>('/config', { method: 'GET' });
+  return cachedConfig;
+}
+
+/**
+ * Get cached config synchronously (must call initConfig first)
+ * Throws if config not initialized
+ */
+export function getCachedConfig(): CoreConfig {
+  if (!cachedConfig) {
+    throw new Error('Config not initialized. Call initConfig() at startup.');
+  }
+  return cachedConfig;
+}
+
+/**
+ * Initialize config at startup - call this before server starts
+ */
+export async function initConfig(): Promise<CoreConfig> {
+  console.log('[coreApi] Fetching config from core-api...');
+  const config = await getConfig();
+  console.log('[coreApi] Config loaded:', {
+    slackChannels: Object.keys(config.slack.channels).length,
+    mondayBoards: Object.keys(config.monday.boards).length,
+    googleSheets: Object.keys(config.google.sheets).length,
+  });
+  return config;
+}
+
+export default { slack, claude, monday, google, sms, convertApi, getConfig, getCachedConfig, initConfig };

@@ -12,7 +12,7 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 
 // ============================================================================
 // Configuration
@@ -127,7 +127,7 @@ async function getTasksToMigrate(): Promise<TaskToMigrate[]> {
     },
     body: JSON.stringify({
       query,
-      variables: { boardId: config.monday.boardId },
+      variables: { boardId: configCompat.monday.boardId },
     }),
   });
 
@@ -174,7 +174,7 @@ async function getTasksToMigrate(): Promise<TaskToMigrate[]> {
       [slackChannelId, slackThreadTs] = slackThreadValue.split(':');
     } else {
       slackThreadTs = slackThreadValue;
-      slackChannelId = config.slack.channelId;
+      slackChannelId = configCompat.slack.channelId;
     }
 
     const createdAt = new Date(item.created_at);

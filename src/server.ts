@@ -16,7 +16,7 @@
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { randomUUID } from 'crypto';
-import { config, validateConfig } from './config/environment.js';
+import { config, configCompat, validateConfig, initRemoteConfig } from './config/environment.js';
 import {
   executeAISlackTaskWorkflowSafe,
 } from './workflow.js';
@@ -382,7 +382,7 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
       });
 
       const mondayUrl = monday.getItemUrl(result.mondayItemId);
-      const slackThreadUrl = `https://slack.com/archives/${config.slack.channelId}/p${result.slackThreadTs.replace('.', '')}`;
+      const slackThreadUrl = `https://slack.com/archives/${configCompat.slack.channelId}/p${result.slackThreadTs.replace('.', '')}`;
 
       // Post creator attribution to thread
       await slack.postToThread(
@@ -689,7 +689,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     console.log(`/issuecall command received from ${user_id}: ${text}`);
 
     // Check if issue call channel is configured
-    const issueCallChannelId = config.slack.issueCallChannelId;
+    const issueCallChannelId = configCompat.slack.issueCallChannelId;
     if (!issueCallChannelId) {
       res.json({
         response_type: 'ephemeral',
@@ -1756,7 +1756,11 @@ app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // Start the server
-function start() {
+async function start() {
+  // Load remote config from core-api first
+  console.log('Loading config from core-api...');
+  await initRemoteConfig();
+
   validateConfig();
 
   // Log sheets configuration for debugging
@@ -1797,6 +1801,9 @@ function start() {
   });
 }
 
-start();
+start().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
 
 export { app };

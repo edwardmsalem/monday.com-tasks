@@ -13,7 +13,7 @@
  * Completion in Todoist does NOT update Monday.
  */
 
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 
 const TODOIST_API_URL = 'https://api.todoist.com/rest/v2';
 
@@ -157,7 +157,7 @@ export async function projectFromMonday(params: {
   const content = `[${taskType}] ${taskName}`;
 
   // Build description with Monday link and notes
-  const mondayUrl = `https://salemseats.monday.com/boards/${config.monday.boardId}/pulses/${mondayItemId}`;
+  const mondayUrl = `https://salemseats.monday.com/boards/${configCompat.monday.boardId}/pulses/${mondayItemId}`;
   const description = [
     `📋 **Monday:** ${mondayUrl}`,
     `👤 **Owner:** ${owner}`,

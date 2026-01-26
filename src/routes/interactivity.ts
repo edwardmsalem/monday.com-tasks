@@ -12,7 +12,7 @@
 
 import { Router, Request, Response } from 'express';
 import { WebClient } from '@slack/web-api';
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import {

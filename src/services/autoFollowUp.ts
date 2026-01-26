@@ -9,7 +9,7 @@
  * Only sends during business hours (M-F 9am-5pm EST, excluding US holidays)
  */
 
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import * as slack from './slack.js';
 import * as monday from './monday.js';
 import { getAllUsers, type UnifiedUser } from './userResolver.js';
@@ -292,7 +292,7 @@ async function getOpenTasks(): Promise<TaskForFollowUp[]> {
     },
     body: JSON.stringify({
       query,
-      variables: { boardId: config.monday.boardId },
+      variables: { boardId: configCompat.monday.boardId },
     }),
   });
 
@@ -371,7 +371,7 @@ function getChannelForTask(task: TaskForFollowUp): string | undefined {
 
   // Fallback for legacy items without channel ID
   if (task.taskType.toLowerCase() === 'issue call') {
-    return config.slack.issueCallChannelId || undefined;
+    return configCompat.slack.issueCallChannelId || undefined;
   }
   return undefined; // Use default channel
 }

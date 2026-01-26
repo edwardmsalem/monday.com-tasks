@@ -48,7 +48,7 @@
  * Cache: 5 minutes TTL
  */
 
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import { SLACK_CONFIG_CACHE_TTL_MS } from '../config/constants.js';
 import { getClient } from './slack.js';
 import YAML from 'yaml';
@@ -115,7 +115,7 @@ function isCacheValid(lastFetched: number): boolean {
  */
 async function fetchPinnedMessages(): Promise<Array<{ text: string; ts: string }>> {
   const client = getClient();
-  const channelId = config.slack.controlChannelId;
+  const channelId = configCompat.slack.controlChannelId;
 
   if (!channelId) {
     console.warn('SLACK_CONTROL_CHANNEL_ID not configured');
@@ -410,7 +410,7 @@ export interface ConfigValidationResult {
  * Check if Slack control channel is configured
  */
 export function isControlChannelConfigured(): boolean {
-  return !!(config.slack.controlChannelId && config.slack.controlChannelId.length > 0);
+  return !!(configCompat.slack.controlChannelId && configCompat.slack.controlChannelId.length > 0);
 }
 
 /**

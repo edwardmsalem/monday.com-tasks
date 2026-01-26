@@ -8,7 +8,7 @@
  */
 
 import { google } from 'googleapis';
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import type { RecipientWithAppointment } from './gmail.js';
 import { google as coreApiGoogle } from './coreApi.js';
 
@@ -738,7 +738,7 @@ export function getSportFromTeam(teamName: string): Sport | undefined {
  * Get the spreadsheet ID for a sport
  */
 function getSpreadsheetIdForSport(sport: Sport): string | undefined {
-  return config.accountSheets[sport];
+  return configCompat.accountSheets[sport];
 }
 
 /**
@@ -749,7 +749,7 @@ export function logSheetsConfiguration(): void {
   console.log('[Sheets] === Account Sheets Configuration ===');
   const sports: Sport[] = ['mlb', 'nfl', 'nba', 'nhl', 'mls', 'ncaa', 'other'];
   for (const sport of sports) {
-    const id = config.accountSheets[sport];
+    const id = configCompat.accountSheets[sport];
     if (id) {
       console.log(`[Sheets]   ${sport.toUpperCase()}: ${id}`);
     } else {

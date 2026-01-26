@@ -7,7 +7,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import { getClient } from './slack.js';
 import * as blockKit from './blockKit.js';
 import * as digestState from './digestState.js';
@@ -126,7 +126,7 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
       },
       body: JSON.stringify({
         query,
-        variables: { boardId: config.monday.boardId },
+        variables: { boardId: configCompat.monday.boardId },
       }),
     });
 
@@ -199,7 +199,7 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
       // Parse Slack thread info
       const slackThreadRaw = getValue(config.monday.columns.slackThreadId);
       let slackThreadTs: string | null = null;
-      let channelId = config.slack.channelId;
+      let channelId = configCompat.slack.channelId;
 
       if (slackThreadRaw) {
         const parsed = monday.parseSlackThreadValue(slackThreadRaw);
@@ -1328,7 +1328,7 @@ async function fetchAllTasksForReport(): Promise<MondayTask[]> {
       },
       body: JSON.stringify({
         query,
-        variables: { boardId: config.monday.boardId },
+        variables: { boardId: configCompat.monday.boardId },
       }),
     });
 
@@ -1387,7 +1387,7 @@ async function fetchAllTasksForReport(): Promise<MondayTask[]> {
       // Parse Slack thread info
       const slackThreadRaw = getValue(config.monday.columns.slackThreadId);
       let slackThreadTs: string | null = null;
-      let channelId = config.slack.channelId;
+      let channelId = configCompat.slack.channelId;
       if (slackThreadRaw) {
         const parsed = monday.parseSlackThreadValue(slackThreadRaw);
         if (parsed) {

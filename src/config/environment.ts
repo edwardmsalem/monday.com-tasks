@@ -1,7 +1,11 @@
 /**
  * Environment configuration
- * Validates and exports all required environment variables
+ *
+ * LOCAL CONFIG: Service-specific settings (ports, feature flags, column IDs)
+ * REMOTE CONFIG: Shared IDs (channels, boards, sheets) fetched from core-api at startup
  */
+
+import { initConfig, getCachedConfig, type CoreConfig } from '../services/coreApi.js';
 
 function getEnvVar(name: string, defaultValue?: string): string {
   const value = process.env[name] ?? defaultValue;
@@ -44,9 +48,13 @@ function getAttachmentsMode(): AttachmentsMode {
   return 'both'; // default
 }
 
+// ============================================================================
+// Local Config (service-specific, loaded from env vars)
+// ============================================================================
+
 export const config = {
   // Server
-  port: getEnvVarNumber('PORT', 3000),
+  port: getEnvVarNumber('PORT', 8080),
 
   // Safety valves
   safetyValves: {
@@ -56,13 +64,12 @@ export const config = {
     attachmentsMode: getAttachmentsMode(),
   },
 
-  // Monday.com
+  // Monday.com - column IDs are service-specific (board schema)
+  // apiToken kept for legacy direct API calls (autoFollowUp, digest) until migrated
   monday: {
     apiToken: getEnvVar('MONDAY_API_TOKEN', ''),
-    boardId: getEnvVar('MONDAY_BOARD_ID', '18383923820'),
     fileColumnId: getEnvVar('MONDAY_FILE_COLUMN_ID', 'file_mkxv6aa0'),
     slackThreadColumnId: getEnvVar('MONDAY_SLACK_THREAD_COLUMN_ID', 'text_mkxxn3hz'),
-    boardUrl: getEnvVar('MONDAY_BOARD_URL', 'https://salemseats.monday.com/boards/18383923820'),
 
     // Column IDs from the board
     // LOCKED ARCHITECTURE: Columns = STATE + ROUTING only
@@ -83,135 +90,211 @@ export const config = {
       team: 'dropdown_mkyqe4we',              // Sports team
       file: 'file_mkxv6aa0',
       pdfUrl: 'text_mkythpzx',                // Durable PDF URL for retries
-      // REMOVED: from, to, notes, slackLink - narrative belongs in Updates
     },
   },
 
-  // Slack
+  // Slack - business logic config (quiet hours, permissions)
   slack: {
-    botToken: getEnvVar('SLACK_BOT_TOKEN', ''),
-    channelId: getEnvVar('SLACK_CHANNEL_ID', ''),  // Main task notification channel (required for main server)
+    // Credentials (still needed for WebClient until fully migrated to core-api)
+    botToken: getEnvVarOptional('SLACK_BOT_TOKEN'),
     signingSecret: getEnvVarOptional('SLACK_SIGNING_SECRET'),
     // After-hours behavior (nights + weekends)
-    // Tasks created after-hours are created quietly (no pings), then released at business start
     quietHours: {
       enabled: getEnvVarBool('SLACK_QUIET_HOURS_ENABLED', true),
-      onCallUserId: getEnvVar('SLACK_ON_CALL_USER_ID', ''),  // On-call user for after-hours/weekend routing
       timezone: getEnvVar('SLACK_TIMEZONE', 'America/New_York'),
-      workingHoursStart: getEnvVarNumber('SLACK_WORKING_HOURS_START', 8),   // 8:00 AM ET
-      workingHoursEnd: getEnvVarNumber('SLACK_WORKING_HOURS_END', 20),      // 8:00 PM ET (20:00)
-      releaseHour: getEnvVarNumber('SLACK_RELEASE_HOUR', 8),                // 8:00 AM - ping deferred tasks
-      ackDeadlineHour: getEnvVarNumber('SLACK_ACK_DEADLINE_HOUR', 11),      // 11:00 AM - follow up if no 👀
+      workingHoursStart: getEnvVarNumber('SLACK_WORKING_HOURS_START', 8),
+      workingHoursEnd: getEnvVarNumber('SLACK_WORKING_HOURS_END', 20),
+      releaseHour: getEnvVarNumber('SLACK_RELEASE_HOUR', 8),
+      ackDeadlineHour: getEnvVarNumber('SLACK_ACK_DEADLINE_HOUR', 11),
     },
     // /task command permissions
     taskCommandWhitelist: getEnvVar('SLACK_TASK_COMMAND_WHITELIST', '')
       .split(',')
       .map(id => id.trim())
-      .filter(id => id.length > 0),  // Comma-separated Slack user IDs
+      .filter(id => id.length > 0),
     // Users who can set Owner to someone other than themselves
-    // Everyone else: Owner = task creator (Support can be set by anyone)
     ownerOverrideUserIds: getEnvVar('SLACK_OWNER_OVERRIDE_USER_IDS', '')
       .split(',')
       .map(id => id.trim())
-      .filter(id => id.length > 0),  // Comma-separated Slack user IDs
-    // Control channel for pinned config (Owners map, Sheets registry)
-    controlChannelId: getEnvVar('SLACK_CONTROL_CHANNEL_ID', 'C0A4TMWDZJA'),
-    // Allowed channels for /seasontask command (QW-06: moved from hardcoded)
-    seasontaskAllowedChannels: getEnvVar('SLACK_SEASONTASK_ALLOWED_CHANNELS', 'C06BSL06WJK,C08QCFC4Y0H')
+      .filter(id => id.length > 0),
+    // Allowed channels for /seasontask command
+    seasontaskAllowedChannels: getEnvVar('SLACK_SEASONTASK_ALLOWED_CHANNELS', '')
       .split(',')
       .map(id => id.trim())
       .filter(id => id.length > 0),
-    // Issue Call channel - separate channel for issue call tasks (syncs to Monday)
-    issueCallChannelId: getEnvVarOptional('SLACK_ISSUE_CALL_CHANNEL_ID'),
   },
 
   // Slack Relay (for receiving events via relay proxy)
   relay: {
-    apiKey: getEnvVarOptional('RELAY_API_KEY'),  // Must match core-api's CORE_API_KEY
+    apiKey: getEnvVarOptional('RELAY_API_KEY'),
   },
 
-  // Core API (centralized gateway for Monday, ConvertAPI, some Slack/Google operations)
+  // Core API (centralized gateway)
   coreApi: {
-    url: getEnvVar('CORE_API_URL', 'http://core-api.railway.internal'),
+    url: getEnvVar('CORE_API_URL', 'http://core-api.railway.internal:8080'),
     apiKey: getEnvVarOptional('CORE_API_KEY'),
   },
 
-  // ConvertAPI (legacy - now proxied through core-api)
-  convertApi: {
-    secret: getEnvVar('CONVERTAPI_SECRET', ''),
-  },
-
-  // Anthropic (Claude AI)
-  anthropic: {
-    apiKey: getEnvVar('ANTHROPIC_API_KEY', ''),
-  },
-
-  // Google (Gmail API, Calendar, and future Sheets read)
-  // Supports TWO auth modes (use whichever is configured, prefers Service Account):
-  //   A) Service Account: GOOGLE_SERVICE_ACCOUNT_KEY (base64 JSON)
-  //   B) OAuth User: GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REFRESH_TOKEN
+  // Google - credentials still needed for direct API calls until fully migrated
   google: {
-    enabled: getEnvVar('GOOGLE_CALENDAR_ENABLED', 'false') === 'true',
+    enabled: getEnvVarBool('GOOGLE_CALENDAR_ENABLED', false),
     calendarId: getEnvVar('GOOGLE_CALENDAR_ID', 'primary'),
     timeZone: getEnvVar('GOOGLE_CALENDAR_TIMEZONE', 'America/New_York'),
-    // Forwarding inbox email for /scan feature
     forwardingEmail: getEnvVar('GOOGLE_FORWARDING_EMAIL', 'forwarding@salemseats.com'),
-    // Auth Mode A: Service Account (recommended - base64 encoded JSON key)
     serviceAccountKey: getEnvVarOptional('GOOGLE_SERVICE_ACCOUNT_KEY'),
-    // Auth Mode B: OAuth User (reads as a workspace user with existing access)
     clientId: getEnvVarOptional('GOOGLE_CLIENT_ID'),
     clientSecret: getEnvVarOptional('GOOGLE_CLIENT_SECRET'),
     refreshToken: getEnvVarOptional('GOOGLE_REFRESH_TOKEN'),
   },
 
-  // Todoist integration (feature-flagged, projection only in v1)
+  // ConvertAPI - kept for validation checks (actual calls go through core-api)
+  convertApi: {
+    secret: getEnvVarOptional('CONVERTAPI_SECRET'),
+  },
+
+  // Anthropic - kept for validation checks (actual calls go through core-api)
+  anthropic: {
+    apiKey: getEnvVarOptional('ANTHROPIC_API_KEY'),
+  },
+
+  // Todoist integration (feature-flagged)
   todoist: {
     enabled: getEnvVarBool('ENABLE_TODOIST_SYNC', false),
     apiToken: getEnvVarOptional('TODOIST_API_TOKEN'),
   },
 
-  // Google Sheets - Account lookup by sport/team
-  // Each sport has its own workbook with a sheet per team
-  accountSheets: {
-    mlb: getEnvVarOptional('SHEETS_MLB_ID'),       // MLB workbook spreadsheet ID
-    nfl: getEnvVarOptional('SHEETS_NFL_ID'),       // NFL workbook spreadsheet ID
-    nba: getEnvVarOptional('SHEETS_NBA_ID'),       // NBA workbook spreadsheet ID
-    wnba: getEnvVarOptional('SHEETS_WNBA_ID'),     // WNBA workbook spreadsheet ID
-    nhl: getEnvVarOptional('SHEETS_NHL_ID'),       // NHL workbook spreadsheet ID
-    mls: getEnvVarOptional('SHEETS_MLS_ID'),       // MLS workbook spreadsheet ID
-    ncaa: getEnvVarOptional('SHEETS_NCAA_ID'),     // NCAA workbook spreadsheet ID (college)
-    other: getEnvVarOptional('SHEETS_OTHER_ID'),   // Other events workbook
-  },
-
   // Presale Scanner Configuration
   presale: {
-    slackChannel: getEnvVar('SLACK_PRESALE_CHANNEL', ''),
-    operationsChannel: getEnvVar('SLACK_OPERATIONS_CHANNEL', ''),  // Channel for "Interested" notifications
     scanIntervalMs: 60 * 60 * 1000, // 1 hour
     lookbackMinutes: 60,
     sportsLabelPrefixes: ['NBA/', 'MLB/', 'NFL/', 'NHL/', 'MLS/', 'NCAA/'],
   },
 } as const;
 
+// ============================================================================
+// Remote Config (shared IDs from core-api)
+// ============================================================================
+
+let remoteConfig: CoreConfig | null = null;
+
+/**
+ * Get remote config (channels, boards, sheets from core-api)
+ * Must call initRemoteConfig() at startup first
+ */
+export function getRemoteConfig(): CoreConfig {
+  if (!remoteConfig) {
+    throw new Error('Remote config not initialized. Call initRemoteConfig() at startup.');
+  }
+  return remoteConfig;
+}
+
+/**
+ * Initialize remote config from core-api
+ * Call this at server startup before handling requests
+ */
+export async function initRemoteConfig(): Promise<void> {
+  remoteConfig = await initConfig();
+}
+
+// Convenience accessors for common remote config values
+export const remote = {
+  get slack() {
+    return getRemoteConfig().slack;
+  },
+  get monday() {
+    return getRemoteConfig().monday;
+  },
+  get google() {
+    return getRemoteConfig().google;
+  },
+};
+
+// ============================================================================
+// Backward-compatible accessors (reads from remote config)
+// These allow existing code to work without changes
+// ============================================================================
+
+export const configCompat = {
+  slack: {
+    get channelId() {
+      return getRemoteConfig().slack.channels.seasonTicketAdmin;
+    },
+    get issueCallChannelId() {
+      return getRemoteConfig().slack.channels.issueCall;
+    },
+    get controlChannelId() {
+      return getRemoteConfig().slack.channels.control;
+    },
+    get presaleChannel() {
+      return getRemoteConfig().slack.channels.presales;
+    },
+    get operationsChannel() {
+      return getRemoteConfig().slack.channels.operations;
+    },
+    get supporterPrimaryChannel() {
+      return getRemoteConfig().slack.channels.supporterPrimary;
+    },
+    get supporterSecondaryChannels() {
+      const val = getRemoteConfig().slack.channels.supporterSecondary;
+      return val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+    },
+  },
+  monday: {
+    get boardId() {
+      return getRemoteConfig().monday.boards.seasonTicketTasks;
+    },
+    get boardUrl() {
+      const boardId = getRemoteConfig().monday.boards.seasonTicketTasks;
+      return `https://salemseats.monday.com/boards/${boardId}`;
+    },
+  },
+  accountSheets: {
+    get mlb() { return getRemoteConfig().google.sheets.mlb; },
+    get nfl() { return getRemoteConfig().google.sheets.nfl; },
+    get nba() { return getRemoteConfig().google.sheets.nba; },
+    get wnba() { return getRemoteConfig().google.sheets.wnba; },
+    get nhl() { return getRemoteConfig().google.sheets.nhl; },
+    get mls() { return getRemoteConfig().google.sheets.mls; },
+    get ncaa() { return getRemoteConfig().google.sheets.ncaa; },
+    get other() { return getRemoteConfig().google.sheets.other; },
+  },
+  presale: {
+    get slackChannel() {
+      return getRemoteConfig().slack.channels.presales;
+    },
+    get operationsChannel() {
+      return getRemoteConfig().slack.channels.operations;
+    },
+  },
+};
+
 /**
  * Validate that all required config is present
- * Call this at startup
+ * Call this at startup AFTER initRemoteConfig()
  */
 export function validateConfig(): void {
   const missing: string[] = [];
 
-  // Core API is required for Monday, ConvertAPI, and some Slack operations
+  // Core API is required
   if (!config.coreApi.url) missing.push('CORE_API_URL');
   if (!config.coreApi.apiKey) missing.push('CORE_API_KEY');
-
-  // Still needed directly (partial migration)
-  if (!config.slack.botToken) missing.push('SLACK_BOT_TOKEN');
-  if (!config.slack.channelId) missing.push('SLACK_CHANNEL_ID');
-  if (!config.anthropic.apiKey) missing.push('ANTHROPIC_API_KEY');
 
   if (missing.length > 0) {
     console.warn(`Warning: Missing environment variables: ${missing.join(', ')}`);
     console.warn('Some features may not work correctly.');
+  }
+
+  // Validate remote config is loaded
+  try {
+    const rc = getRemoteConfig();
+    if (!rc.slack.channels.seasonTicketAdmin) {
+      console.warn('Warning: SLACK_CHANNEL_SEASON_TICKET_ADMIN not set in core-api');
+    }
+    if (!rc.monday.boards.seasonTicketTasks) {
+      console.warn('Warning: MONDAY_BOARD_SEASON_TICKET_TASKS not set in core-api');
+    }
+  } catch {
+    console.error('ERROR: Remote config not loaded. Call initRemoteConfig() first.');
   }
 
   // Log safety valve status

@@ -16,7 +16,7 @@
 
 import { google } from 'googleapis';
 import type { gmail_v1 } from 'googleapis';
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import { gmailCircuit, slackCircuit } from './circuitBreaker.js';
 import { getClient as getSlackClient } from './slack.js';
 import {
@@ -673,7 +673,7 @@ async function postPresaleToSlack(
   exclusivity: ExclusivityCheckResult
 ): Promise<string> {
   const slack = getSlackClient();
-  const channelId = config.presale.slackChannel;
+  const channelId = configCompat.presale.slackChannel;
 
   if (!channelId) {
     throw new Error('SLACK_PRESALE_CHANNEL not configured');

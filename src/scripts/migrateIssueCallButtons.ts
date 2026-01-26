@@ -15,7 +15,7 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import * as monday from '../services/monday.js';
 
 // ============================================================================
@@ -25,7 +25,7 @@ import * as monday from '../services/monday.js';
 const SLACK_CLIENT = new WebClient(config.slack.botToken);
 
 // Issue call channel ID
-const ISSUE_CALL_CHANNEL_ID = config.slack.issueCallChannelId;
+const ISSUE_CALL_CHANNEL_ID = configCompat.slack.issueCallChannelId;
 
 // Skip messages older than this
 const MAX_AGE_DAYS = 60;

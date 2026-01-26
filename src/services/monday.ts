@@ -1,4 +1,4 @@
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import { RETRY_DELAYS_MS, MAX_RETRY_ATTEMPTS } from '../config/constants.js';
 import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
 import { mondayCircuit } from './circuitBreaker.js';
@@ -81,7 +81,7 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
   `;
 
   const result = await executeQuery<{ create_item: MondayItem }>(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemName: input.name,
     columnValues: JSON.stringify(columnValues),
   });
@@ -92,7 +92,7 @@ export async function createItem(input: CreateItemInput): Promise<MondayItem> {
 /**
  * Slack thread info stored in Monday
  * Format in column: "channelId:threadTs" (e.g., "C123ABC:1234567890.123456")
- * Legacy format (threadTs only) defaults to config.slack.channelId
+ * Legacy format (threadTs only) defaults to configCompat.slack.channelId
  */
 export interface SlackThreadInfo {
   channelId: string;
@@ -117,7 +117,7 @@ export function parseSlackThreadValue(value: string | null): SlackThreadInfo | n
 
   // Legacy format: just threadTs, default to main channel
   return {
-    channelId: config.slack.channelId,
+    channelId: configCompat.slack.channelId,
     threadTs: value,
   };
 }
@@ -147,11 +147,11 @@ export async function updateSlackThreadId(itemId: string, threadTs: string, chan
   `;
 
   // Store with channel ID if provided, otherwise use main channel
-  const channel = channelId || config.slack.channelId;
+  const channel = channelId || configCompat.slack.channelId;
   const value = formatSlackThreadValue(channel, threadTs);
 
   await executeQuery(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       [config.monday.columns.slackThreadId]: value,
@@ -194,7 +194,7 @@ export async function addSupporter(itemId: string, supporterMondayId: number): P
   }
 
   const getResult = await executeQuery<GetItemResponse>(getQuery, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
   });
 
@@ -234,7 +234,7 @@ export async function addSupporter(itemId: string, supporterMondayId: number): P
   `;
 
   await executeQuery(updateQuery, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       [config.monday.columns.support]: { personsAndTeams: newSupporters },
@@ -311,7 +311,7 @@ export async function findUserByEmail(email: string): Promise<MondayUser | null>
  * Generate the URL to view an item in Monday.com
  */
 export function getItemUrl(itemId: string): string {
-  return `${config.monday.boardUrl}/pulses/${itemId}`;
+  return `${configCompat.monday.boardUrl}/pulses/${itemId}`;
 }
 
 /**
@@ -358,7 +358,7 @@ export async function findItemBySlackThread(slackThreadTs: string, channelId?: s
       const result = await executeQuery<{
         items_page_by_column_values: { items: Array<{ id: string }> };
       }>(query, {
-        boardId: config.monday.boardId,
+        boardId: configCompat.monday.boardId,
         columnId: config.monday.columns.slackThreadId,
         value: newFormatValue,
       });
@@ -372,7 +372,7 @@ export async function findItemBySlackThread(slackThreadTs: string, channelId?: s
     const legacyResult = await executeQuery<{
       items_page_by_column_values: { items: Array<{ id: string }> };
     }>(query, {
-      boardId: config.monday.boardId,
+      boardId: configCompat.monday.boardId,
       columnId: config.monday.columns.slackThreadId,
       value: slackThreadTs,
     });
@@ -382,11 +382,11 @@ export async function findItemBySlackThread(slackThreadTs: string, channelId?: s
     }
 
     // Also try with main channel format for backwards compatibility
-    const mainChannelValue = formatSlackThreadValue(config.slack.channelId, slackThreadTs);
+    const mainChannelValue = formatSlackThreadValue(configCompat.slack.channelId, slackThreadTs);
     const mainChannelResult = await executeQuery<{
       items_page_by_column_values: { items: Array<{ id: string }> };
     }>(query, {
-      boardId: config.monday.boardId,
+      boardId: configCompat.monday.boardId,
       columnId: config.monday.columns.slackThreadId,
       value: mainChannelValue,
     });
@@ -608,7 +608,7 @@ export async function updateWorkflowStatus(itemId: string, status: string): Prom
   `;
 
   await executeQuery(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       [config.monday.columns.workflowStatus]: { label: status },
@@ -633,7 +633,7 @@ export async function updateDueDate(itemId: string, date: string): Promise<void>
   `;
 
   await executeQuery(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       [config.monday.columns.date]: { date },
@@ -658,7 +658,7 @@ export async function updateItemName(itemId: string, newName: string): Promise<v
   `;
 
   await executeQuery(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       name: newName,
@@ -683,7 +683,7 @@ export async function updateTeam(itemId: string, team: string): Promise<void> {
   `;
 
   await executeQuery(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       [config.monday.columns.team]: { labels: [team] },
@@ -709,7 +709,7 @@ export async function updateType(itemId: string, taskType: string): Promise<void
   `;
 
   await executeQuery(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       [config.monday.columns.type]: { label: taskType },
@@ -1119,7 +1119,7 @@ export async function storePdfUrl(itemId: string, pdfUrl: string): Promise<void>
 
   try {
     await executeQuery(query, {
-      boardId: config.monday.boardId,
+      boardId: configCompat.monday.boardId,
       itemId,
       columnValues: JSON.stringify({
         [config.monday.columns.pdfUrl]: pdfUrl,
@@ -1299,7 +1299,7 @@ export async function findItemsWithFailedAttachments(): Promise<Array<{
           }>;
         };
       }>;
-    }>(query, { boardId: config.monday.boardId });
+    }>(query, { boardId: configCompat.monday.boardId });
 
     const items = result.boards[0]?.items_page?.items ?? [];
     const failedItems: Array<{
@@ -1353,7 +1353,7 @@ export async function storeRunId(itemId: string, runId: string): Promise<void> {
 
   try {
     await executeQuery(query, {
-      boardId: config.monday.boardId,
+      boardId: configCompat.monday.boardId,
       itemId,
       columnValues: JSON.stringify({
         [config.monday.columns.runId]: runId,
@@ -1386,7 +1386,7 @@ export async function updateAttachmentState(itemId: string, state: string): Prom
 
   try {
     await executeQuery(query, {
-      boardId: config.monday.boardId,
+      boardId: configCompat.monday.boardId,
       itemId,
       columnValues: JSON.stringify({
         [config.monday.columns.attachmentState]: { label: state },
@@ -1523,7 +1523,7 @@ export async function getTaskDebugInfo(itemId: string): Promise<TaskDebugInfo | 
       // Parse channelId:threadTs format or just threadTs
       const [channelId, threadTs] = slackThreadId.includes(':')
         ? slackThreadId.split(':')
-        : [config.slack.channelId, slackThreadId];
+        : [configCompat.slack.channelId, slackThreadId];
       slackThreadUrl = `https://slack.com/archives/${channelId}/p${threadTs.replace('.', '')}`;
     }
 
@@ -1596,7 +1596,7 @@ export async function getCompletedItemsWithSlackThread(): Promise<BackfillItem[]
           }>;
         };
       }>;
-    }>(query, { boardId: config.monday.boardId });
+    }>(query, { boardId: configCompat.monday.boardId });
 
     const items = result.boards[0]?.items_page?.items ?? [];
     const completedItems: BackfillItem[] = [];
@@ -1652,7 +1652,7 @@ export async function clearSlackThreadId(itemId: string): Promise<void> {
   `;
 
   await executeQuery(query, {
-    boardId: config.monday.boardId,
+    boardId: configCompat.monday.boardId,
     itemId,
     columnValues: JSON.stringify({
       [config.monday.columns.slackThreadId]: '',
@@ -1707,7 +1707,7 @@ export async function getItemsForBackfill(mode: 'missing' | 'today' | 'all' = 'm
           }>;
         };
       }>;
-    }>(query, { boardId: config.monday.boardId });
+    }>(query, { boardId: configCompat.monday.boardId });
 
     const items = result.boards[0]?.items_page?.items ?? [];
     const backfillItems: BackfillItemWithOwner[] = [];
@@ -1827,7 +1827,7 @@ export async function getIssueCallItems(): Promise<Array<{
           }>;
         };
       }>;
-    }>(query, { boardId: config.monday.boardId });
+    }>(query, { boardId: configCompat.monday.boardId });
 
     const items = result.boards[0]?.items_page?.items ?? [];
     const issueCallItems: Array<{ id: string; name: string; team: string | null }> = [];

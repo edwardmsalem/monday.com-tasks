@@ -12,7 +12,7 @@
  */
 
 import express, { type Request, type Response } from 'express';
-import { config } from './config/environment.js';
+import { config, configCompat, initRemoteConfig } from './config/environment.js';
 import { scanPresales, extractCodesFromMessageIds, scanSportsTeamEmails } from './services/presaleScanner.js';
 import { getFullState, getLastScan, reloadState, clearSeenPresales, declineOpportunity } from './services/presaleState.js';
 import { getClient as getSlackClient } from './services/slack.js';
@@ -266,7 +266,7 @@ app.post('/webhook/slack/presale-action', async (req: Request, res: Response): P
       }
 
       // Post to operations channel
-      const operationsChannel = config.presale.operationsChannel;
+      const operationsChannel = configCompat.presale.operationsChannel;
       if (operationsChannel) {
         // Build the message link back to the original presale notification
         const messageLink = messageTs
@@ -456,7 +456,7 @@ function validatePresaleConfig(): void {
 
   // Required for Slack
   if (!config.slack.botToken) missing.push('SLACK_BOT_TOKEN');
-  if (!config.presale.slackChannel) missing.push('SLACK_PRESALE_CHANNEL');
+  if (!configCompat.presale.slackChannel) missing.push('SLACK_PRESALE_CHANNEL');
 
   // Required for ConvertAPI
   if (!config.convertApi.secret) missing.push('CONVERTAPI_SECRET');
@@ -483,7 +483,7 @@ function start(): void {
     console.log(`  Port: ${port}`);
     console.log(`  Scan interval: ${config.presale.scanIntervalMs / 1000 / 60} minutes`);
     console.log(`  Lookback: ${config.presale.lookbackMinutes} minutes`);
-    console.log(`  Slack channel: ${config.presale.slackChannel || '(not set)'}`);
+    console.log(`  Slack channel: ${configCompat.presale.slackChannel || '(not set)'}`);
     console.log('');
     console.log('  Endpoints:');
     console.log(`    GET  /health`);

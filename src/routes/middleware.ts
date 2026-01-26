@@ -4,7 +4,7 @@
 
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 
 /**
  * Extended Request type with rawBody for Slack signature verification

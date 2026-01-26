@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { WebClient, type ChatPostMessageResponse } from '@slack/web-api';
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import { SLACK_RELEASE_DELAY_MS } from '../config/constants.js';
 import type { SlackMessage } from '../types/index.js';
 import * as monday from './monday.js';
@@ -365,7 +365,7 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
   // Use core-api for posting messages
   const response = await slackCircuit.execute(() =>
     coreApiSlack.postMessage({
-      channel: config.slack.channelId,
+      channel: configCompat.slack.channelId,
       text: fallbackText,
       blocks,
       unfurlLinks: false,
@@ -379,7 +379,7 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
 
   const slackMessage: SlackMessageWithDeferred = {
     ts: response.ts,
-    channel: response.channel ?? config.slack.channelId,
+    channel: response.channel ?? configCompat.slack.channelId,
     isDeferred: afterHours,
   };
 
@@ -443,7 +443,7 @@ export async function uploadFileToThread(
   title?: string,
   channelId?: string
 ): Promise<void> {
-  const channel = channelId || config.slack.channelId;
+  const channel = channelId || configCompat.slack.channelId;
 
   await slackCircuit.execute(() =>
     coreApiSlack.uploadFile({
@@ -485,7 +485,7 @@ export async function addBookmark(
 
   try {
     await client.bookmarks.add({
-      channel_id: config.slack.channelId,
+      channel_id: configCompat.slack.channelId,
       title,
       type: 'link',
       link,
@@ -592,7 +592,7 @@ export async function postToThread(
   channelId?: string,
   blocks?: any[]
 ): Promise<SlackMessage> {
-  const channel = channelId || config.slack.channelId;
+  const channel = channelId || configCompat.slack.channelId;
 
   const response = await slackCircuit.execute(() =>
     coreApiSlack.postMessage({
@@ -624,7 +624,7 @@ export async function addReaction(
   emoji: string,
   channelId?: string
 ): Promise<void> {
-  const channel = channelId || config.slack.channelId;
+  const channel = channelId || configCompat.slack.channelId;
 
   try {
     await slackCircuit.execute(() =>
@@ -651,7 +651,7 @@ export async function removeReaction(
   try {
     await slackCircuit.execute(() =>
       coreApiSlack.removeReaction({
-        channel: config.slack.channelId,
+        channel: configCompat.slack.channelId,
         ts: messageTs,
         emoji,
       })
@@ -705,7 +705,7 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
 
     // Get more channel history (last 500 messages or 7 days) to find threads with recent replies
     const historyResponse = await client.conversations.history({
-      channel: config.slack.channelId,
+      channel: configCompat.slack.channelId,
       limit: 500,
     });
 
@@ -722,7 +722,7 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
       if (message.thread_ts && message.reply_count && message.reply_count > 0) {
         try {
           const threadResponse = await client.conversations.replies({
-            channel: config.slack.channelId,
+            channel: configCompat.slack.channelId,
             ts: message.thread_ts,
           });
 
@@ -733,7 +733,7 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
               if (reply.user === botUserId && reply.ts && replyTimestamp >= cutoffTimestamp) {
                 try {
                   await client.chat.delete({
-                    channel: config.slack.channelId,
+                    channel: configCompat.slack.channelId,
                     ts: reply.ts,
                   });
                   deletedCount++;
@@ -754,7 +754,7 @@ export async function deleteRecentBotMessages(minutesAgo: number = 60): Promise<
       if (message.user === botUserId && message.ts && msgTimestamp >= cutoffTimestamp) {
         try {
           await client.chat.delete({
-            channel: config.slack.channelId,
+            channel: configCompat.slack.channelId,
             ts: message.ts,
           });
           deletedCount++;
@@ -905,7 +905,7 @@ export async function findDeferredNotificationsWithState(): Promise<DeferredNoti
 
     // Look at recent channel history
     const historyResponse = await client.conversations.history({
-      channel: config.slack.channelId,
+      channel: configCompat.slack.channelId,
       oldest: cutoffTimestamp.toString(),  // Only messages within lookback window
       limit: 100,
     });
@@ -930,7 +930,7 @@ export async function findDeferredNotificationsWithState(): Promise<DeferredNoti
 
       try {
         const threadResponse = await client.conversations.replies({
-          channel: config.slack.channelId,
+          channel: configCompat.slack.channelId,
           ts: message.ts,
         });
 
@@ -1101,7 +1101,7 @@ async function isDeferredTask(threadTs: string): Promise<boolean> {
     if (!slackClient) return false;
 
     const response = await slackClient.conversations.replies({
-      channel: config.slack.channelId,
+      channel: configCompat.slack.channelId,
       ts: threadTs,
       limit: 50,
     });
@@ -1289,7 +1289,7 @@ export async function getQuietHoursStatus(threadTs: string): Promise<QuietHoursS
 
     // Fetch thread replies
     const threadResponse = await client.conversations.replies({
-      channel: config.slack.channelId,
+      channel: configCompat.slack.channelId,
       ts: threadTs,
     });
 
@@ -1401,7 +1401,7 @@ export async function sendSupporterNotificationDM(
   mondayItemId: string,
   assigneeSlackIds: string[]  // All assignees for button encoding
 ): Promise<boolean> {
-  const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
+  const mondayLink = `${configCompat.monday.boardUrl}/pulses/${mondayItemId}`;
 
   // Priority emoji
   const priorityEmoji = details.priority === 'high' ? '🔴' : details.priority === 'low' ? '🟢' : '🟡';
@@ -1524,7 +1524,7 @@ export async function sendCrossNotificationDM(
     return;  // No one else to notify
   }
 
-  const mondayLink = `${config.monday.boardUrl}/pulses/${mondayItemId}`;
+  const mondayLink = `${configCompat.monday.boardUrl}/pulses/${mondayItemId}`;
 
   for (const slackId of otherAssigneeSlackIds) {
     // Don't notify the person who did the action

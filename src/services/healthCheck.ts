@@ -5,7 +5,7 @@
  * Results are cached for 30 seconds to avoid hammering external APIs.
  */
 
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import { HEALTH_CHECK_CACHE_TTL_MS, HEALTH_CHECK_TIMEOUT_MS } from '../config/constants.js';
 import { getAllCircuitStats } from './circuitBreaker.js';
 import { getQueueStats } from './jobQueue.js';

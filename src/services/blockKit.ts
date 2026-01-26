@@ -7,7 +7,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { config } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import { formatDateEST, getDayName, getDaysLate, getESTDateString } from './workingHours.js';
 
 // ============================================================================
@@ -83,7 +83,7 @@ export interface TeamStatus {
 // ============================================================================
 
 function getMondayUrl(itemId: string): string {
-  return `${config.monday.boardUrl}/pulses/${itemId}`;
+  return `${configCompat.monday.boardUrl}/pulses/${itemId}`;
 }
 
 // Always use Monday.com links for tasks
