@@ -66,6 +66,29 @@ CORE_API_URL=http://core-api.railway.internal:8080
 CORE_API_KEY=<shared-api-key>
 ```
 
+### Boards & Channels (from core-api config)
+
+**Monday.com Boards:**
+| Key | Purpose |
+|-----|---------|
+| `seasonTicketTasks` | Main task board for forwarding-monday |
+
+**Slack Channels:**
+| Key | Purpose |
+|-----|---------|
+| `seasonTicketAdmin` | Main channel for task notifications |
+| `issueCall` | Issue call digests |
+| `control` | Control/admin notifications |
+| `supporterPrimary` | Primary supporter channel |
+| `supporterSecondary` | Secondary supporter channels (comma-separated) |
+
+Access via: `import { getCachedConfig } from './services/coreApi.js'`
+```typescript
+const config = getCachedConfig();
+const boardId = config.monday.boards.seasonTicketTasks;
+const channelId = config.slack.channels.seasonTicketAdmin;
+```
+
 ### Files Using core-api
 - `src/services/coreApi.ts` - The client (already complete)
 - `src/services/digest.ts` - Uses `monday.query()` for task fetching
