@@ -51,35 +51,38 @@ let cacheTimestamp: number = 0;
 // ============================================================================
 
 /**
- * Check Monday.com API health
+ * Check Monday.com API health via core-api
  */
 async function checkMondayHealth(): Promise<ServiceHealth> {
   const start = Date.now();
+
+  // Monday is now accessed via core-api - check core-api connectivity instead
+  if (!config.coreApi.apiKey) {
+    return {
+      ok: true, // Not configured via core-api is ok if using legacy direct access
+      latencyMs: 0,
+      error: 'Core API not configured',
+      lastChecked: new Date(),
+    };
+  }
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
 
-    const response = await fetch('https://api.monday.com/v2', {
-      method: 'POST',
+    // Check core-api health endpoint instead of Monday directly
+    const response = await fetch(`${config.coreApi.url}/health`, {
+      method: 'GET',
       headers: {
-        'Content-Type': 'application/json',
-        Authorization: config.monday.apiToken,
-        'API-Version': '2024-01',
+        'X-API-Key': config.coreApi.apiKey,
       },
-      body: JSON.stringify({ query: 'query { me { id } }' }),
       signal: controller.signal,
     });
 
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const result = await response.json();
-    if (result.errors?.length > 0) {
-      throw new Error(result.errors[0].message);
+      throw new Error(`Core API HTTP ${response.status}: ${response.statusText}`);
     }
 
     return {
@@ -213,55 +216,18 @@ async function checkGmailHealth(): Promise<ServiceHealth> {
 
 /**
  * Check ConvertAPI health
- * Uses the user endpoint to verify API key validity
+ * Now accessed via core-api, so just verify core-api is reachable
  */
 async function checkConvertApiHealth(): Promise<ServiceHealth> {
-  const start = Date.now();
-
-  // Check if ConvertAPI is configured
-  if (!config.convertApi.secret) {
-    return {
-      ok: true, // Not configured is not an error
-      latencyMs: 0,
-      error: 'ConvertAPI not configured',
-      lastChecked: new Date(),
-    };
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
-
-    // ConvertAPI user endpoint to check API key validity
-    const response = await fetch(
-      `https://v2.convertapi.com/user?Secret=${config.convertApi.secret}`,
-      { signal: controller.signal }
-    );
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const result = await response.json();
-    if (result.Code) {
-      throw new Error(result.Message || 'ConvertAPI error');
-    }
-
-    return {
-      ok: true,
-      latencyMs: Date.now() - start,
-      lastChecked: new Date(),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      latencyMs: Date.now() - start,
-      error: error instanceof Error ? error.message : String(error),
-      lastChecked: new Date(),
-    };
-  }
+  // ConvertAPI is now accessed via core-api
+  // Core-api health is already checked in checkMondayHealth
+  // Just return ok if core-api is configured
+  return {
+    ok: !!config.coreApi.apiKey,
+    latencyMs: 0,
+    error: config.coreApi.apiKey ? undefined : 'ConvertAPI accessed via core-api',
+    lastChecked: new Date(),
+  };
 }
 
 // ============================================================================
