@@ -233,6 +233,30 @@ export const claude = {
       body: params as Record<string, unknown>,
     });
   },
+
+  async toolUse<T = unknown>(params: {
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    tools: Array<{
+      name: string;
+      description: string;
+      input_schema: Record<string, unknown>;
+    }>;
+    toolChoice?: { type: 'auto' | 'any' | 'tool'; name?: string };
+    systemPrompt?: string;
+    model?: string;
+    maxTokens?: number;
+    keyType?: ClaudeKeyType;
+  }): Promise<{
+    toolUse: { id: string; name: string; input: T } | null;
+    text: string | null;
+    model: string;
+    usage: { input_tokens: number; output_tokens: number };
+    stopReason: string;
+  }> {
+    return coreApiRequest('/claude/tool-use', {
+      body: params as Record<string, unknown>,
+    });
+  },
 };
 
 // ============================================

@@ -1,31 +1,15 @@
 /**
  * Claude AI service for intelligent email analysis
  *
- * Uses Claude to extract task details from natural language emails,
+ * Uses Claude via core-api to extract task details from natural language emails,
  * eliminating the need for rigid line-by-line formatting.
- *
- * NOTE: This service still uses the direct Anthropic SDK because it requires
- * advanced tool_use features (tool_choice, custom tools). When core-api adds
- * a /claude/tool-use endpoint, this can be migrated to use coreApi.claude.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config/environment.js';
 import { TASK_TYPE_MAPPINGS } from '../config/taskTypes.js';
 import { getUserNamesString } from './userResolver.js';
+import { claude as coreApiClaude } from './coreApi.js';
 import type { TaskDetails } from '../types/index.js';
-// Future: import { claude as coreApiClaude } from './coreApi.js';
-
-let anthropicClient: Anthropic | null = null;
-
-function getClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({
-      apiKey: config.anthropic.apiKey,
-    });
-  }
-  return anthropicClient;
-}
 
 // Build task type context (static, doesn't need dynamic loading)
 const availableTaskTypes = TASK_TYPE_MAPPINGS.map(t =>
@@ -99,10 +83,17 @@ Be smart about inferring the owner, date, and task type. For example:
 - "Dayna with help from Jamie and John" → owner: dayna, supporters: ["jamie", "john"]`;
 }
 
+// Tool type for coreApi.toolUse
+interface ToolDefinition {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
 /**
  * Build the tool definition with dynamic user names
  */
-function buildExtractTaskTool(userNames: string): Anthropic.Tool {
+function buildExtractTaskTool(userNames: string): ToolDefinition {
   return {
     name: 'extract_task_details',
     description: 'Extract task assignment details from the email',
@@ -189,8 +180,6 @@ export async function analyzeEmail(
   emlTo?: string | null,
   emlBody?: string | null
 ): Promise<AnalysisResult> {
-  const client = getClient();
-
   // Get dynamic user names from Monday.com/Slack
   const userNames = await getUserNamesString();
   console.log('Available users for assignment:', userNames);
@@ -218,12 +207,12 @@ export async function analyzeEmail(
 
   console.log('Sending email to Claude for analysis...');
 
-  const response = await client.messages.create({
+  const response = await coreApiClaude.toolUse({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    system: systemPrompt,
+    maxTokens: 1024,
+    systemPrompt,
     tools: [extractTaskTool],
-    tool_choice: { type: 'tool', name: 'extract_task_details' },
+    toolChoice: { type: 'tool', name: 'extract_task_details' },
     messages: [
       {
         role: 'user',
@@ -232,16 +221,11 @@ export async function analyzeEmail(
     ],
   });
 
-  // Extract the tool use response
-  const toolUse = response.content.find(
-    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
-  );
-
-  if (!toolUse || toolUse.name !== 'extract_task_details') {
+  if (!response.toolUse || response.toolUse.name !== 'extract_task_details') {
     throw new Error('Claude did not return task extraction results');
   }
 
-  const input = toolUse.input as {
+  const input = response.toolUse.input as {
     owner: string;
     supporters?: string[];
     dueDate: string;
@@ -303,12 +287,7 @@ export interface EmailTaskSearchParams {
  * @returns Parsed search parameters
  */
 export async function parseEmailTaskInput(input: string): Promise<EmailTaskSearchParams> {
-  const client = getClient();
-
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 512,
-    system: `You are parsing a Gmail search command. Extract search parameters from natural language input.
+  const systemPrompt = `You are parsing a Gmail search command. Extract search parameters from natural language input.
 
 Rules:
 - subject: The email subject line to search for. This is the MOST IMPORTANT field.
@@ -327,7 +306,12 @@ Examples:
 - "Yankees relocation from last week" → subject: "Yankees relocation", matchMode: equals, daysBack: 7, useLatest: false
 - "any email containing season tickets" → subject: "season tickets", matchMode: contains, daysBack: 0, useLatest: false
 - "Rangers presale use most recent" → subject: "Rangers presale", matchMode: equals, daysBack: 0, useLatest: true
-- "subject: Knicks days: 7 match: contains" → subject: "Knicks", matchMode: contains, daysBack: 7, useLatest: false`,
+- "subject: Knicks days: 7 match: contains" → subject: "Knicks", matchMode: contains, daysBack: 7, useLatest: false`;
+
+  const response = await coreApiClaude.toolUse({
+    model: 'claude-sonnet-4-20250514',
+    maxTokens: 512,
+    systemPrompt,
     tools: [{
       name: 'extract_search_params',
       description: 'Extract Gmail search parameters from user input',
@@ -355,19 +339,15 @@ Examples:
         required: ['subject', 'matchMode', 'daysBack', 'useLatest'],
       },
     }],
-    tool_choice: { type: 'tool', name: 'extract_search_params' },
+    toolChoice: { type: 'tool', name: 'extract_search_params' },
     messages: [{ role: 'user', content: input }],
   });
 
-  const toolUse = response.content.find(
-    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
-  );
-
-  if (!toolUse || toolUse.name !== 'extract_search_params') {
+  if (!response.toolUse || response.toolUse.name !== 'extract_search_params') {
     throw new Error('Claude did not return search parameters');
   }
 
-  const params = toolUse.input as {
+  const params = response.toolUse.input as {
     subject: string;
     matchMode: 'equals' | 'contains';
     daysBack: number;
@@ -508,7 +488,7 @@ Examples:
 /**
  * Build the tool definition for /task parsing
  */
-function buildSlackTaskTool(userNames: string): Anthropic.Tool {
+function buildSlackTaskTool(userNames: string): ToolDefinition {
   return {
     name: 'extract_slack_task',
     description: 'Extract task details from a Slack /task command',
@@ -571,8 +551,6 @@ export async function analyzeSlackTask(
   taskText: string,
   creatorSlackId: string
 ): Promise<SlackTaskAnalysisResult> {
-  const client = getClient();
-
   // Get dynamic user names from Monday.com/Slack
   const userNames = await getUserNamesString();
   console.log('Available users for /task assignment:', userNames);
@@ -585,12 +563,12 @@ export async function analyzeSlackTask(
 
   console.log('Sending /task to Claude for analysis...');
 
-  const response = await client.messages.create({
+  const response = await coreApiClaude.toolUse({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    system: systemPrompt,
+    maxTokens: 1024,
+    systemPrompt,
     tools: [extractTaskTool],
-    tool_choice: { type: 'tool', name: 'extract_slack_task' },
+    toolChoice: { type: 'tool', name: 'extract_slack_task' },
     messages: [
       {
         role: 'user',
@@ -599,16 +577,11 @@ export async function analyzeSlackTask(
     ],
   });
 
-  // Extract the tool use response
-  const toolUse = response.content.find(
-    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
-  );
-
-  if (!toolUse || toolUse.name !== 'extract_slack_task') {
+  if (!response.toolUse || response.toolUse.name !== 'extract_slack_task') {
     throw new Error('Claude did not return task extraction results');
   }
 
-  const input = toolUse.input as {
+  const input = response.toolUse.input as {
     owner?: string | null;
     supporters?: string[];
     description: string;
@@ -698,8 +671,6 @@ export interface IssueCallParseResult {
  * - "rockets bob@email.com transfer issue @jamie" → team: rockets, email: bob@email.com, issue: transfer issue, supporter: jamie
  */
 export async function parseIssueCallInput(input: string): Promise<IssueCallParseResult> {
-  const client = getClient();
-
   const systemPrompt = `You are an issue call parser. Extract the team name, email address, issue description, detailed notes, and optional suggested supporter from natural language input.
 
 Sports teams to recognize:
@@ -744,7 +715,7 @@ Be flexible with input formats. Users might say:
 - "rockets bob@email.com transfer issue @jamie"
 - "texans customer jane@gmail.com can't login with Sarah's help"`;
 
-  const tool: Anthropic.Tool = {
+  const tool = {
     name: 'parse_issue_call',
     description: 'Parse issue call input to extract team, email, issue description, notes, and supporter',
     input_schema: {
@@ -793,12 +764,12 @@ Be flexible with input formats. Users might say:
     },
   };
 
-  const response = await client.messages.create({
+  const response = await coreApiClaude.toolUse({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 500,
-    system: systemPrompt,
+    maxTokens: 500,
+    systemPrompt,
     tools: [tool],
-    tool_choice: { type: 'tool', name: 'parse_issue_call' },
+    toolChoice: { type: 'tool', name: 'parse_issue_call' },
     messages: [
       {
         role: 'user',
@@ -807,16 +778,11 @@ Be flexible with input formats. Users might say:
     ],
   });
 
-  // Extract the tool use response
-  const toolUse = response.content.find(
-    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
-  );
-
-  if (!toolUse) {
+  if (!response.toolUse) {
     throw new Error('No tool response from Claude');
   }
 
-  const result = toolUse.input as {
+  const result = response.toolUse.input as {
     team: string;
     emails: string[];
     issueDescription?: string | null;
@@ -865,8 +831,6 @@ export interface ItemAnalysis {
  * Analyze an existing Monday item name to detect team and suggest improvements
  */
 export async function analyzeItemName(itemName: string, taskType?: string | null): Promise<ItemAnalysis> {
-  const client = getClient();
-
   const systemPrompt = `You are analyzing existing task names to detect sports team mentions and suggest improvements.
 
 Your job:
@@ -889,9 +853,10 @@ Analyze this task name and return:
 3. confidence: 0-1 score`;
 
   try {
-    const response = await client.messages.create({
+    const response = await coreApiClaude.toolUse({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 200,
+      maxTokens: 200,
+      systemPrompt,
       tools: [
         {
           name: 'analyze_item',
@@ -918,17 +883,15 @@ Analyze this task name and return:
           },
         },
       ],
-      tool_choice: { type: 'tool', name: 'analyze_item' },
-      system: systemPrompt,
+      toolChoice: { type: 'tool', name: 'analyze_item' },
       messages: [{ role: 'user', content: userPrompt }],
     });
 
-    const toolUse = response.content.find(block => block.type === 'tool_use');
-    if (!toolUse || toolUse.type !== 'tool_use') {
+    if (!response.toolUse) {
       return { detectedTeam: null, suggestedName: null, confidence: 0 };
     }
 
-    const result = toolUse.input as {
+    const result = response.toolUse.input as {
       detectedTeam: string | null;
       suggestedName: string | null;
       confidence: number;
