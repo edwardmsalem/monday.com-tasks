@@ -125,11 +125,12 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
     if (result.errors) {
       console.error('[Digest] Monday API errors:', JSON.stringify(result.errors));
     }
-    if (!result.data?.boards?.[0]) {
+    // core-api unwraps the data wrapper, so result.boards not result.data.boards
+    if (!result.boards?.[0]) {
       console.error('[Digest] No board data returned. Response:', JSON.stringify(result).slice(0, 500));
     }
 
-    const items = result.data?.boards?.[0]?.items_page?.items ?? [];
+    const items = result.boards?.[0]?.items_page?.items ?? [];
     console.log(`[Digest] Monday board ${configCompat.monday.boardId} returned ${items.length} items`);
     const tasks: MondayTask[] = [];
     let skippedDone = 0;
@@ -1341,7 +1342,8 @@ async function fetchAllTasksForReport(): Promise<MondayTask[]> {
   try {
     // Use core-api for Monday queries
     const result = (await coreApiMonday.query(query, { boardId: configCompat.monday.boardId })) as any;
-    const items = result.data?.boards?.[0]?.items_page?.items ?? [];
+    // core-api unwraps the data wrapper
+    const items = result.boards?.[0]?.items_page?.items ?? [];
     const tasks: MondayTask[] = [];
 
     for (const item of items) {
