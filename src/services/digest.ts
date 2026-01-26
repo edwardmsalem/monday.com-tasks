@@ -12,6 +12,7 @@ import { getClient } from './slack.js';
 import * as blockKit from './blockKit.js';
 import * as digestState from './digestState.js';
 import * as workingHours from './workingHours.js';
+import { monday as coreApiMonday } from './coreApi.js';
 
 // ============================================================================
 // Constants
@@ -117,20 +118,8 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
   `;
 
   try {
-    const response = await fetch('https://api.monday.com/v2', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: config.monday.apiToken,
-        'API-Version': '2024-10',
-      },
-      body: JSON.stringify({
-        query,
-        variables: { boardId: configCompat.monday.boardId },
-      }),
-    });
-
-    const result = (await response.json()) as any;
+    // Use core-api for Monday queries
+    const result = (await coreApiMonday.query(query, { boardId: configCompat.monday.boardId })) as any;
 
     // Log any errors from Monday API
     if (result.errors) {
@@ -1350,20 +1339,8 @@ async function fetchAllTasksForReport(): Promise<MondayTask[]> {
   `;
 
   try {
-    const response = await fetch('https://api.monday.com/v2', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: config.monday.apiToken,
-        'API-Version': '2024-10',
-      },
-      body: JSON.stringify({
-        query,
-        variables: { boardId: configCompat.monday.boardId },
-      }),
-    });
-
-    const result = (await response.json()) as any;
+    // Use core-api for Monday queries
+    const result = (await coreApiMonday.query(query, { boardId: configCompat.monday.boardId })) as any;
     const items = result.data?.boards?.[0]?.items_page?.items ?? [];
     const tasks: MondayTask[] = [];
 
