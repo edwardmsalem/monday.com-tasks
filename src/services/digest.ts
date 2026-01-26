@@ -132,7 +132,9 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
 
     const result = (await response.json()) as any;
     const items = result.data?.boards?.[0]?.items_page?.items ?? [];
+    console.log(`[Digest] Monday board ${configCompat.monday.boardId} returned ${items.length} items`);
     const tasks: MondayTask[] = [];
+    let skippedDone = 0;
 
     for (const item of items) {
       const getValue = (colId: string): string | null => {
@@ -150,6 +152,7 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
       // Skip completed/done tasks
       const statusLower = workflowStatus?.toLowerCase() ?? '';
       if (statusLower === 'done' || statusLower === 'complete') {
+        skippedDone++;
         continue;
       }
 
@@ -235,6 +238,7 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
       });
     }
 
+    console.log(`[Digest] After filtering: ${tasks.length} open tasks (skipped ${skippedDone} done/complete)`);
     return tasks;
   } catch (error) {
     console.error('[Digest] Error fetching tasks from Monday:', error);
@@ -439,12 +443,18 @@ async function getSlackUserIdFromMondayId(mondayId: string): Promise<string | nu
       const slack = await import('./slack.js');
       const monday = await import('./monday.js');
 
+      console.log('[Digest] Building user mapping cache...');
       const slackUsers = await slack.getAllUsers();
+      console.log(`[Digest] Found ${slackUsers.length} Slack users`);
+
       const mondayUsers = await monday.getAllUsers();
+      console.log(`[Digest] Found ${mondayUsers.length} Monday users`);
 
       // Match by email
+      let mondayUsersWithEmail = 0;
       for (const mondayUser of mondayUsers) {
         if (mondayUser.email) {
+          mondayUsersWithEmail++;
           const slackUser = slackUsers.find(
             (u) => u.email?.toLowerCase() === mondayUser.email?.toLowerCase()
           );
@@ -454,7 +464,8 @@ async function getSlackUserIdFromMondayId(mondayId: string): Promise<string | nu
         }
       }
 
-      console.log(`[Digest] Built user mapping cache: ${userMappingCache.size} users`);
+      console.log(`[Digest] Monday users with email: ${mondayUsersWithEmail}`);
+      console.log(`[Digest] Built user mapping cache: ${userMappingCache.size} users matched`);
     } catch (error) {
       console.error('[Digest] Error building user mapping:', error);
     }
@@ -1002,13 +1013,21 @@ export async function sendAllTomorrowPrep(): Promise<number> {
 
   // Get all tasks
   const allTasks = await fetchOpenTasks();
+  console.log(`[Digest] Fetched ${allTasks.length} open tasks`);
+
+  // Count tasks with owners/supporters
+  const tasksWithOwners = allTasks.filter(t => t.ownerIds.length > 0).length;
+  const tasksWithSupporters = allTasks.filter(t => t.supporterIds.length > 0).length;
+  console.log(`[Digest] Tasks with owners: ${tasksWithOwners}, with supporters: ${tasksWithSupporters}`);
 
   // Get unique Slack user IDs from task owners AND supporters
   const userSlackIds = new Set<string>();
+  const mondayIdsChecked = new Set<string>();
 
   for (const task of allTasks) {
     // Add owners
     for (const mondayId of task.ownerIds) {
+      mondayIdsChecked.add(mondayId);
       const slackId = await getSlackUserIdFromMondayId(mondayId);
       if (slackId) {
         userSlackIds.add(slackId);
@@ -1016,12 +1035,15 @@ export async function sendAllTomorrowPrep(): Promise<number> {
     }
     // Add supporters
     for (const mondayId of task.supporterIds) {
+      mondayIdsChecked.add(mondayId);
       const slackId = await getSlackUserIdFromMondayId(mondayId);
       if (slackId) {
         userSlackIds.add(slackId);
       }
     }
   }
+
+  console.log(`[Digest] Checked ${mondayIdsChecked.size} unique Monday IDs, found ${userSlackIds.size} Slack users`);
 
   let sent = 0;
 
