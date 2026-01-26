@@ -12,7 +12,7 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import { config, configCompat } from '../config/environment.js';
+import { config, configCompat, initRemoteConfig } from '../config/environment.js';
 
 // ============================================================================
 // Configuration
@@ -294,6 +294,9 @@ function sleep(ms: number): Promise<void> {
 // ============================================================================
 
 export async function runMigration(): Promise<MigrationResult> {
+  // Initialize remote config from core-api
+  await initRemoteConfig();
+
   console.log('='.repeat(60));
   console.log('THREAD BUTTON MIGRATION');
   console.log(`Mode: ${DRY_RUN ? 'DRY RUN' : 'LIVE'}`);

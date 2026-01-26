@@ -12,7 +12,7 @@
  */
 
 import express, { type Request, type Response } from 'express';
-import { config, configCompat, initRemoteConfig } from './config/environment.js';
+import { config, configCompat, initRemoteConfig, validateConfig } from './config/environment.js';
 import { scanPresales, extractCodesFromMessageIds, scanSportsTeamEmails } from './services/presaleScanner.js';
 import { getFullState, getLastScan, reloadState, clearSeenPresales, declineOpportunity } from './services/presaleState.js';
 import { getClient as getSlackClient } from './services/slack.js';
@@ -470,7 +470,12 @@ function validatePresaleConfig(): void {
   }
 }
 
-function start(): void {
+async function start(): Promise<void> {
+  // Load remote config from core-api first
+  console.log('[PresaleServer] Loading config from core-api...');
+  await initRemoteConfig();
+  validateConfig();
+
   validatePresaleConfig();
 
   const port = config.port;
@@ -516,6 +521,9 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-start();
+start().catch((err) => {
+  console.error('[PresaleServer] Failed to start:', err);
+  process.exit(1);
+});
 
 export { app };

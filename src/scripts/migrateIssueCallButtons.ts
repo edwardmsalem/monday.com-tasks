@@ -15,7 +15,7 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import { config, configCompat } from '../config/environment.js';
+import { config, configCompat, initRemoteConfig } from '../config/environment.js';
 import * as monday from '../services/monday.js';
 
 // ============================================================================
@@ -24,8 +24,8 @@ import * as monday from '../services/monday.js';
 
 const SLACK_CLIENT = new WebClient(config.slack.botToken);
 
-// Issue call channel ID
-const ISSUE_CALL_CHANNEL_ID = configCompat.slack.issueCallChannelId;
+// Issue call channel ID (set after initRemoteConfig is called)
+let ISSUE_CALL_CHANNEL_ID: string | undefined;
 
 // Skip messages older than this
 const MAX_AGE_DAYS = 60;
@@ -342,6 +342,12 @@ function sleep(ms: number): Promise<void> {
 // ============================================================================
 
 export async function runIssueCallButtonMigration(): Promise<MigrationResult> {
+  // Initialize remote config from core-api
+  await initRemoteConfig();
+
+  // Set the channel ID now that remote config is loaded
+  ISSUE_CALL_CHANNEL_ID = configCompat.slack.issueCallChannelId;
+
   console.log('='.repeat(60));
   console.log('ISSUE CALL BUTTON MIGRATION');
   console.log(`Mode: ${DRY_RUN ? 'DRY RUN' : 'LIVE'}`);
