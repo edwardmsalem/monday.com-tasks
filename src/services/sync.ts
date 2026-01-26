@@ -124,6 +124,11 @@ export async function syncSlackToMonday(
     console.log(`Syncing ${files.length} file(s) to Monday update ${updateId}`);
     for (const file of files) {
       try {
+        // Skip files without a download URL
+        if (!file.url_private) {
+          console.warn(`Skipping file ${file.name} - no url_private (file object: ${JSON.stringify(file)})`);
+          continue;
+        }
         const fileBuffer = await slack.downloadFile(file);
         await monday.addFileToUpdate(updateId, fileBuffer, file.name);
         console.log(`Synced file ${file.name} to Monday`);

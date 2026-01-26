@@ -1567,7 +1567,12 @@ export interface SlackFile {
  * Slack file URLs require authentication
  */
 export async function downloadFile(file: SlackFile): Promise<Buffer> {
-  const response = await fetch(file.url_private, {
+  const fileUrl = file.url_private;
+  if (!fileUrl) {
+    throw new Error(`No download URL for file ${file.name} (id: ${file.id})`);
+  }
+
+  const response = await fetch(fileUrl, {
     headers: {
       Authorization: `Bearer ${config.slack.botToken}`,
     },
