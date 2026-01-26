@@ -10,20 +10,8 @@
  * - LIVE: Presale is happening now, use this code
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config/environment.js';
+import { claude as coreApiClaude } from './coreApi.js';
 import { claudeCircuit } from './circuitBreaker.js';
-
-let anthropicClient: Anthropic | null = null;
-
-function getClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({
-      apiKey: config.anthropic.apiKey,
-    });
-  }
-  return anthropicClient;
-}
 
 // ============================================================================
 // Types
@@ -99,7 +87,7 @@ EXTRACT:
 // Tool Definition
 // ============================================================================
 
-const EXCLUSIVITY_TOOL: Anthropic.Tool = {
+const EXCLUSIVITY_TOOL = {
   name: 'check_presale_exclusivity',
   description: 'Analyze a presale email to determine if it is exclusive or generic, and classify its type',
   input_schema: {
@@ -158,8 +146,6 @@ export async function checkPresaleExclusivity(
   subject: string,
   bodySnippet: string
 ): Promise<ExclusivityCheckResult> {
-  const client = getClient();
-
   // Build the message content
   const content = `Analyze this presale email to determine:
 1. Is it EXCLUSIVE (requires our action) or GENERIC (skip)?
@@ -175,12 +161,12 @@ ${bodySnippet.slice(0, 3000)}`;
   try {
     // Wrapped in circuit breaker
     const response = await claudeCircuit.execute(() =>
-      client.messages.create({
+      coreApiClaude.toolUse({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 512,
-        system: EXCLUSIVITY_SYSTEM_PROMPT,
+        maxTokens: 512,
+        systemPrompt: EXCLUSIVITY_SYSTEM_PROMPT,
         tools: [EXCLUSIVITY_TOOL],
-        tool_choice: { type: 'tool', name: 'check_presale_exclusivity' },
+        toolChoice: { type: 'tool', name: 'check_presale_exclusivity' },
         messages: [
           {
             role: 'user',
@@ -190,12 +176,7 @@ ${bodySnippet.slice(0, 3000)}`;
       })
     );
 
-    // Extract the tool use response
-    const toolUse = response.content.find(
-      (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
-    );
-
-    if (!toolUse || toolUse.name !== 'check_presale_exclusivity') {
+    if (!response.toolUse || response.toolUse.name !== 'check_presale_exclusivity') {
       console.error('[PresaleAI] Claude did not return exclusivity check results');
       return {
         isExclusive: false,
@@ -209,7 +190,7 @@ ${bodySnippet.slice(0, 3000)}`;
       };
     }
 
-    const input = toolUse.input as {
+    const input = response.toolUse.input as {
       isExclusive: boolean;
       confidence: number;
       reason: string;

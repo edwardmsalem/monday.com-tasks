@@ -11,20 +11,8 @@
  * If required fields are missing, it identifies what questions to ask.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config/environment.js';
+import { claude as coreApiClaude } from './coreApi.js';
 import { findUserByName, getAllUsers, type UnifiedUser } from './userResolver.js';
-
-let anthropicClient: Anthropic | null = null;
-
-function getClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({
-      apiKey: config.anthropic.apiKey,
-    });
-  }
-  return anthropicClient;
-}
 
 export interface ParsedTask {
   name: string | null;
@@ -56,8 +44,6 @@ export async function parseTaskWithAI(
   text: string,
   slackUserId: string
 ): Promise<TaskParseResult> {
-  const client = getClient();
-
   // Get list of available users for context
   const users = await getAllUsers();
   const userNames = users.map(u => u.name).join(', ');
@@ -65,9 +51,9 @@ export async function parseTaskWithAI(
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
 
-  const response = await client.messages.create({
+  const response = await coreApiClaude.toolUse({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
+    maxTokens: 1024,
     tools: [
       {
         name: 'extract_task',
@@ -121,7 +107,7 @@ export async function parseTaskWithAI(
         },
       },
     ],
-    tool_choice: { type: 'tool', name: 'extract_task' },
+    toolChoice: { type: 'tool', name: 'extract_task' },
     messages: [
       {
         role: 'user',
@@ -140,13 +126,11 @@ Extract what you can and mark fields as missing if they're not provided. Be gene
     ],
   });
 
-  // Extract the tool use result
-  const toolUse = response.content.find(block => block.type === 'tool_use');
-  if (!toolUse || toolUse.type !== 'tool_use') {
+  if (!response.toolUse) {
     throw new Error('Claude did not return task extraction');
   }
 
-  const input = toolUse.input as {
+  const input = response.toolUse.input as {
     task_name?: string;
     assignee?: string;
     due_date?: string;
@@ -215,7 +199,6 @@ export async function parseFollowUpAnswers(
   missingFields: Array<'name' | 'assignee' | 'dueDate'>,
   slackUserId: string
 ): Promise<ParsedTask> {
-  const client = getClient();
   const users = await getAllUsers();
   const userNames = users.map(u => u.name).join(', ');
 
@@ -231,9 +214,9 @@ export async function parseFollowUpAnswers(
     }
   }).join(', ');
 
-  const response = await client.messages.create({
+  const response = await coreApiClaude.toolUse({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 512,
+    maxTokens: 512,
     tools: [
       {
         name: 'extract_answers',
@@ -261,7 +244,7 @@ export async function parseFollowUpAnswers(
         },
       },
     ],
-    tool_choice: { type: 'tool', name: 'extract_answers' },
+    toolChoice: { type: 'tool', name: 'extract_answers' },
     messages: [
       {
         role: 'user',
@@ -282,12 +265,11 @@ Examples of valid responses:
     ],
   });
 
-  const toolUse = response.content.find(block => block.type === 'tool_use');
-  if (!toolUse || toolUse.type !== 'tool_use') {
+  if (!response.toolUse) {
     return existing;
   }
 
-  const input = toolUse.input as {
+  const input = response.toolUse.input as {
     task_name?: string;
     assignee?: string;
     due_date?: string;
