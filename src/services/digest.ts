@@ -131,6 +131,15 @@ async function fetchOpenTasks(): Promise<MondayTask[]> {
     });
 
     const result = (await response.json()) as any;
+
+    // Log any errors from Monday API
+    if (result.errors) {
+      console.error('[Digest] Monday API errors:', JSON.stringify(result.errors));
+    }
+    if (!result.data?.boards?.[0]) {
+      console.error('[Digest] No board data returned. Response:', JSON.stringify(result).slice(0, 500));
+    }
+
     const items = result.data?.boards?.[0]?.items_page?.items ?? [];
     console.log(`[Digest] Monday board ${configCompat.monday.boardId} returned ${items.length} items`);
     const tasks: MondayTask[] = [];
