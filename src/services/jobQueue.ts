@@ -10,7 +10,7 @@
  * - pdf_conversion: Retry PDF conversions
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import {
   RETRY_DELAYS_MS,
@@ -82,7 +82,6 @@ const processors: Map<Job['type'], JobProcessor> = new Map();
 
 function ensureDataDirectory(): void {
   if (!existsSync(DATA_DIR)) {
-    const { mkdirSync } = require('fs');
     mkdirSync(DATA_DIR, { recursive: true });
     console.log(`[JobQueue] Created data directory: ${DATA_DIR}`);
   }

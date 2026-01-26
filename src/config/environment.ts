@@ -127,10 +127,16 @@ export const config = {
 
   // Slack Relay (for receiving events via relay proxy)
   relay: {
-    apiKey: getEnvVarOptional('RELAY_API_KEY'),  // Must match slack-relay's RELAY_API_KEY
+    apiKey: getEnvVarOptional('RELAY_API_KEY'),  // Must match core-api's CORE_API_KEY
   },
 
-  // ConvertAPI
+  // Core API (centralized gateway for Monday, ConvertAPI, some Slack/Google operations)
+  coreApi: {
+    url: getEnvVar('CORE_API_URL', 'http://core-api.railway.internal'),
+    apiKey: getEnvVarOptional('CORE_API_KEY'),
+  },
+
+  // ConvertAPI (legacy - now proxied through core-api)
   convertApi: {
     secret: getEnvVar('CONVERTAPI_SECRET', ''),
   },
@@ -194,10 +200,13 @@ export const config = {
 export function validateConfig(): void {
   const missing: string[] = [];
 
-  if (!config.monday.apiToken) missing.push('MONDAY_API_TOKEN');
+  // Core API is required for Monday, ConvertAPI, and some Slack operations
+  if (!config.coreApi.url) missing.push('CORE_API_URL');
+  if (!config.coreApi.apiKey) missing.push('CORE_API_KEY');
+
+  // Still needed directly (partial migration)
   if (!config.slack.botToken) missing.push('SLACK_BOT_TOKEN');
   if (!config.slack.channelId) missing.push('SLACK_CHANNEL_ID');
-  if (!config.convertApi.secret) missing.push('CONVERTAPI_SECRET');
   if (!config.anthropic.apiKey) missing.push('ANTHROPIC_API_KEY');
 
   if (missing.length > 0) {
