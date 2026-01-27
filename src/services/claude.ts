@@ -8,7 +8,7 @@
 import { config } from '../config/environment.js';
 import { TASK_TYPE_MAPPINGS } from '../config/taskTypes.js';
 import { getUserNamesString } from './userResolver.js';
-import { claude as coreApiClaude } from './coreApi.js';
+import { claude as coreApiClaude, getCachedConfig } from './coreApi.js';
 import type { TaskDetails } from '../types/index.js';
 
 // Build task type context (static, doesn't need dynamic loading)
@@ -208,7 +208,7 @@ export async function analyzeEmail(
   console.log('Sending email to Claude for analysis...');
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250929',
+    model: getCachedConfig().claude.models.default,
     maxTokens: 1024,
     systemPrompt,
     tools: [extractTaskTool],
@@ -309,7 +309,7 @@ Examples:
 - "subject: Knicks days: 7 match: contains" → subject: "Knicks", matchMode: contains, daysBack: 7, useLatest: false`;
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250929',
+    model: getCachedConfig().claude.models.default,
     maxTokens: 512,
     systemPrompt,
     tools: [{
@@ -564,7 +564,7 @@ export async function analyzeSlackTask(
   console.log('Sending /task to Claude for analysis...');
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250929',
+    model: getCachedConfig().claude.models.default,
     maxTokens: 1024,
     systemPrompt,
     tools: [extractTaskTool],
@@ -765,7 +765,7 @@ Be flexible with input formats. Users might say:
   };
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250929',
+    model: getCachedConfig().claude.models.default,
     maxTokens: 500,
     systemPrompt,
     tools: [tool],
@@ -854,7 +854,7 @@ Analyze this task name and return:
 
   try {
     const response = await coreApiClaude.toolUse({
-      model: 'claude-sonnet-4-5-20250929',
+      model: getCachedConfig().claude.models.default,
       maxTokens: 200,
       systemPrompt,
       tools: [

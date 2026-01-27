@@ -11,7 +11,7 @@
  * If required fields are missing, it identifies what questions to ask.
  */
 
-import { claude as coreApiClaude } from './coreApi.js';
+import { claude as coreApiClaude, getCachedConfig } from './coreApi.js';
 import { findUserByName, getAllUsers, type UnifiedUser } from './userResolver.js';
 
 export interface ParsedTask {
@@ -52,7 +52,7 @@ export async function parseTaskWithAI(
   const todayStr = today.toISOString().split('T')[0];
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250929',
+    model: getCachedConfig().claude.models.default,
     maxTokens: 1024,
     tools: [
       {
@@ -215,7 +215,7 @@ export async function parseFollowUpAnswers(
   }).join(', ');
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250929',
+    model: getCachedConfig().claude.models.default,
     maxTokens: 512,
     tools: [
       {

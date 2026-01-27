@@ -695,6 +695,14 @@ export interface CoreConfig {
   google: {
     sheets: Record<string, string>;
   };
+  claude: {
+    models: {
+      default: string;
+      fast: string;
+      thinking: string;
+      opus: string;
+    };
+  };
 }
 
 let cachedConfig: CoreConfig | null = null;
@@ -732,6 +740,7 @@ export async function initConfig(): Promise<CoreConfig> {
     slackChannels: Object.keys(config.slack.channels).length,
     mondayBoards: Object.keys(config.monday.boards).length,
     googleSheets: Object.keys(config.google.sheets).length,
+    claudeModels: Object.keys(config.claude.models).length,
   });
   return config;
 }

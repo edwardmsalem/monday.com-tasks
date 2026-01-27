@@ -10,7 +10,7 @@
  * - LIVE: Presale is happening now, use this code
  */
 
-import { claude as coreApiClaude } from './coreApi.js';
+import { claude as coreApiClaude, getCachedConfig } from './coreApi.js';
 import { claudeCircuit } from './circuitBreaker.js';
 
 // ============================================================================
@@ -162,7 +162,7 @@ ${bodySnippet.slice(0, 3000)}`;
     // Wrapped in circuit breaker
     const response = await claudeCircuit.execute(() =>
       coreApiClaude.toolUse({
-        model: 'claude-sonnet-4-5-20250929',
+        model: getCachedConfig().claude.models.default,
         maxTokens: 512,
         systemPrompt: EXCLUSIVITY_SYSTEM_PROMPT,
         tools: [EXCLUSIVITY_TOOL],
