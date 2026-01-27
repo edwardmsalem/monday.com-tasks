@@ -420,23 +420,69 @@ export const monday = {
 // Google (Gmail, Docs, Sheets)
 // ============================================
 
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+export interface GmailMessageHeader {
+  name: string;
+  value: string;
+}
+
+export interface GmailMessagePart {
+  partId?: string;
+  mimeType?: string;
+  filename?: string;
+  headers?: GmailMessageHeader[];
+  body?: {
+    attachmentId?: string;
+    size?: number;
+    data?: string;
+  };
+  parts?: GmailMessagePart[];
+}
+
+export interface GmailMessage {
+  id: string;
+  threadId?: string;
+  labelIds?: string[];
+  snippet?: string;
+  payload?: GmailMessagePart;
+  sizeEstimate?: number;
+  historyId?: string;
+  internalDate?: string;
+}
+
 export const google = {
   gmail: {
-    async listMessages(params?: {
-      maxResults?: number;
-      q?: string;
-    }): Promise<{ messages: unknown[] }> {
-      const searchParams = new URLSearchParams();
-      if (params?.maxResults) searchParams.set('maxResults', String(params.maxResults));
-      if (params?.q) searchParams.set('q', params.q);
-      const query = searchParams.toString();
-      return coreApiRequest(`/google/gmail/messages${query ? `?${query}` : ''}`, {
+    async listLabels(): Promise<GmailLabel[]> {
+      return coreApiRequest<GmailLabel[]>('/google/gmail/labels', {
         method: 'GET',
       });
     },
 
-    async getMessage(id: string): Promise<unknown> {
-      return coreApiRequest(`/google/gmail/messages/${id}`, {
+    async listMessages(params?: {
+      maxResults?: number;
+      q?: string;
+      labelIds?: string[];
+    }): Promise<GmailMessage[]> {
+      const searchParams = new URLSearchParams();
+      if (params?.maxResults) searchParams.set('maxResults', String(params.maxResults));
+      if (params?.q) searchParams.set('q', params.q);
+      if (params?.labelIds && params.labelIds.length > 0) {
+        searchParams.set('labelIds', params.labelIds.join(','));
+      }
+      const query = searchParams.toString();
+      return coreApiRequest<GmailMessage[]>(`/google/gmail/messages${query ? `?${query}` : ''}`, {
+        method: 'GET',
+      });
+    },
+
+    async getMessage(id: string, format?: 'full' | 'metadata' | 'minimal'): Promise<GmailMessage> {
+      const query = format ? `?format=${format}` : '';
+      return coreApiRequest<GmailMessage>(`/google/gmail/messages/${id}${query}`, {
         method: 'GET',
       });
     },

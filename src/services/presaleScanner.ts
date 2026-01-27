@@ -14,11 +14,13 @@
  * 7. Auto-cleanup old entries
  */
 
-import { google } from 'googleapis';
-import type { gmail_v1 } from 'googleapis';
 import { config, configCompat } from '../config/environment.js';
-import { gmailCircuit, slackCircuit } from './circuitBreaker.js';
-import { getClient as getSlackClient } from './slack.js';
+import {
+  google as coreApiGoogle,
+  slack as coreApiSlack,
+  type GmailLabel,
+  type GmailMessage as CoreApiGmailMessage,
+} from './coreApi.js';
 import {
   getCachedLabels,
   updateLabelCache,
@@ -105,36 +107,8 @@ function getSportEmoji(sport: string): string {
   return SPORT_EMOJIS[sport.toUpperCase()] ?? '🎫';
 }
 
-// ============================================================================
-// Gmail Client
-// ============================================================================
-
-let gmailClient: gmail_v1.Gmail | null = null;
-
-async function getGmailClient(): Promise<gmail_v1.Gmail> {
-  if (gmailClient) return gmailClient;
-
-  const { clientId, clientSecret, refreshToken } = config.google;
-
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error(
-      'Gmail OAuth not configured. Required: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN'
-    );
-  }
-
-  const oauth2Client = new google.auth.OAuth2(
-    clientId,
-    clientSecret,
-    'https://developers.google.com/oauthplayground'
-  );
-
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
-  return gmailClient;
-}
+// Gmail API calls are now handled through core-api
+// See coreApi.ts for the client implementation
 
 // ============================================================================
 // Step 1: Get Sports Team Labels
@@ -152,14 +126,8 @@ async function getSportsTeamLabels(): Promise<string[]> {
     return cached;
   }
 
-  console.log('[PresaleScanner] Fetching Gmail labels...');
-  const gmail = await getGmailClient();
-
-  const response = await gmailCircuit.execute(() =>
-    gmail.users.labels.list({ userId: 'me' })
-  );
-
-  const labels = response.data.labels ?? [];
+  console.log('[PresaleScanner] Fetching Gmail labels via core-api...');
+  const labels = await coreApiGoogle.gmail.listLabels();
   const prefixes = config.presale.sportsLabelPrefixes;
 
   // Filter for sports team labels
@@ -183,13 +151,7 @@ async function getSportsTeamLabels(): Promise<string[]> {
  * Get label IDs for the given label names
  */
 async function getLabelIds(labelNames: string[]): Promise<Map<string, string>> {
-  const gmail = await getGmailClient();
-
-  const response = await gmailCircuit.execute(() =>
-    gmail.users.labels.list({ userId: 'me' })
-  );
-
-  const labels = response.data.labels ?? [];
+  const labels = await coreApiGoogle.gmail.listLabels();
   const labelMap = new Map<string, string>();
 
   for (const label of labels) {
@@ -234,17 +196,10 @@ function buildSearchQuery(labelIds: string[], lookbackMinutes: number): string {
 /**
  * Fetch a single Gmail message with full details
  */
-async function fetchGmailMessage(gmail: gmail_v1.Gmail, messageId: string): Promise<GmailMessage | null> {
+async function fetchGmailMessage(messageId: string): Promise<GmailMessage | null> {
   try {
-    const response = await gmailCircuit.execute(() =>
-      gmail.users.messages.get({
-        userId: 'me',
-        id: messageId,
-        format: 'full',
-      })
-    );
+    const msg = await coreApiGoogle.gmail.getMessage(messageId, 'full');
 
-    const msg = response.data;
     const headers = msg.payload?.headers ?? [];
 
     const getHeader = (name: string): string | null => {
@@ -499,8 +454,6 @@ async function searchPresaleEmails(
   sportsLabels: string[],
   lookbackMinutes: number
 ): Promise<GmailMessage[]> {
-  const gmail = await getGmailClient();
-
   // Get label IDs
   const labelIdMap = await getLabelIds(sportsLabels);
   const labelIds = Array.from(labelIdMap.values());
@@ -514,26 +467,23 @@ async function searchPresaleEmails(
   const query = buildSearchQuery(sportsLabels, lookbackMinutes);
   console.log(`[PresaleScanner] Gmail search query: ${query}`);
 
-  const searchResponse = await gmailCircuit.execute(() =>
-    gmail.users.messages.list({
-      userId: 'me',
-      q: query,
-      maxResults: 100,
-    })
-  );
+  // core-api returns full message details directly
+  const messages = await coreApiGoogle.gmail.listMessages({
+    maxResults: 100,
+    q: query,
+  });
 
-  const messages = searchResponse.data.messages ?? [];
   console.log(`[PresaleScanner] Gmail returned ${messages.length} emails`);
 
   if (messages.length === 0) {
     return [];
   }
 
-  // Fetch full message details
+  // Convert core-api messages to our internal format
   const results: GmailMessage[] = [];
   for (const msg of messages) {
     if (msg.id) {
-      const fullMsg = await fetchGmailMessage(gmail, msg.id);
+      const fullMsg = await fetchGmailMessage(msg.id);
       if (fullMsg) {
         results.push(fullMsg);
       }
@@ -672,7 +622,6 @@ async function postPresaleToSlack(
   group: PresaleGroup,
   exclusivity: ExclusivityCheckResult
 ): Promise<string> {
-  const slack = getSlackClient();
   const channelId = configCompat.presale.slackChannel;
 
   if (!channelId) {
@@ -800,16 +749,14 @@ async function postPresaleToSlack(
     ],
   });
 
-  // Post the initial message
-  const messageResult = await slackCircuit.execute(() =>
-    slack.chat.postMessage({
-      channel: channelId,
-      blocks,
-      text: `🎫 ${group.team}: ${group.subject}`,
-    })
-  );
+  // Post the initial message via core-api
+  const messageResult = await coreApiSlack.postMessage({
+    channel: channelId,
+    blocks,
+    text: `🎫 ${group.team}: ${group.subject}`,
+  });
 
-  const threadTs = (messageResult as any).ts;
+  const threadTs = messageResult.ts;
   if (!threadTs) {
     throw new Error('Failed to get Slack message timestamp');
   }
@@ -821,23 +768,21 @@ async function postPresaleToSlack(
       const safeTeamName = String(group.team || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '-');
       const pdfResult = await convertHtmlToPdf(htmlContent, `presale-${safeTeamName}`);
 
-      await slackCircuit.execute(() =>
-        slack.filesUploadV2({
-          channel_id: channelId,
-          thread_ts: threadTs,
-          filename: `presale-${group.team.toLowerCase()}-${group.date}.pdf`,
-          file: pdfResult.data,
-          title: `${group.team} Presale Email`,
-        })
-      );
+      await coreApiSlack.uploadFile({
+        channel: channelId,
+        threadTs: threadTs,
+        filename: `presale-${group.team.toLowerCase()}-${group.date}.pdf`,
+        fileData: pdfResult.data.toString('base64'),
+        title: `${group.team} Presale Email`,
+      });
 
       console.log('[PresaleScanner] Uploaded PDF to Slack');
     } catch (error) {
       console.error('[PresaleScanner] Failed to upload PDF:', error);
-      // Post error message in thread
-      await slack.chat.postMessage({
+      // Post error message in thread via core-api
+      await coreApiSlack.postMessage({
         channel: channelId,
-        thread_ts: threadTs,
+        threadTs: threadTs,
         text: `⚠️ Failed to generate PDF: ${error instanceof Error ? error.message : 'Unknown error'}`,
       });
     }
@@ -1075,8 +1020,6 @@ export async function scanSportsTeamEmails(
 ): Promise<SportsTeamScanResult> {
   console.log(`[SportsTeamScanner] Starting scan for sports team emails (sport=${sportFilter || 'all'})...`);
 
-  const gmail = await getGmailClient();
-
   // Step 1: Get all sports team labels
   let sportsLabels = await getSportsTeamLabels();
 
@@ -1121,15 +1064,11 @@ export async function scanSportsTeamEmails(
 
     try {
       // Search for all emails with this label
-      const searchResponse = await gmailCircuit.execute(() =>
-        gmail.users.messages.list({
-          userId: 'me',
-          labelIds: [labelId],
-          maxResults: maxEmailsPerLabel,
-        })
-      );
+      const messages = await coreApiGoogle.gmail.listMessages({
+        labelIds: [labelId],
+        maxResults: maxEmailsPerLabel,
+      });
 
-      const messages = searchResponse.data.messages ?? [];
       console.log(`[SportsTeamScanner] Found ${messages.length} emails for ${labelName}`);
 
       if (messages.length === 0) {
@@ -1139,21 +1078,13 @@ export async function scanSportsTeamEmails(
       // Extract "from" addresses from each email
       const fromAddresses = new Set<string>();
 
-      // Fetch message headers in batches (only need headers, not full body)
+      // Fetch message headers (only need headers, not full body)
       for (const msg of messages) {
         if (!msg.id) continue;
 
         try {
-          const msgResponse = await gmailCircuit.execute(() =>
-            gmail.users.messages.get({
-              userId: 'me',
-              id: msg.id!,
-              format: 'metadata',
-              metadataHeaders: ['From'],
-            })
-          );
-
-          const headers = msgResponse.data.payload?.headers ?? [];
+          // Full messages already have headers from listMessages
+          const headers = msg.payload?.headers ?? [];
           const fromHeader = headers.find(h => h.name?.toLowerCase() === 'from');
 
           if (fromHeader?.value) {
@@ -1164,7 +1095,7 @@ export async function scanSportsTeamEmails(
             }
           }
         } catch (error) {
-          console.error(`[SportsTeamScanner] Failed to fetch message ${msg.id}:`, error);
+          console.error(`[SportsTeamScanner] Failed to process message ${msg.id}:`, error);
         }
       }
 
@@ -1211,14 +1142,13 @@ export async function extractCodesFromMessageIds(
 ): Promise<CodeExtractionResult> {
   console.log(`[PresaleScanner] Extracting codes/links from ${messageIds.length} messages...`);
 
-  const gmail = await getGmailClient();
   const accounts: AccountPresaleData[] = [];
   const allCodes = new Set<string>();
   const allLinks = new Set<string>();
 
   // Fetch all emails and extract data
   for (const messageId of messageIds) {
-    const email = await fetchGmailMessage(gmail, messageId);
+    const email = await fetchGmailMessage(messageId);
     if (!email) continue;
 
     const accountEmail = email.to ?? email.from;
