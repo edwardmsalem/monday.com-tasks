@@ -52,7 +52,7 @@ export async function parseTaskWithAI(
   const todayStr = today.toISOString().split('T')[0];
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250514',
+    model: 'claude-sonnet-4-5-20250929',
     maxTokens: 1024,
     tools: [
       {
@@ -215,7 +215,7 @@ export async function parseFollowUpAnswers(
   }).join(', ');
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-5-20250514',
+    model: 'claude-sonnet-4-5-20250929',
     maxTokens: 512,
     tools: [
       {

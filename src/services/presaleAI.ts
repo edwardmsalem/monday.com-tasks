@@ -162,7 +162,7 @@ ${bodySnippet.slice(0, 3000)}`;
     // Wrapped in circuit breaker
     const response = await claudeCircuit.execute(() =>
       coreApiClaude.toolUse({
-        model: 'claude-sonnet-4-5-20250514',
+        model: 'claude-sonnet-4-5-20250929',
         maxTokens: 512,
         systemPrompt: EXCLUSIVITY_SYSTEM_PROMPT,
         tools: [EXCLUSIVITY_TOOL],
