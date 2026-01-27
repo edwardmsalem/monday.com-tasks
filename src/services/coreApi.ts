@@ -736,11 +736,22 @@ export function getCachedConfig(): CoreConfig {
 export async function initConfig(): Promise<CoreConfig> {
   console.log('[coreApi] Fetching config from core-api...');
   const config = await getConfig();
+  // Ensure claude.models exists (core-api may not have been updated yet)
+  if (!config.claude?.models) {
+    (config as any).claude = {
+      models: {
+        default: 'claude-sonnet-4-5-20250929',
+        fast: 'claude-haiku-4-5-20250929',
+        thinking: 'claude-sonnet-4-5-20250929',
+        opus: 'claude-opus-4-5-20251101',
+      },
+    };
+  }
   console.log('[coreApi] Config loaded:', {
     slackChannels: Object.keys(config.slack.channels).length,
     mondayBoards: Object.keys(config.monday.boards).length,
     googleSheets: Object.keys(config.google.sheets).length,
-    claudeModels: Object.keys(config.claude.models).length,
+    claudeModel: config.claude.models.default,
   });
   return config;
 }
