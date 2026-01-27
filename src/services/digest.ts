@@ -12,11 +12,20 @@ import { getClient } from './slack.js';
 import * as blockKit from './blockKit.js';
 import * as digestState from './digestState.js';
 import * as workingHours from './workingHours.js';
-import { monday as coreApiMonday } from './coreApi.js';
+import { monday as coreApiMonday, getCachedConfig } from './coreApi.js';
 
 // ============================================================================
 // Constants
 // ============================================================================
+
+// Get channels from core-api config (lazy loaded)
+function getChannels() {
+  const coreConfig = getCachedConfig();
+  return {
+    issueCall: coreConfig.slack.channels.issueCall || 'C07JS45GTQC',
+    teamOverview: coreConfig.slack.channels.seasonTicketAdmin || 'C08QCFC4Y0H',
+  };
+}
 
 // User schedule overrides (Dayna gets digest at 12 PM instead of 10 AM)
 export const USER_SCHEDULE_OVERRIDES: { [userId: string]: { morningDigestHour: number } } = {
@@ -61,10 +70,11 @@ export const ESCALATION_CONFIG = {
   },
 };
 
-// Channels
+// Channels - now loaded from core-api config via getChannels()
+// Legacy export for backwards compatibility
 export const CHANNELS = {
-  issueCall: 'C07JS45GTQC', // Issue call digests (@closers)
-  teamOverview: 'C08QCFC4Y0H', // Team overview (all task types)
+  issueCall: 'C07JS45GTQC', // Fallback - prefer getChannels()
+  teamOverview: 'C08QCFC4Y0H', // Fallback - prefer getChannels()
 };
 
 // ============================================================================
@@ -835,7 +845,7 @@ export async function sendTeamOverview(): Promise<boolean> {
 
     // Send to channel
     const result = await sendToChannel(
-      CHANNELS.teamOverview,
+      getChannels().teamOverview,
       'Team Status Update',
       blocks
     );
@@ -902,7 +912,7 @@ export async function sendIssueCallDigest(): Promise<boolean> {
 
     // Send to channel
     const result = await sendToChannel(
-      CHANNELS.issueCall,
+      getChannels().issueCall,
       'Issue Call Status',
       blocks
     );
@@ -1098,7 +1108,7 @@ export async function sendIssueCallEOD(): Promise<boolean> {
 
     // Send to channel
     const result = await sendToChannel(
-      CHANNELS.issueCall,
+      getChannels().issueCall,
       'End of Day - Issue Calls',
       blocks
     );
