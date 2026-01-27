@@ -208,7 +208,7 @@ export async function analyzeEmail(
   console.log('Sending email to Claude for analysis...');
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5-20250514',
     maxTokens: 1024,
     systemPrompt,
     tools: [extractTaskTool],
@@ -309,7 +309,7 @@ Examples:
 - "subject: Knicks days: 7 match: contains" → subject: "Knicks", matchMode: contains, daysBack: 7, useLatest: false`;
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5-20250514',
     maxTokens: 512,
     systemPrompt,
     tools: [{
@@ -564,7 +564,7 @@ export async function analyzeSlackTask(
   console.log('Sending /task to Claude for analysis...');
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5-20250514',
     maxTokens: 1024,
     systemPrompt,
     tools: [extractTaskTool],
@@ -765,7 +765,7 @@ Be flexible with input formats. Users might say:
   };
 
   const response = await coreApiClaude.toolUse({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5-20250514',
     maxTokens: 500,
     systemPrompt,
     tools: [tool],
@@ -854,7 +854,7 @@ Analyze this task name and return:
 
   try {
     const response = await coreApiClaude.toolUse({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20250514',
       maxTokens: 200,
       systemPrompt,
       tools: [
