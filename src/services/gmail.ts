@@ -307,8 +307,8 @@ export async function findRelatedRecipients(
 
       const msgData = result.value as GmailMessageFull;
       const headers = msgData.payload?.headers ?? [];
-      const toHeader = headers.find((h: GmailHeader) => h.name === 'To');
-      const fromHeader = headers.find((h: GmailHeader) => h.name === 'From');
+      const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
+      const fromHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'from');
 
       if (!toHeader?.value) continue;
 
@@ -457,8 +457,8 @@ export async function enrichRecipientsWithAppointments(
 
       const msgData = result.value as GmailMessageFull;
       const headers = msgData.payload?.headers ?? [];
-      const toHeader = headers.find((h: GmailHeader) => h.name === 'To');
-      const fromHeader = headers.find((h: GmailHeader) => h.name === 'From');
+      const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
+      const fromHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'from');
 
       if (!toHeader?.value) continue;
 
