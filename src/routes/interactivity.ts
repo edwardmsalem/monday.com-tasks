@@ -20,6 +20,8 @@ import {
   setTaskStatus,
 } from '../services/digestState.js';
 import { sendCrossNotificationDM } from '../services/slack.js';
+import { declineOpportunity } from '../services/presaleState.js';
+import { extractCodesFromMessageIds } from '../services/presaleScanner.js';
 
 const router = Router();
 const slackClient = new WebClient(config.slack.botToken);
@@ -161,6 +163,14 @@ async function handleBlockAction(
 
     case 'issue_call_stuck':
       await handleIssueCallStuck(value, userId, channelId, threadTs);
+      break;
+
+    case 'presale_interested':
+      await handlePresaleInterested(action, payload);
+      break;
+
+    case 'presale_decline':
+      await handlePresaleDecline(action, payload);
       break;
 
     default:
@@ -695,6 +705,217 @@ async function handleRescheduleSubmission(payload: InteractivityPayload): Promis
     console.log(`[Interactivity] Task ${mondayItemId} rescheduled to ${newDate}`);
   } catch (error) {
     console.error('[Interactivity] Failed to process reschedule:', error);
+  }
+}
+
+// ============================================================================
+// Presale Action Handlers
+// ============================================================================
+
+async function handlePresaleInterested(
+  action: { action_id: string; block_id: string; value: string },
+  payload: InteractivityPayload
+): Promise<void> {
+  try {
+    const userId = payload.user.id;
+    const channelId = payload.channel?.id || payload.container?.channel_id;
+    const messageTs = payload.message?.ts || payload.container?.message_ts;
+
+    // Parse the interested payload
+    const data = JSON.parse(action.value) as {
+      dedupKey: string;
+      team: string;
+      eventName: string;
+      subject: string;
+      presaleType: string;
+      presaleDate: string | null;
+      presaleChannel: string;
+      messageIds?: string[];
+    };
+
+    console.log(`[Interactivity] User ${userId} interested in presale: ${data.eventName}`);
+
+    // Extract codes/links from all emails now that they're interested
+    let statusInfo = '';
+    let csvContent: string | null = null;
+    let csvFilename = '';
+
+    if (data.messageIds && data.messageIds.length > 0) {
+      try {
+        const extraction = await extractCodesFromMessageIds(data.messageIds);
+
+        // Build status info for the message
+        const statusParts: string[] = [];
+        statusParts.push(`📊 ${extraction.accounts.length} accounts`);
+        if (extraction.sharedCode) {
+          statusParts.push(`🔑 Shared code`);
+        } else if (extraction.hasUniqueCodes) {
+          statusParts.push(`🔐 Unique codes per account`);
+        }
+        if (extraction.hasUniqueLinks) {
+          statusParts.push(`🔗 Unique links per account`);
+        }
+        statusInfo = statusParts.join(' • ');
+
+        // Generate CSV if we have account data
+        if (extraction.accounts.length > 0) {
+          const csvRows = ['Email,Code,Link'];
+          for (const account of extraction.accounts) {
+            const email = account.email.replace(/"/g, '""');
+            const code = (account.code ?? '').replace(/"/g, '""');
+            const link = (account.link ?? '').replace(/"/g, '""');
+            csvRows.push(`"${email}","${code}","${link}"`);
+          }
+          csvContent = csvRows.join('\n');
+          csvFilename = `${data.team.toLowerCase().replace(/\s+/g, '-')}-${data.eventName.toLowerCase().replace(/\s+/g, '-')}.csv`;
+        }
+      } catch (error) {
+        console.error('[Interactivity] Failed to extract codes:', error);
+        statusInfo = '⚠️ _Could not extract codes - check emails manually_';
+      }
+    }
+
+    // Post to operations channel
+    const operationsChannel = configCompat.presale?.operationsChannel;
+    if (operationsChannel) {
+      // Build the message link back to the original presale notification
+      const messageLink = messageTs && channelId
+        ? `https://slack.com/archives/${channelId}/p${messageTs.replace('.', '')}`
+        : '';
+
+      // Build presale info line
+      let presaleInfo = '';
+      if (data.presaleType === 'registration') {
+        presaleInfo = data.presaleDate ? `📝 Registration • Presale starts ${data.presaleDate}` : '📝 Registration';
+      } else if (data.presaleType === 'upcoming') {
+        presaleInfo = data.presaleDate ? `📅 Upcoming • 🗓️ ${data.presaleDate}` : '📅 Upcoming';
+      } else {
+        presaleInfo = '🎟️ Live Now';
+      }
+      if (statusInfo) {
+        presaleInfo += `\n${statusInfo}`;
+      }
+
+      const blocks: any[] = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `📋 *Prepare a sheet for ${data.team}*\n\n*Event:* ${data.eventName}\n${presaleInfo}`,
+          },
+        },
+      ];
+
+      // Add link back to original message
+      if (messageLink) {
+        blocks.push({
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: `<${messageLink}|View original presale notification>`,
+            },
+          ],
+        });
+      }
+
+      // Post the message
+      const opsMessage = await slackClient.chat.postMessage({
+        channel: operationsChannel,
+        blocks,
+        text: `📋 Prepare a sheet for ${data.team} - ${data.eventName}`,
+      });
+
+      // Upload CSV as a file in thread
+      if (csvContent && opsMessage.ts) {
+        try {
+          await slackClient.filesUploadV2({
+            channel_id: operationsChannel,
+            thread_ts: opsMessage.ts,
+            filename: csvFilename,
+            file: Buffer.from(csvContent, 'utf-8'),
+            title: `Account Data - ${data.eventName}`,
+            initial_comment: 'Email, Code, Link for each account:',
+          });
+          console.log(`[Interactivity] Uploaded CSV: ${csvFilename}`);
+        } catch (uploadError) {
+          console.error('[Interactivity] Failed to upload CSV:', uploadError);
+        }
+      }
+    }
+
+    // Update the original message to show status
+    if (channelId && messageTs) {
+      const originalBlocks = (payload.message as any)?.blocks ?? [];
+      const updatedBlocks = originalBlocks.filter((b: any) => b.type !== 'actions');
+      updatedBlocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `✅ *Interested* • Posted to operations channel`,
+          },
+        ],
+      });
+
+      await slackClient.chat.update({
+        channel: channelId,
+        ts: messageTs,
+        blocks: updatedBlocks,
+        text: (payload.message as any)?.text ?? '',
+      });
+    }
+
+  } catch (error) {
+    console.error('[Interactivity] Failed to handle presale interested:', error);
+  }
+}
+
+async function handlePresaleDecline(
+  action: { action_id: string; block_id: string; value: string },
+  payload: InteractivityPayload
+): Promise<void> {
+  try {
+    const userId = payload.user.id;
+    const channelId = payload.channel?.id || payload.container?.channel_id;
+    const messageTs = payload.message?.ts || payload.container?.message_ts;
+
+    // Parse the decline payload
+    const data = JSON.parse(action.value) as {
+      domain: string;
+      eventName: string;
+      team: string;
+    };
+
+    console.log(`[Interactivity] User ${userId} declined presale: ${data.eventName} from ${data.domain}`);
+
+    // Mark as declined in state
+    declineOpportunity(data.domain, data.eventName, data.team);
+
+    // Update the original message to show status
+    if (channelId && messageTs) {
+      const originalBlocks = (payload.message as any)?.blocks ?? [];
+      const updatedBlocks = originalBlocks.filter((b: any) => b.type !== 'actions');
+      updatedBlocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `❌ *Not Interested* • Future emails for "${data.eventName}" will be skipped`,
+          },
+        ],
+      });
+
+      await slackClient.chat.update({
+        channel: channelId,
+        ts: messageTs,
+        blocks: updatedBlocks,
+        text: (payload.message as any)?.text ?? '',
+      });
+    }
+
+  } catch (error) {
+    console.error('[Interactivity] Failed to handle presale decline:', error);
   }
 }
 
