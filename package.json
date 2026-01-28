@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:presale": "node dist/presaleServer.js",
     "dev": "tsx watch src/server.ts",
+    "dev:presale": "tsx watch src/presaleServer.ts",
     "test": "jest"
   },
   "keywords": [
