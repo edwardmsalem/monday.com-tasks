@@ -630,12 +630,18 @@ export const google = {
   },
 
   drive: {
+    /**
+     * Share a file with permissions
+     * @param type - 'user' (specific email), 'anyone' (public), or 'domain' (workspace)
+     * @param domain - Required when type is 'domain' (e.g., 'salemseats.com')
+     */
     async shareFile(
       fileId: string,
       params: {
         email?: string;
         role?: 'reader' | 'writer' | 'commenter';
-        type?: 'user' | 'anyone';
+        type?: 'user' | 'anyone' | 'domain';
+        domain?: string;
       }
     ): Promise<{ ok: boolean; permissionId: string }> {
       return coreApiRequest('/google/drive/share', {
@@ -644,6 +650,7 @@ export const google = {
           email: params.email,
           role: params.role || 'reader',
           type: params.type || 'user',
+          domain: params.domain,
         },
       });
     },

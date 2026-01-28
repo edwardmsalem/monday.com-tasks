@@ -7,38 +7,28 @@
  * All operations go through core-api (centralized Google API access)
  */
 
-import { configCompat } from '../config/environment.js';
+import { config, configCompat } from '../config/environment.js';
 import type { RecipientWithAppointment } from './gmail.js';
 import { google as coreApiGoogle } from './coreApi.js';
 
 /**
- * Safely share a sheet with anyone who has the link via core-api.
+ * Safely share a sheet with anyone in the workspace domain via core-api.
  * If sharing fails (e.g., due to workspace restrictions), logs a warning but continues.
  * @returns true if sharing succeeded, false if it failed
  */
 async function safeShareSheet(spreadsheetId: string): Promise<boolean> {
   try {
+    const domain = config.google.workspaceDomain;
     await coreApiGoogle.drive.shareFile(spreadsheetId, {
       role: 'writer',
-      type: 'anyone',
+      type: 'domain',
+      domain,
     });
+    console.log(`[Sheets] Shared sheet with ${domain} workspace`);
     return true;
   } catch (error) {
-    // Check if this is a workspace sharing restriction error
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isWorkspaceRestriction =
-      errorMessage.includes('sharing outside') ||
-      errorMessage.includes('domain') ||
-      errorMessage.includes('organization') ||
-      errorMessage.includes('policy') ||
-      errorMessage.includes('not allowed');
-
-    if (isWorkspaceRestriction) {
-      console.warn(`[Sheets] Cannot share sheet publicly (workspace policy restricts external sharing). Sheet ID: ${spreadsheetId}`);
-      console.warn('[Sheets] The sheet was created successfully but is only accessible to workspace members.');
-    } else {
-      console.error(`[Sheets] Failed to share sheet: ${errorMessage}`);
-    }
+    console.error(`[Sheets] Failed to share sheet with workspace: ${errorMessage}`);
     return false;
   }
 }

@@ -141,6 +141,7 @@ export const config = {
     calendarId: getEnvVar('GOOGLE_CALENDAR_ID', 'primary'),
     timeZone: getEnvVar('GOOGLE_CALENDAR_TIMEZONE', 'America/New_York'),
     forwardingEmail: getEnvVar('GOOGLE_FORWARDING_EMAIL', 'forwarding@salemseats.com'),
+    workspaceDomain: getEnvVar('GOOGLE_WORKSPACE_DOMAIN', 'salemseats.com'),
     serviceAccountKey: getEnvVarOptional('GOOGLE_SERVICE_ACCOUNT_KEY'),
     clientId: getEnvVarOptional('GOOGLE_CLIENT_ID'),
     clientSecret: getEnvVarOptional('GOOGLE_CLIENT_SECRET'),
