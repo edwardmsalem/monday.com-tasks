@@ -307,16 +307,26 @@ export async function findRelatedRecipients(
 
       const msgData = result.value as GmailMessageFull;
       const headers = msgData.payload?.headers ?? [];
-      const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
       const fromHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'from');
-
-      if (!toHeader?.value) continue;
-
-      const recipientEmails = extractEmailAddresses(toHeader.value);
       const fromEmail = fromHeader?.value || '';
-      // Always extract body for appointments, optionally for codes/links
+
+      // Always extract body - needed for original recipient extraction
       const bodyText = extractEmailBody(msgData.payload);
       const bodyHtml = extractCodesAndLinks ? extractEmailBodyHtml(msgData.payload) : null;
+
+      // For forwarded emails, the "To" header points to the forwarding inbox.
+      // We need to extract the ORIGINAL recipient from the forwarded email body.
+      const recipientEmails = extractOriginalToFromBody(bodyText);
+
+      if (recipientEmails.length === 0) {
+        // Fallback: try the header "To" (for non-forwarded emails)
+        const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
+        if (toHeader?.value) {
+          recipientEmails.push(...extractEmailAddresses(toHeader.value));
+        }
+      }
+
+      if (recipientEmails.length === 0) continue;
 
       messagesToProcess.push({ toEmails: recipientEmails, fromEmail, bodyText, bodyHtml });
     }
@@ -457,14 +467,20 @@ export async function enrichRecipientsWithAppointments(
 
       const msgData = result.value as GmailMessageFull;
       const headers = msgData.payload?.headers ?? [];
-      const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
       const fromHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'from');
-
-      if (!toHeader?.value) continue;
-
-      const recipientEmails = extractEmailAddresses(toHeader.value);
       const fromEmail = fromHeader?.value || '';
       const bodyText = extractEmailBody(msgData.payload);
+
+      // For forwarded emails, extract original recipient from body
+      const recipientEmails = extractOriginalToFromBody(bodyText);
+
+      if (recipientEmails.length === 0) {
+        // Fallback: try the header "To"
+        const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
+        if (toHeader?.value) {
+          recipientEmails.push(...extractEmailAddresses(toHeader.value));
+        }
+      }
 
       for (const email of recipientEmails) {
         const normalizedEmail = email.toLowerCase();
@@ -553,6 +569,43 @@ function extractEmailBody(payload: any): string {
   }
 
   return '';
+}
+
+/**
+ * Extract the original "To" recipient from a forwarded email body
+ * Looks for patterns like:
+ * - "To: customer@example.com"
+ * - "To: John Doe <customer@example.com>"
+ *
+ * Returns the extracted email addresses, or empty array if not found
+ */
+function extractOriginalToFromBody(bodyText: string): string[] {
+  if (!bodyText) return [];
+
+  // Common patterns for forwarded email "To:" lines
+  // Match "To:" at start of line, followed by email(s)
+  const toPatterns = [
+    // "To: email@example.com" or "To: Name <email@example.com>"
+    /^To:\s*(.+?)$/gim,
+    // Gmail forward format: "To: email@example.com"
+    /(?:---------- Forwarded message ---------[\s\S]*?)To:\s*(.+?)$/m,
+  ];
+
+  const foundEmails: string[] = [];
+
+  for (const pattern of toPatterns) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(bodyText);
+    if (match && match[1]) {
+      // Extract email addresses from the matched To: line
+      const emails = extractEmailAddresses(match[1]);
+      foundEmails.push(...emails);
+      if (foundEmails.length > 0) break; // Found some, stop searching
+    }
+  }
+
+  // Deduplicate
+  return [...new Set(foundEmails)];
 }
 
 /**
