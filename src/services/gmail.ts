@@ -315,8 +315,7 @@ export async function findRelatedRecipients(
       const bodyHtml = extractCodesAndLinks ? extractEmailBodyHtml(msgData.payload) : null;
 
       // For auto-forwarded emails, check X-Forwarded-For header first (contains original recipient)
-      // Then try body extraction for manually forwarded emails
-      // Finally fall back to To header
+      // Then try Delivered-To headers, body extraction, and finally To header
       let recipientEmails: string[] = [];
 
       // Try X-Forwarded-For header (Gmail auto-forward includes original recipient here)
@@ -327,6 +326,22 @@ export async function findRelatedRecipients(
         if (parts.length > 0 && parts[0].includes('@')) {
           recipientEmails.push(parts[0]);
           console.log(`[Gmail] Found recipient from X-Forwarded-For: ${parts[0]}`);
+        }
+      }
+
+      // Try Delivered-To headers (there can be multiple - find one that's not the forwarding inbox)
+      if (recipientEmails.length === 0) {
+        const deliveredToHeaders = headers.filter((h: GmailHeader) => h.name?.toLowerCase() === 'delivered-to');
+        for (const header of deliveredToHeaders) {
+          if (header.value) {
+            const email = header.value.trim().toLowerCase();
+            // Skip the forwarding inbox itself and excluded domains
+            if (email === config.google.forwardingEmail?.toLowerCase()) continue;
+            if (shouldExcludeRecipient(email)) continue;
+            recipientEmails.push(email);
+            console.log(`[Gmail] Found recipient from Delivered-To: ${email}`);
+            break; // Take the first valid one
+          }
         }
       }
 
@@ -343,12 +358,14 @@ export async function findRelatedRecipients(
         const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
         if (toHeader?.value) {
           recipientEmails = extractEmailAddresses(toHeader.value);
-          console.log(`[Gmail] Found recipient from To header: ${recipientEmails.join(', ')}`);
+          if (recipientEmails.length > 0) {
+            console.log(`[Gmail] Found recipient from To header: ${recipientEmails.join(', ')}`);
+          }
         }
       }
 
       if (recipientEmails.length === 0) {
-        console.log(`[Gmail] No recipients found for message, headers: ${headers.map(h => h.name).join(', ')}`);
+        console.log(`[Gmail] No recipients found for message`);
         continue;
       }
 
