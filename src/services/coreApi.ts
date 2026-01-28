@@ -19,22 +19,30 @@ async function coreApiRequest<T = unknown>(
 ): Promise<T> {
   const url = `${CORE_API_URL}${endpoint}`;
 
-  const response = await fetch(url, {
-    method: options.method || 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': CORE_API_KEY || '',
-      ...options.headers,
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  try {
+    const response = await fetch(url, {
+      method: options.method || 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': CORE_API_KEY || '',
+        ...options.headers,
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(60000), // 60 second timeout for core-api calls
+    });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Core API error (${response.status}): ${error}`);
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Core API error (${response.status}): ${error}`);
+    }
+
+    return response.json() as Promise<T>;
+  } catch (error: any) {
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+      throw new Error(`Core API request to ${endpoint} timed out after 60 seconds`);
+    }
+    throw error;
   }
-
-  return response.json() as Promise<T>;
 }
 
 // ============================================

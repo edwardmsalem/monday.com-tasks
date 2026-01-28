@@ -242,7 +242,8 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
       })
     );
 
-    const messages = ((searchResponse as { messages?: GmailMessageListItem[] }).messages ?? []) as GmailMessageListItem[];
+    // core-api's listMessages returns the array directly, not wrapped in { messages: [...] }
+    const messages = (Array.isArray(searchResponse) ? searchResponse : []) as GmailMessageFull[];
     console.log(`Found ${messages.length} related emails`);
 
     if (messages.length === 0) {
@@ -622,7 +623,8 @@ export async function searchEmailsBySubject(
       })
     );
 
-    const messages = ((searchResponse as { messages?: GmailMessageListItem[] }).messages ?? []) as GmailMessageListItem[];
+    // core-api's listMessages returns the array directly, not wrapped in { messages: [...] }
+    const messages = (Array.isArray(searchResponse) ? searchResponse : []) as GmailMessageFull[];
     console.log(`Gmail returned ${messages.length} messages`);
 
     if (messages.length === 0) {
