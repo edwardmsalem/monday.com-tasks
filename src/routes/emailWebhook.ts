@@ -517,7 +517,7 @@ router.post(
       }
 
       // Check for /scan command in body text (now also matches /scantimes - merged behavior)
-      const { shouldScanForRecipients, findRelatedRecipients } = await import('../services/gmail.js');
+      const { shouldScanForRecipients, findRelatedRecipients, enrichRecipientsWithAppointments } = await import('../services/gmail.js');
       const { createScanSheet, detectContentType } = await import('../services/sheets.js');
 
       // Just detect if scan is needed - we'll run it AFTER sending the response
@@ -611,80 +611,127 @@ router.post(
             const extractCodesAndLinks = contentType === 'presale';
             console.log(`[Background Scan] Content type: ${contentType}, extracting codes/links: ${extractCodesAndLinks}`);
 
-            const scannedRecipients = await findRelatedRecipients(subject, extractCodesAndLinks);
-            if (scannedRecipients.length > 0) {
-              console.log(`[Background Scan] Found ${scannedRecipients.length} related recipients, creating Google Sheet...`);
+            // STEP 1: Get recipients FAST (skip appointment extraction)
+            const scannedRecipients = await findRelatedRecipients(subject, {
+              extractCodesAndLinks,
+              skipAppointmentExtraction: true, // Get emails first, appointments later
+            });
 
-              // Create Google Sheet - use detected team name for title
-              const teamForTitle = analysisResult.team || 'Team';
+            if (scannedRecipients.length === 0) {
+              console.log('[Background Scan] No related recipients found in the last 48 hours');
+              return;
+            }
+
+            console.log(`[Background Scan] Found ${scannedRecipients.length} related recipients`);
+
+            // STEP 2: Post email list IMMEDIATELY (no waiting for Claude)
+            const teamName = analysisResult.team || 'this team';
+            try {
+              const emailList = scannedRecipients.map(r => `• ${r.email}`).join('\n');
+              const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
+              await slack.postToThread(slackMessage.ts, scanMessage);
+              console.log('[Background Scan] Posted email list to Slack thread');
+            } catch (threadErr) {
+              console.error('[Background Scan] Failed to post email list:', threadErr);
+            }
+
+            // STEP 3: Create Google Sheet with emails (fast)
+            const teamForTitle = analysisResult.team || 'Team';
+            let sheetUrl = '';
+            try {
               const sheetResult = await createScanSheet({
                 title: teamForTitle,
                 recipients: scannedRecipients,
                 contentType,
               });
-              const sheetUrl = sheetResult.spreadsheetUrl;
+              sheetUrl = sheetResult.spreadsheetUrl;
               console.log('[Background Scan] Google Sheet created:', sheetUrl);
               await monday.createUpdate(
                 mondayItem.id,
                 `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
               );
+            } catch (sheetError) {
+              console.error('[Background Scan] Failed to create sheet:', sheetError);
+            }
 
-              // Create calendar events - use detected team name
-              let calendarEventCount = 0;
-              const calendar = await import('../services/calendar.js');
-              if (calendar.isCalendarEnabled()) {
-                console.log('[Background Scan] Creating calendar events...');
+            // STEP 4: NOW extract appointment times (slow, uses Claude)
+            console.log('[Background Scan] Extracting appointment times...');
+            const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients);
+            const recipientsWithTimes = enrichedRecipients.filter(r => r.appointmentDate || r.appointmentTime);
+
+            // STEP 5: Post appointment times if found
+            if (recipientsWithTimes.length > 0) {
+              try {
+                const timesMessage = recipientsWithTimes.map(r => {
+                  const timeStr = [r.appointmentDate, r.appointmentTime].filter(Boolean).join(' ');
+                  return `• ${r.email} - ${timeStr}`;
+                }).join('\n');
+                await slack.postToThread(slackMessage.ts, `📅 *Appointment times found:*\n\n${timesMessage}`);
+                console.log(`[Background Scan] Posted ${recipientsWithTimes.length} appointment times`);
+              } catch (timesErr) {
+                console.error('[Background Scan] Failed to post appointment times:', timesErr);
+              }
+
+              // Update the sheet with appointment times
+              if (sheetUrl) {
                 try {
-                  const calendarEvents = await calendar.createScanAppointmentEvents(
-                    teamForTitle,
-                    scannedRecipients,
-                    mondayItem.id,
-                    sheetUrl
-                  );
-                  calendarEventCount = calendarEvents.length;
-                  if (calendarEvents.length > 0) {
-                    console.log(`[Background Scan] Created ${calendarEvents.length} calendar events`);
-                    await monday.createUpdate(
-                      mondayItem.id,
-                      `📅 Created ${calendarEvents.length} calendar event(s) for appointments`
-                    );
-                  }
-                } catch (calendarError) {
-                  console.error('[Background Scan] Failed to create calendar events:', calendarError);
+                  await createScanSheet({
+                    title: teamForTitle,
+                    recipients: enrichedRecipients,
+                    contentType,
+                  });
+                  console.log('[Background Scan] Updated sheet with appointment times');
+                } catch (updateErr) {
+                  console.error('[Background Scan] Failed to update sheet with times:', updateErr);
                 }
               }
-
-              // Post scan summary to Slack thread
-              try {
-                const scanSummaryText = [
-                  `✅ *Scan Complete*`,
-                  `• ${scannedRecipients.length} accounts found`,
-                  calendarEventCount > 0
-                    ? `• ${calendarEventCount} calendar event(s) created`
-                    : `• No calendar events (calendar disabled or no appointment times)`,
-                  `• <${sheetUrl}|View Tracking Sheet>`,
-                ].join('\n');
-                await slack.postToThread(slackMessage.ts, scanSummaryText);
-                console.log('[Background Scan] Posted scan summary to Slack thread');
-              } catch (summaryError) {
-                console.error('[Background Scan] Failed to post scan summary:', summaryError);
-              }
-
-              // Post email list to Slack thread
-              try {
-                const teamName = analysisResult.team || 'this team';
-                const emailList = scannedRecipients.map(r => `• ${r.email}`).join('\n');
-                const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
-                await slack.postToThread(slackMessage.ts, scanMessage);
-                console.log('[Background Scan] Posted email list to Slack thread');
-              } catch (threadErr) {
-                console.error('[Background Scan] Failed to post email list:', threadErr);
-              }
-
-              console.log('[Background Scan] Scan completed successfully!');
-            } else {
-              console.log('[Background Scan] No related recipients found in the last 48 hours');
             }
+
+            // STEP 6: Create calendar events if we have appointment times
+            let calendarEventCount = 0;
+            const calendar = await import('../services/calendar.js');
+            if (calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
+              console.log('[Background Scan] Creating calendar events...');
+              try {
+                const calendarEvents = await calendar.createScanAppointmentEvents(
+                  teamForTitle,
+                  enrichedRecipients,
+                  mondayItem.id,
+                  sheetUrl
+                );
+                calendarEventCount = calendarEvents.length;
+                if (calendarEvents.length > 0) {
+                  console.log(`[Background Scan] Created ${calendarEvents.length} calendar events`);
+                  await monday.createUpdate(
+                    mondayItem.id,
+                    `📅 Created ${calendarEvents.length} calendar event(s) for appointments`
+                  );
+                }
+              } catch (calendarError) {
+                console.error('[Background Scan] Failed to create calendar events:', calendarError);
+              }
+            }
+
+            // STEP 7: Post final summary
+            try {
+              const scanSummaryText = [
+                `✅ *Scan Complete*`,
+                `• ${scannedRecipients.length} accounts found`,
+                recipientsWithTimes.length > 0
+                  ? `• ${recipientsWithTimes.length} with appointment times`
+                  : `• No appointment times found`,
+                calendarEventCount > 0
+                  ? `• ${calendarEventCount} calendar event(s) created`
+                  : null,
+                sheetUrl ? `• <${sheetUrl}|View Tracking Sheet>` : null,
+              ].filter(Boolean).join('\n');
+              await slack.postToThread(slackMessage.ts, scanSummaryText);
+              console.log('[Background Scan] Posted scan summary to Slack thread');
+            } catch (summaryError) {
+              console.error('[Background Scan] Failed to post scan summary:', summaryError);
+            }
+
+            console.log('[Background Scan] Scan completed successfully!');
           } catch (scanError) {
             console.error('[Background Scan] Scan failed:', scanError);
           }

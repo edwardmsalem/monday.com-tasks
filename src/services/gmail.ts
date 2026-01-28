@@ -218,12 +218,22 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
  * Returns recipients with appointment times and optional codes/links
  *
  * @param subject - Email subject to search for
- * @param extractCodesAndLinks - If true, also extract presale codes and links (default: false)
+ * @param options.extractCodesAndLinks - If true, also extract presale codes and links (default: false)
+ * @param options.skipAppointmentExtraction - If true, skip Claude appointment extraction (default: false)
  */
-export async function findRelatedRecipients(subject: string, extractCodesAndLinks: boolean = false): Promise<RecipientWithAppointment[]> {
+export async function findRelatedRecipients(
+  subject: string,
+  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean } = false
+): Promise<RecipientWithAppointment[]> {
+  // Support both old boolean signature and new options object
+  const options = typeof extractCodesAndLinksOrOptions === 'boolean'
+    ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false }
+    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, ...extractCodesAndLinksOrOptions };
+
+  const { extractCodesAndLinks, skipAppointmentExtraction } = options;
   const normalizedSubject = normalizeSubject(subject);
 
-  console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}`);
+  console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}, skipAppointmentExtraction: ${skipAppointmentExtraction}`);
 
   // Build search query - last 48 hours
   const twoDaysAgo = new Date();
@@ -311,12 +321,14 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
       messagesToProcess.push({ toEmails: recipientEmails, fromEmail, bodyText, bodyHtml });
     }
 
-    // Always extract appointments with Claude (3 concurrent to avoid API limits)
-    if (messagesToProcess.length > 0) {
+    // Extract appointments with Claude unless skipped (3 concurrent to avoid API limits)
+    let appointmentResults: Array<{ success: true; value: { appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null } } | { success: false; error: Error }> = [];
+
+    if (messagesToProcess.length > 0 && !skipAppointmentExtraction) {
       const appointmentStartTime = Date.now();
       console.log(`[Gmail] Extracting appointments from ${messagesToProcess.length} emails with concurrency=3...`);
 
-      const appointmentResults = await batchWithConcurrency(
+      appointmentResults = await batchWithConcurrency(
         messagesToProcess,
         async (msg) => extractAppointmentTime(msg.bodyText, normalizedSubject, msg.fromEmail),
         3 // lower concurrency for Claude API
@@ -325,11 +337,15 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
       const appointmentTime = Date.now() - appointmentStartTime;
       const appointmentSuccess = appointmentResults.filter(r => r.success).length;
       console.log(`[Gmail] Extracted ${appointmentSuccess} appointments in ${appointmentTime}ms`);
+    } else if (skipAppointmentExtraction) {
+      console.log(`[Gmail] Skipping appointment extraction (skipAppointmentExtraction=true)`);
+    }
 
-      // Combine recipients with their appointment info and optional codes/links
+    // Combine recipients with their appointment info and optional codes/links
+    if (messagesToProcess.length > 0) {
       messagesToProcess.forEach((msg, idx) => {
         const appointmentResult = appointmentResults[idx];
-        const appointmentInfo = appointmentResult.success
+        const appointmentInfo = appointmentResult?.success
           ? appointmentResult.value
           : { appointmentDate: null, appointmentTime: null, rawDateTime: null };
 
@@ -378,6 +394,135 @@ export async function findRelatedRecipients(subject: string, extractCodesAndLink
   } catch (error) {
     console.error('Gmail search error:', error);
     throw error;
+  }
+}
+
+/**
+ * Enrich recipients with appointment times using Claude
+ * Call this AFTER posting the initial email list to get appointment times asynchronously
+ *
+ * @param subject - Email subject to search for (used for Claude context)
+ * @param recipients - Recipients to enrich (from findRelatedRecipients with skipAppointmentExtraction)
+ * @returns Recipients with appointment times filled in
+ */
+export async function enrichRecipientsWithAppointments(
+  subject: string,
+  recipients: RecipientWithAppointment[]
+): Promise<RecipientWithAppointment[]> {
+  if (recipients.length === 0) {
+    return recipients;
+  }
+
+  const normalizedSubject = normalizeSubject(subject);
+  console.log(`[Gmail] Enriching ${recipients.length} recipients with appointment times...`);
+
+  // Re-fetch messages to get body text for appointment extraction
+  // Build search query - last 48 hours
+  const twoDaysAgo = new Date();
+  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+  const afterDate = twoDaysAgo.toISOString().split('T')[0].replace(/-/g, '/');
+
+  const query = `subject:"${normalizedSubject}" after:${afterDate}`;
+
+  try {
+    const searchResponse = await gmailCircuit.execute(() =>
+      coreApiGoogle.gmail.listMessages({
+        maxResults: 200,
+        q: query,
+      })
+    );
+
+    const messages = (Array.isArray(searchResponse) ? searchResponse : []) as GmailMessageFull[];
+    if (messages.length === 0) {
+      return recipients;
+    }
+
+    // Fetch message details
+    const validMessages = messages.filter((m: GmailMessageListItem) => m.id);
+    const fetchResults = await batchWithConcurrency(
+      validMessages,
+      async (message: GmailMessageListItem) => {
+        const msgResponse = await gmailCircuit.execute(() =>
+          coreApiGoogle.gmail.getMessage(message.id!)
+        );
+        return msgResponse as GmailMessageFull;
+      },
+      5
+    );
+
+    // Build email -> body text mapping
+    const emailToBody = new Map<string, { bodyText: string; fromEmail: string }>();
+    for (const result of fetchResults) {
+      if (!result.success) continue;
+
+      const msgData = result.value as GmailMessageFull;
+      const headers = msgData.payload?.headers ?? [];
+      const toHeader = headers.find((h: GmailHeader) => h.name === 'To');
+      const fromHeader = headers.find((h: GmailHeader) => h.name === 'From');
+
+      if (!toHeader?.value) continue;
+
+      const recipientEmails = extractEmailAddresses(toHeader.value);
+      const fromEmail = fromHeader?.value || '';
+      const bodyText = extractEmailBody(msgData.payload);
+
+      for (const email of recipientEmails) {
+        const normalizedEmail = email.toLowerCase();
+        if (!emailToBody.has(normalizedEmail)) {
+          emailToBody.set(normalizedEmail, { bodyText, fromEmail });
+        }
+      }
+    }
+
+    // Extract appointments for each recipient
+    const recipientsToEnrich = recipients.filter(r => emailToBody.has(r.email));
+    console.log(`[Gmail] Extracting appointments from ${recipientsToEnrich.length} emails with concurrency=3...`);
+
+    const appointmentResults = await batchWithConcurrency(
+      recipientsToEnrich,
+      async (recipient) => {
+        const emailData = emailToBody.get(recipient.email);
+        if (!emailData) {
+          return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+        }
+        return extractAppointmentTime(emailData.bodyText, normalizedSubject, emailData.fromEmail);
+      },
+      3
+    );
+
+    console.log(`[Gmail] Appointment extraction complete`);
+
+    // Update recipients with appointment info
+    const enrichedRecipients = recipients.map(recipient => {
+      const idx = recipientsToEnrich.findIndex(r => r.email === recipient.email);
+      if (idx === -1) return recipient;
+
+      const result = appointmentResults[idx];
+      if (!result.success) return recipient;
+
+      return {
+        ...recipient,
+        appointmentDate: result.value.appointmentDate,
+        appointmentTime: result.value.appointmentTime,
+        rawDateTime: result.value.rawDateTime,
+      };
+    });
+
+    // Sort by appointment date (nulls last)
+    enrichedRecipients.sort((a, b) => {
+      if (!a.rawDateTime && !b.rawDateTime) return 0;
+      if (!a.rawDateTime) return 1;
+      if (!b.rawDateTime) return -1;
+      return a.rawDateTime.localeCompare(b.rawDateTime);
+    });
+
+    const withAppointments = enrichedRecipients.filter(r => r.appointmentDate || r.appointmentTime);
+    console.log(`[Gmail] Found ${withAppointments.length} recipients with appointment times`);
+
+    return enrichedRecipients;
+  } catch (error) {
+    console.error('[Gmail] Error enriching with appointments:', error);
+    return recipients; // Return original recipients on error
   }
 }
 
