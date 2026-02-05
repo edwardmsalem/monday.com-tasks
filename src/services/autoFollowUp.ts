@@ -12,6 +12,7 @@
 import { config, configCompat } from '../config/environment.js';
 import * as slack from './slack.js';
 import * as monday from './monday.js';
+import { monday as coreApiMonday } from './coreApi.js';
 import { getAllUsers, type UnifiedUser } from './userResolver.js';
 import { pingUnclaimedIssueCalls, initializeIssueCallTracker } from './issueCallTracker.js';
 
@@ -283,21 +284,8 @@ async function getOpenTasks(): Promise<TaskForFollowUp[]> {
     }>;
   }
 
-  const response = await fetch('https://api.monday.com/v2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': config.monday.apiToken,
-      'API-Version': '2024-01',
-    },
-    body: JSON.stringify({
-      query,
-      variables: { boardId: configCompat.monday.boardId },
-    }),
-  });
-
-  const result = await response.json() as { data: MondayResponse };
-  const items = result.data?.boards?.[0]?.items_page?.items ?? [];
+  const result = await coreApiMonday.query(query, { boardId: configCompat.monday.boardId }) as { boards: MondayResponse['boards'] };
+  const items = result.boards?.[0]?.items_page?.items ?? [];
   const users = await getAllUsers();
 
   return items.map(item => {

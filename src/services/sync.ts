@@ -26,12 +26,37 @@ import {
 import { setTaskStatus } from './digestState.js';
 
 /**
- * Translate @ mentions from Slack format to Monday format
- * <@U12345> → finds matching Monday user and returns their name/id
+ * Convert Slack link format to HTML links
+ * <https://example.com|Display Text> → <a href="https://example.com">Display Text</a>
+ * <https://example.com> → <a href="https://example.com">https://example.com</a>
  */
-export async function translateSlackMentionsToMonday(text: string): Promise<string> {
+export function convertSlackLinksToHtml(text: string): string {
+  let result = text;
+
+  // Match Slack links: <url|text> or <url>
+  // Slack link format: <protocol://url|optional display text>
+  const linkRegex = /<(https?:\/\/[^|>]+)(?:\|([^>]+))?>/g;
+
+  result = result.replace(linkRegex, (_match, url, displayText) => {
+    const label = displayText || url;
+    return `<a href="${url}">${label}</a>`;
+  });
+
+  return result;
+}
+
+/**
+ * Translate @ mentions from Slack format to Monday format
+ * <@U12345> → finds matching Monday user and returns their name + Monday user ID
+ * Returns both the translated text and the list of Monday user IDs for proper mentions
+ */
+export async function translateSlackMentionsToMonday(text: string): Promise<{
+  text: string;
+  mentionUserIds: number[];
+}> {
   const users = await getAllUsers();
   const slackMentionRegex = /<@([A-Z0-9]+)>/g;
+  const mentionUserIds: number[] = [];
 
   let result = text;
   let match;
@@ -43,10 +68,12 @@ export async function translateSlackMentionsToMonday(text: string): Promise<stri
     if (user) {
       // Replace Slack mention with Monday-friendly @name
       result = result.replace(match[0], `@${user.name}`);
+      // Collect Monday user ID for proper mention
+      mentionUserIds.push(user.mondayId);
     }
   }
 
-  return result;
+  return { text: result, mentionUserIds };
 }
 
 /**
@@ -104,18 +131,21 @@ export async function syncSlackToMonday(
 
   console.log(`Found Monday item ${mondayItemId} for thread ${slackThreadTs}`);
 
-  // Translate Slack mentions to Monday format
-  const translatedText = await translateSlackMentionsToMonday(messageText);
+  // Convert Slack links to HTML
+  const textWithLinks = convertSlackLinksToHtml(messageText);
+
+  // Translate Slack mentions to Monday format (returns text + user IDs for proper mentions)
+  const { text: translatedText, mentionUserIds } = await translateSlackMentionsToMonday(textWithLinks);
 
   // Get the user's name for the update
   const users = await getAllUsers();
   const user = users.find(u => u.slackId === slackUserId);
   const authorName = user?.name ?? 'Slack User';
 
-  // Create update in Monday
-  // Author is just a name (not @mention), but message content still has translated @mentions
+  // Create update in Monday with proper mentions
+  // Author is just a name (not @mention), but message content has translated @mentions
   const formattedUpdate = `<p>💬 <strong>${authorName}</strong> <em>(via Slack)</em></p><p>${translatedText}</p>`;
-  const updateId = await monday.createUpdate(mondayItemId, formattedUpdate);
+  const updateId = await monday.createUpdate(mondayItemId, formattedUpdate, mentionUserIds);
 
   console.log(`Synced Slack message to Monday item ${mondayItemId}`);
 

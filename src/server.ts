@@ -24,9 +24,6 @@ import * as monday from './services/monday.js';
 import * as slack from './services/slack.js';
 import * as sync from './services/sync.js';
 import { findUserByName, findUserBySlackId } from './services/userResolver.js';
-// Old notification system - disabled, replaced by digestScheduler
-// import { startFollowUpScheduler, checkAndSendFollowUps } from './services/autoFollowUp.js';
-// import { startScheduler as startAfterHoursScheduler } from './services/afterHoursScheduler.js';
 import { initializeJobQueue } from './services/jobQueue.js';
 import {
   checkIdempotency,
@@ -419,11 +416,6 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 
 import { lookupAccountForIssueCall, formatIssueCallAccount, logSheetsConfiguration } from './services/sheets.js';
 import { parseIssueCallInputSafe } from './services/claude.js';
-// Old notification system - disabled, replaced by digestScheduler
-// import {
-//   registerIssueCall,
-//   CLOSERS_GROUP_ID,
-// } from './services/issueCallTracker.js';
 
 /**
  * Expand short team names to full official names for Monday.com
@@ -1083,17 +1075,6 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Pass the issue call channel ID so syncs go to the right channel
     await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts, issueCallChannelId);
 
-    // Old notification system - disabled, replaced by digestScheduler
-    // registerIssueCall({
-    //   mondayItemId: mondayItem.id,
-    //   slackThreadTs: slackMessage.ts,
-    //   channelId: issueCallChannelId,
-    //   createdAt: Date.now(),
-    //   ownerSlackIds: [dayna.slackId, ruzzell.slackId].filter((id): id is string => !!id),
-    //   suggestedSupporterSlackId: supporterUser?.slackId,
-    //   ...(supporterUser?.slackId ? { claimed: true, claimedBy: supporterUser.slackId } : {}),
-    // });
-
     console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
 
     // Send confirmation via response_url
@@ -1371,13 +1352,18 @@ app.post('/webhook/slack/rename-issuecalls', slackUrlEncodedWithRawBody, async (
 
 /**
  * Test endpoint for Phase 2 button testing
- * Posts a message with all 4 task buttons to Edward's DM
+ * Posts a message with all 4 task buttons to the specified user's DM
  *
- * Usage: POST /admin/test/buttons/:mondayItemId
+ * Usage: POST /admin/test/buttons/:mondayItemId?userId=U0144K906KA
  */
 app.post('/admin/test/buttons/:mondayItemId', express.json(), async (req: Request, res: Response): Promise<void> => {
   const { mondayItemId } = req.params;
-  const testUserId = 'U0144K906KA'; // Edward's Slack ID
+  const testUserId = req.query.userId as string;
+
+  if (!testUserId) {
+    res.status(400).json({ error: 'Missing required query parameter: userId' });
+    return;
+  }
 
   try {
     // Optionally fetch task name from Monday
@@ -1409,7 +1395,7 @@ app.post('/admin/test/buttons/:mondayItemId', express.json(), async (req: Reques
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `*Task:* ${taskName}\n*Monday ID:* \`${mondayItemId}\`\n*URL:* <https://edwardsalem.monday.com/boards/7150646315/pulses/${mondayItemId}|View in Monday>`,
+            text: `*Task:* ${taskName}\n*Monday ID:* \`${mondayItemId}\`\n*URL:* <${configCompat.monday.boardUrl}/pulses/${mondayItemId}|View in Monday>`,
           },
         },
         {
@@ -1790,10 +1776,6 @@ async function start() {
     console.log(`  Monday webhook:  http://localhost:${config.port}/webhook/monday`);
     console.log(`  Relay events:    http://localhost:${config.port}/relay/events`);
     console.log('');
-
-    // Old notification system - disabled, replaced by digestScheduler
-    // startFollowUpScheduler();
-    // startAfterHoursScheduler();
 
     // Start digest scheduler (Phase 4 - Digest Notification System)
     digestScheduler.startDigestScheduler();

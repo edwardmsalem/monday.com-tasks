@@ -13,6 +13,7 @@
 
 import { WebClient } from '@slack/web-api';
 import { config, configCompat, initRemoteConfig } from '../config/environment.js';
+import { monday as coreApiMonday, initConfig as initCoreApiConfig } from '../services/coreApi.js';
 
 // ============================================================================
 // Configuration
@@ -118,34 +119,21 @@ async function getTasksToMigrate(): Promise<TaskToMigrate[]> {
     }
   `;
 
-  const response = await fetch('https://api.monday.com/v2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: config.monday.apiToken,
-      'API-Version': '2024-01',
-    },
-    body: JSON.stringify({
-      query,
-      variables: { boardId: configCompat.monday.boardId },
-    }),
-  });
+  interface MondayQueryResult {
+    boards?: Array<{
+      items_page?: {
+        items?: Array<{
+          id: string;
+          name: string;
+          created_at: string;
+          column_values: Array<{ id: string; text: string; value: string }>;
+        }>;
+      };
+    }>;
+  }
 
-  const result = (await response.json()) as {
-    data?: {
-      boards?: Array<{
-        items_page?: {
-          items?: Array<{
-            id: string;
-            name: string;
-            created_at: string;
-            column_values: Array<{ id: string; text: string; value: string }>;
-          }>;
-        };
-      }>;
-    };
-  };
-  const items = result.data?.boards?.[0]?.items_page?.items ?? [];
+  const result = (await coreApiMonday.query(query, { boardId: configCompat.monday.boardId })) as MondayQueryResult;
+  const items = result.boards?.[0]?.items_page?.items ?? [];
 
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - MAX_AGE_DAYS);
@@ -296,6 +284,7 @@ function sleep(ms: number): Promise<void> {
 export async function runMigration(): Promise<MigrationResult> {
   // Initialize remote config from core-api
   await initRemoteConfig();
+  await initCoreApiConfig();
 
   console.log('='.repeat(60));
   console.log('THREAD BUTTON MIGRATION');

@@ -786,6 +786,7 @@ export async function sendResponseUrl(responseUrl: string, text: string): Promis
         text,
         replace_original: false,
       }),
+      signal: AbortSignal.timeout(10000),
     });
   } catch (error) {
     console.error('Failed to send response_url message:', error);
@@ -1576,6 +1577,7 @@ export async function downloadFile(file: SlackFile): Promise<Buffer> {
     headers: {
       Authorization: `Bearer ${config.slack.botToken}`,
     },
+    signal: AbortSignal.timeout(60000),
   });
 
   if (!response.ok) {

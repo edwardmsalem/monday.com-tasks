@@ -504,9 +504,30 @@ export async function getItemUpdates(itemId: string): Promise<MondayUpdate[]> {
 
 /**
  * Create an update (comment) on a Monday item
+ * @param itemId - The Monday item ID
+ * @param body - The update body (HTML supported)
+ * @param mentionUserIds - Optional array of Monday user IDs to mention
  */
-export async function createUpdate(itemId: string, body: string): Promise<string> {
-  const query = `
+export async function createUpdate(
+  itemId: string,
+  body: string,
+  mentionUserIds?: number[]
+): Promise<string> {
+  // Build mentions_list if user IDs provided
+  const mentionsList =
+    mentionUserIds && mentionUserIds.length > 0
+      ? mentionUserIds.map(id => ({ id, type: 'User' }))
+      : undefined;
+
+  const query = mentionsList
+    ? `
+    mutation CreateUpdate($itemId: ID!, $body: String!, $mentionsList: [MentionInput!]) {
+      create_update(item_id: $itemId, body: $body, mentions_list: $mentionsList) {
+        id
+      }
+    }
+  `
+    : `
     mutation CreateUpdate($itemId: ID!, $body: String!) {
       create_update(item_id: $itemId, body: $body) {
         id
@@ -514,10 +535,12 @@ export async function createUpdate(itemId: string, body: string): Promise<string
     }
   `;
 
-  const result = await executeQuery<{ create_update: { id: string } }>(query, {
-    itemId,
-    body,
-  });
+  const variables: Record<string, unknown> = { itemId, body };
+  if (mentionsList) {
+    variables.mentionsList = mentionsList;
+  }
+
+  const result = await executeQuery<{ create_update: { id: string } }>(query, variables);
 
   return result.create_update.id;
 }
@@ -580,7 +603,9 @@ export async function getUpdateAssets(updateId: string): Promise<MondayFileAsset
  * Note: Monday file URLs are typically public with auth embedded, so direct fetch works
  */
 export async function downloadFile(url: string): Promise<Buffer> {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(30000),
+  });
 
   if (!response.ok) {
     throw new Error(`Failed to download Monday file: ${response.status}`);
@@ -1424,7 +1449,9 @@ export async function retryFailedAttachments(
       console.log(`Retrying attachment upload for item ${item.id}: ${item.name}`);
 
       // Download PDF from stored URL
-      const response = await fetch(item.pdfUrl);
+      const response = await fetch(item.pdfUrl, {
+        signal: AbortSignal.timeout(30000),
+      });
       if (!response.ok) {
         console.error(`Failed to download PDF for item ${item.id}: ${response.statusText}`);
         continue;
