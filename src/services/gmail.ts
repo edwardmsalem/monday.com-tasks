@@ -214,7 +214,7 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
 }
 
 /**
- * Search for emails with the same subject within the last 48 hours
+ * Search for emails with the same subject within the last 14 days
  * Returns recipients with appointment times and optional codes/links
  *
  * @param subject - Email subject to search for
@@ -468,10 +468,10 @@ export async function enrichRecipientsWithAppointments(
   console.log(`[Gmail] Enriching ${recipients.length} recipients with appointment times...`);
 
   // Re-fetch messages to get body text for appointment extraction
-  // Build search query - last 48 hours
-  const twoDaysAgo = new Date();
-  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-  const afterDate = twoDaysAgo.toISOString().split('T')[0].replace(/-/g, '/');
+  // Build search query - last 14 days
+  const fourteenDaysAgo = new Date();
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  const afterDate = fourteenDaysAgo.toISOString().split('T')[0].replace(/-/g, '/');
 
   const query = `subject:"${normalizedSubject}" after:${afterDate}`;
 
