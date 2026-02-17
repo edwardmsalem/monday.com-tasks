@@ -643,21 +643,9 @@ router.post(
             const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients);
             const recipientsWithTimes = enrichedRecipients.filter(r => r.appointmentDate || r.appointmentTime);
 
-            // STEP 4: Post appointment times if found
-            if (recipientsWithTimes.length > 0) {
-              try {
-                const timesMessage = recipientsWithTimes.map(r => {
-                  const timeStr = [r.appointmentDate, r.appointmentTime].filter(Boolean).join(' ');
-                  return `• ${r.email} - ${timeStr}`;
-                }).join('\n');
-                await slack.postToThread(slackMessage.ts, `📅 *Appointment times found:*\n\n${timesMessage}`);
-                console.log(`[Background Scan] Posted ${recipientsWithTimes.length} appointment times`);
-              } catch (timesErr) {
-                console.error('[Background Scan] Failed to post appointment times:', timesErr);
-              }
-            }
+            console.log(`[Background Scan] ${recipientsWithTimes.length} recipients have appointment times`);
 
-            // STEP 5: Create Google Sheet (with master account data + appointment times)
+            // STEP 4: Create Google Sheet (with master account data + appointment times)
             let sheetUrl = '';
             try {
               const sheetResult = await createScanSheet({
