@@ -31,6 +31,7 @@ export interface EmlHeaders {
   to: string | null;
   bcc: string[] | null;  // BCC recipients (from headers if available)
   body: string | null;   // The actual email content
+  date: Date | null;     // Original email date
 }
 
 export interface ConvertedFile {

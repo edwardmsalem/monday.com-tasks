@@ -209,7 +209,8 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
       const extractCodesAndLinks = contentType === 'presale';
       log.log(`Content type: ${contentType}, extracting codes/links: ${extractCodesAndLinks}`);
 
-      const recipients = await findRelatedRecipients(email.subject, extractCodesAndLinks, email.date ?? undefined);
+      // Use original email date (from .eml attachment), not the forwarding email date
+      const recipients = await findRelatedRecipients(email.subject, extractCodesAndLinks, emlHeaders.date ?? undefined);
       if (recipients.length > 0) {
         log.log(`Found ${recipients.length} related recipients, creating Google Sheet...`);
 

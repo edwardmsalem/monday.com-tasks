@@ -115,6 +115,7 @@ export async function parseEmlAttachment(
     to: extractEmail(getAddressText(parsed.to)),
     bcc: bccEmails.length > 0 ? bccEmails : null,
     body: parsed.text ?? null,  // Extract the email body text
+    date: parsed.date ?? null,  // Original email date from Date header
   };
 }
 
