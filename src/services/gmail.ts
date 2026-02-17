@@ -502,6 +502,8 @@ export async function enrichRecipientsWithAppointments(
     );
 
     // Build email -> body text mapping
+    // IMPORTANT: Use same recipient extraction logic as findRelatedRecipients
+    // to properly handle X-Forwarded-For headers from Gmail auto-forwarding
     const emailToBody = new Map<string, { bodyText: string; fromEmail: string }>();
     for (const result of fetchResults) {
       if (!result.success) continue;
@@ -512,11 +514,41 @@ export async function enrichRecipientsWithAppointments(
       const fromEmail = fromHeader?.value || '';
       const bodyText = extractEmailBody(msgData.payload);
 
-      // For forwarded emails, extract original recipient from body
-      const recipientEmails = extractOriginalToFromBody(bodyText);
+      // Use same recipient extraction logic as findRelatedRecipients
+      let recipientEmails: string[] = [];
 
+      // Try X-Forwarded-For header (Gmail auto-forward includes original recipient here)
+      const xForwardedFor = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'x-forwarded-for');
+      if (xForwardedFor?.value) {
+        // Format: "original@email.com forwarding@inbox.com" - we want the first one
+        const parts = xForwardedFor.value.split(/\s+/);
+        if (parts.length > 0 && parts[0].includes('@')) {
+          recipientEmails.push(parts[0]);
+        }
+      }
+
+      // Try Delivered-To headers (there can be multiple - find one that's not the forwarding inbox)
       if (recipientEmails.length === 0) {
-        // Fallback: try the header "To"
+        const deliveredToHeaders = headers.filter((h: GmailHeader) => h.name?.toLowerCase() === 'delivered-to');
+        for (const header of deliveredToHeaders) {
+          if (header.value) {
+            const email = header.value.trim().toLowerCase();
+            // Skip the forwarding inbox itself and excluded domains
+            if (email === config.google.forwardingEmail?.toLowerCase()) continue;
+            if (shouldExcludeRecipient(email)) continue;
+            recipientEmails.push(email);
+            break; // Take the first valid one
+          }
+        }
+      }
+
+      // Try extracting from body (for manually forwarded emails with "To:" in body)
+      if (recipientEmails.length === 0) {
+        recipientEmails = extractOriginalToFromBody(bodyText);
+      }
+
+      // Fallback: try the header "To"
+      if (recipientEmails.length === 0) {
         const toHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'to');
         if (toHeader?.value) {
           recipientEmails.push(...extractEmailAddresses(toHeader.value));
