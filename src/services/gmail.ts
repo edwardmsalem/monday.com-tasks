@@ -767,7 +767,15 @@ If no appointment is mentioned, return null for all fields.`;
       })
     );
 
-    const text = (response as any).content || '';
+    // Check response validity
+    const claudeResponse = response as { ok?: boolean; content?: string; error?: string; model?: string; usage?: unknown };
+    const text = claudeResponse.content || '';
+
+    // Debug: Log full response if content is empty or ok=false
+    if (!text || claudeResponse.ok === false) {
+      console.log(`[Gmail] WARNING: Claude issue. ok=${claudeResponse.ok}, error=${claudeResponse.error}, model=${claudeResponse.model}, usage=${JSON.stringify(claudeResponse.usage)}`);
+      console.log(`[Gmail] Full response:`, JSON.stringify(response).slice(0, 800));
+    }
 
     // Debug: Log Claude's raw response (truncated)
     const truncatedResponse = text.length > 300 ? text.slice(0, 300) + '...' : text;
