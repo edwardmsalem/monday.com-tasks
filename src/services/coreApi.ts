@@ -280,7 +280,7 @@ export const slack = {
 
 export interface ClaudeAnalyzeResult {
   ok: boolean;
-  content: string;
+  text: string;
   model: string;
   usage: {
     inputTokens: number;
