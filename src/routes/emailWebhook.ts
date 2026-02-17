@@ -628,40 +628,22 @@ router.post(
 
             // STEP 2: Post email list IMMEDIATELY (no waiting for Claude)
             const teamName = analysisResult.team || 'this team';
+            const teamForTitle = analysisResult.team || 'Team';
             try {
               const emailList = scannedRecipients.map(r => `• ${r.email}`).join('\n');
-              const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
+              const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}`;
               await slack.postToThread(slackMessage.ts, scanMessage);
               console.log('[Background Scan] Posted email list to Slack thread');
             } catch (threadErr) {
               console.error('[Background Scan] Failed to post email list:', threadErr);
             }
 
-            // STEP 3: Create Google Sheet with emails (fast)
-            const teamForTitle = analysisResult.team || 'Team';
-            let sheetUrl = '';
-            try {
-              const sheetResult = await createScanSheet({
-                title: teamForTitle,
-                recipients: scannedRecipients,
-                contentType,
-              });
-              sheetUrl = sheetResult.spreadsheetUrl;
-              console.log('[Background Scan] Google Sheet created:', sheetUrl);
-              await monday.createUpdate(
-                mondayItem.id,
-                `📊 Recipient tracking spreadsheet created:\n${sheetUrl}`
-              );
-            } catch (sheetError) {
-              console.error('[Background Scan] Failed to create sheet:', sheetError);
-            }
-
-            // STEP 4: NOW extract appointment times (slow, uses Claude)
+            // STEP 3: Extract appointment times (uses Claude)
             console.log('[Background Scan] Extracting appointment times...');
             const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients);
             const recipientsWithTimes = enrichedRecipients.filter(r => r.appointmentDate || r.appointmentTime);
 
-            // STEP 5: Post appointment times if found
+            // STEP 4: Post appointment times if found
             if (recipientsWithTimes.length > 0) {
               try {
                 const timesMessage = recipientsWithTimes.map(r => {
@@ -673,20 +655,24 @@ router.post(
               } catch (timesErr) {
                 console.error('[Background Scan] Failed to post appointment times:', timesErr);
               }
+            }
 
-              // Update the sheet with appointment times
-              if (sheetUrl) {
-                try {
-                  await createScanSheet({
-                    title: teamForTitle,
-                    recipients: enrichedRecipients,
-                    contentType,
-                  });
-                  console.log('[Background Scan] Updated sheet with appointment times');
-                } catch (updateErr) {
-                  console.error('[Background Scan] Failed to update sheet with times:', updateErr);
-                }
-              }
+            // STEP 5: Create Google Sheet (with master account data + appointment times)
+            let sheetUrl = '';
+            try {
+              const sheetResult = await createScanSheet({
+                title: teamForTitle,
+                recipients: enrichedRecipients,
+                contentType,
+              });
+              sheetUrl = sheetResult.spreadsheetUrl;
+              console.log('[Background Scan] Google Sheet created:', sheetUrl);
+              await monday.createUpdate(
+                mondayItem.id,
+                `📊 Tracking spreadsheet created:\n${sheetUrl}`
+              );
+            } catch (sheetError) {
+              console.error('[Background Scan] Failed to create sheet:', sheetError);
             }
 
             // STEP 6: Create calendar events if we have appointment times
@@ -718,7 +704,7 @@ router.post(
             try {
               const scanSummaryText = [
                 `✅ *Scan Complete*`,
-                `• ${scannedRecipients.length} accounts found`,
+                `• ${scannedRecipients.length} emails scanned`,
                 recipientsWithTimes.length > 0
                   ? `• ${recipientsWithTimes.length} with appointment times`
                   : `• No appointment times found`,

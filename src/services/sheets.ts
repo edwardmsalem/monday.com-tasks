@@ -228,37 +228,161 @@ export interface ScanSheetOptions {
 }
 
 /**
- * Create a Google Sheet for /scan results with dynamic columns based on content
- * - Presales with codes/links: Email | Date | Time | Code | Link | Status | Notes
- * - Relocations/Generic: Email | Date | Time | Status | Notes
+ * Column indices for the sports/accounts master sheet
+ * Layout: Team(0) Status(1) Account(2) Name(3) Email(4) Section(5) Row(6)
+ *   LowSeat(7) HighSeat(8) Qty(9) RSTotal(10) RSPO(11) PSTotal(12) PSPO(13)
+ *   Option(14) Type(15) Address(16) Phone(17) PhoneType(18) CreditCard(19)
+ *   Last4(20) Exp(21) CVC(22)
+ */
+const MASTER_COL = {
+  STATUS: 1, NAME: 3, EMAIL: 4, SECTION: 5, ROW: 6,
+  LOW_SEAT: 7, HIGH_SEAT: 8, QTY: 9,
+  ADDRESS: 16, PHONE: 17, CREDIT_CARD: 19, LAST4: 20, EXP: 21, CVC: 22,
+};
+
+/**
+ * Format seat range from LowSeat and HighSeat columns
+ * e.g., LowSeat=1 HighSeat=4 → "1-4", LowSeat=3 HighSeat=3 → "3"
+ */
+function formatSeats(lowSeat: string | undefined, highSeat: string | undefined): string {
+  const low = (lowSeat || '').trim();
+  const high = (highSeat || '').trim();
+  if (!low && !high) return '';
+  if (!high || low === high) return low;
+  return `${low}-${high}`;
+}
+
+/**
+ * Create a Google Sheet for /scan results
+ *
+ * When a team is detected, looks up the team's master account list from the
+ * sports sheet and merges with scanned appointment times. All rows from the
+ * master sheet are included (no deduplication — multiple seat sets = multiple rows).
+ *
+ * Sheet columns: Date | Time | Email | Name | Section | Row | Seats | Qty |
+ *   Address | Phone | Credit Card | Last 4 | Exp | CVC | Status | Notes
+ *
+ * Falls back to simple format (Email | Date | Time | Status | Notes) if
+ * team lookup fails or no team is detected.
  */
 export async function createScanSheet(options: ScanSheetOptions): Promise<SheetResult> {
   const { title: teamName, recipients, contentType } = options;
 
-  // Format title as "{Team} Relocation {Year}"
   const currentYear = new Date().getFullYear();
   const title = `${teamName} Relocation ${currentYear}`;
 
-  // Sort recipients by appointment time ascending (earliest first)
-  const sortedRecipients = [...recipients].sort((a, b) => {
-    // Recipients without rawDateTime go to the end
-    if (!a.rawDateTime && !b.rawDateTime) return 0;
-    if (!a.rawDateTime) return 1;
-    if (!b.rawDateTime) return -1;
-    return new Date(a.rawDateTime).getTime() - new Date(b.rawDateTime).getTime();
-  });
+  // Try to look up the team in the sports master sheet
+  const sport = getSportFromTeam(teamName);
+  let masterRows: unknown[][] | null = null;
 
-  // Check if any recipients have codes or links (for presale)
-  const hasCodes = sortedRecipients.some(r => r.code);
-  const hasLinks = sortedRecipients.some(r => r.link);
-  const includeCodeColumns = contentType === 'presale' && (hasCodes || hasLinks);
+  if (sport) {
+    const spreadsheetId = getSpreadsheetIdForSport(sport);
+    if (spreadsheetId) {
+      try {
+        const sheetMatch = await findSheetByName(spreadsheetId, teamName);
+        if (sheetMatch) {
+          console.log(`[Sheets] Found master sheet tab "${sheetMatch.sheetName}" for ${teamName} (${sport.toUpperCase()})`);
+          const rows = await coreApiGoogle.sheets.getValues(
+            spreadsheetId,
+            `'${sheetMatch.sheetName}'!A:W`
+          );
+          // Skip header row, filter to Active accounts only — keep ALL rows (no dedup)
+          if (rows && rows.length > 1) {
+            masterRows = (rows as unknown[][]).slice(1).filter(row =>
+              row[MASTER_COL.STATUS] && String(row[MASTER_COL.STATUS]).toLowerCase() === 'active'
+            );
+            console.log(`[Sheets] Found ${masterRows.length} active account rows for ${teamName}`);
+          }
+        }
+      } catch (lookupErr) {
+        console.error(`[Sheets] Master sheet lookup failed for ${teamName}, falling back to simple format:`, lookupErr);
+      }
+    }
+  }
 
-  // Build dynamic header based on content
-  const headerRow = includeCodeColumns
-    ? ['Email', 'Date', 'Time', 'Code', 'Link', 'Status', 'Notes']
-    : ['Email', 'Date', 'Time', 'Status', 'Notes'];
+  // Build an email → appointment time lookup from scanned recipients
+  const appointmentByEmail = new Map<string, RecipientWithAppointment>();
+  for (const r of recipients) {
+    if (r.rawDateTime) {
+      appointmentByEmail.set(r.email.toLowerCase(), r);
+    }
+  }
 
-  const columnCount = headerRow.length;
+  // Determine sheet format based on whether we got master data
+  const useMasterFormat = masterRows && masterRows.length > 0;
+
+  let headerRow: string[];
+  let dataRows: (string | number)[][];
+  let columnCount: number;
+
+  if (useMasterFormat) {
+    // Full format with sports sheet data
+    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty',
+      'Address', 'Phone', 'Credit Card', 'Last 4', 'Exp', 'CVC', 'Status', 'Notes'];
+    columnCount = headerRow.length;
+
+    // Build rows from master data, merging in appointment times
+    const rowsWithTimes: { sortKey: number; row: (string | number)[] }[] = [];
+
+    for (const masterRow of masterRows!) {
+      const email = String(masterRow[MASTER_COL.EMAIL] || '').trim();
+      const appointment = appointmentByEmail.get(email.toLowerCase());
+
+      const dateValue = appointment ? isoToSheetDate(appointment.rawDateTime) : '';
+      const timeValue = appointment ? isoToSheetTime(appointment.rawDateTime) : '';
+      const sortKey = appointment?.rawDateTime
+        ? new Date(appointment.rawDateTime).getTime()
+        : Number.MAX_SAFE_INTEGER; // No appointment = sort to bottom
+
+      rowsWithTimes.push({
+        sortKey,
+        row: [
+          dateValue,
+          timeValue,
+          email,
+          String(masterRow[MASTER_COL.NAME] || ''),
+          String(masterRow[MASTER_COL.SECTION] || ''),
+          String(masterRow[MASTER_COL.ROW] || ''),
+          formatSeats(String(masterRow[MASTER_COL.LOW_SEAT] || ''), String(masterRow[MASTER_COL.HIGH_SEAT] || '')),
+          String(masterRow[MASTER_COL.QTY] || ''),
+          String(masterRow[MASTER_COL.ADDRESS] || ''),
+          String(masterRow[MASTER_COL.PHONE] || ''),
+          String(masterRow[MASTER_COL.CREDIT_CARD] || ''),
+          String(masterRow[MASTER_COL.LAST4] || ''),
+          String(masterRow[MASTER_COL.EXP] || ''),
+          String(masterRow[MASTER_COL.CVC] || ''),
+          '', // Status
+          '', // Notes
+        ],
+      });
+    }
+
+    // Sort: accounts with appointment times first (ascending), then accounts without
+    rowsWithTimes.sort((a, b) => a.sortKey - b.sortKey);
+    dataRows = rowsWithTimes.map(r => r.row);
+
+    console.log(`[Sheets] Built ${dataRows.length} rows from master sheet (${appointmentByEmail.size} with appointment times)`);
+  } else {
+    // Fallback: simple format (no master sheet data available)
+    console.log(`[Sheets] No master sheet data for "${teamName}", using simple format`);
+    headerRow = ['Date', 'Time', 'Email', 'Status', 'Notes'];
+    columnCount = headerRow.length;
+
+    const sorted = [...recipients].sort((a, b) => {
+      if (!a.rawDateTime && !b.rawDateTime) return 0;
+      if (!a.rawDateTime) return 1;
+      if (!b.rawDateTime) return -1;
+      return new Date(a.rawDateTime).getTime() - new Date(b.rawDateTime).getTime();
+    });
+
+    dataRows = sorted.map(r => [
+      isoToSheetDate(r.rawDateTime),
+      isoToSheetTime(r.rawDateTime),
+      r.email,
+      '', // Status
+      '', // Notes
+    ]);
+  }
 
   // Create the spreadsheet via core-api
   const createResponse = await coreApiGoogle.sheets.createWithOptions({
@@ -275,32 +399,6 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   const spreadsheetUrl = createResponse.spreadsheetUrl;
   const sheetId = createResponse.sheets?.[0]?.sheetId ?? 0;
 
-  // Build the data rows dynamically (using sorted recipients)
-  // Use rawDateTime for proper date/time values that sort correctly
-  const dataRows = sortedRecipients.map(r => {
-    const dateValue = isoToSheetDate(r.rawDateTime);
-    const timeValue = isoToSheetTime(r.rawDateTime);
-    if (includeCodeColumns) {
-      return [
-        r.email,
-        dateValue,
-        timeValue,
-        r.code || '',
-        r.link || '',
-        '', // Status
-        '', // Notes
-      ];
-    } else {
-      return [
-        r.email,
-        dateValue,
-        timeValue,
-        '', // Status
-        '', // Notes
-      ];
-    }
-  });
-
   // Add data to the sheet
   await coreApiGoogle.sheets.updateValues(spreadsheetId, {
     range: 'Recipients!A1',
@@ -308,9 +406,9 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   });
 
   // Format the header row and apply date/time formatting
-  const dataRowCount = sortedRecipients.length;
+  const dataRowCount = dataRows.length;
   await coreApiGoogle.sheets.batchUpdate(spreadsheetId, [
-    // Header row formatting (bold, background color)
+    // Header row formatting (bold, white text on blue background)
     {
       repeatCell: {
         range: {
@@ -327,15 +425,15 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         fields: 'userEnteredFormat(backgroundColor,textFormat)',
       },
     },
-    // Date column formatting (column B = index 1)
+    // Date column formatting (column A = index 0)
     {
       repeatCell: {
         range: {
           sheetId,
           startRowIndex: 1,
           endRowIndex: dataRowCount + 1,
-          startColumnIndex: 1,
-          endColumnIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 1,
         },
         cell: {
           userEnteredFormat: {
@@ -348,15 +446,15 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         fields: 'userEnteredFormat.numberFormat',
       },
     },
-    // Time column formatting (column C = index 2)
+    // Time column formatting (column B = index 1)
     {
       repeatCell: {
         range: {
           sheetId,
           startRowIndex: 1,
           endRowIndex: dataRowCount + 1,
-          startColumnIndex: 2,
-          endColumnIndex: 3,
+          startColumnIndex: 1,
+          endColumnIndex: 2,
         },
         cell: {
           userEnteredFormat: {
@@ -383,9 +481,8 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   ]);
 
   // Try to make the sheet accessible to anyone with the link
-  // (may fail if workspace restricts external sharing)
   const shared = await safeShareSheet(spreadsheetId);
-  console.log(`[Sheets] Created scan sheet: ${spreadsheetUrl} (type: ${contentType}, columns: ${columnCount})${shared ? '' : ' (not shared publicly - workspace restriction)'}`);
+  console.log(`[Sheets] Created scan sheet: ${spreadsheetUrl} (type: ${contentType}, master: ${useMasterFormat ? 'yes' : 'no'}, rows: ${dataRowCount})${shared ? '' : ' (not shared publicly - workspace restriction)'}`);
 
   return {
     spreadsheetId,
