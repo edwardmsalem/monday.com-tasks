@@ -767,9 +767,9 @@ If no appointment is mentioned, return null for all fields.`;
       })
     );
 
-    // Check response validity
-    const claudeResponse = response as { ok?: boolean; content?: string; error?: string; model?: string; usage?: unknown };
-    const text = claudeResponse.content || '';
+    // Check response validity - core-api returns 'text' field, not 'content'
+    const claudeResponse = response as { ok?: boolean; text?: string; content?: string; error?: string; model?: string; usage?: unknown };
+    const text = claudeResponse.text || claudeResponse.content || '';
 
     // Debug: Log full response if content is empty or ok=false
     if (!text || claudeResponse.ok === false) {
