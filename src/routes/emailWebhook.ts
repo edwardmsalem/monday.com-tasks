@@ -663,7 +663,7 @@ router.post(
               console.error('[Background Scan] Failed to create sheet:', sheetError);
             }
 
-            // STEP 6: Create calendar events if we have appointment times
+            // STEP 5: Create calendar events if we have appointment times
             let calendarEventCount = 0;
             const calendar = await import('../services/calendar.js');
             if (calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
@@ -688,7 +688,7 @@ router.post(
               }
             }
 
-            // STEP 7: Post final summary
+            // STEP 6: Post final summary
             try {
               const scanSummaryText = [
                 `✅ *Scan Complete*`,
