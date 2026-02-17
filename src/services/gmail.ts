@@ -563,9 +563,23 @@ export async function enrichRecipientsWithAppointments(
       }
     }
 
+    // Debug: Log what we found in emailToBody map
+    console.log(`[Gmail] Built emailToBody map with ${emailToBody.size} unique recipients`);
+    if (emailToBody.size > 0 && emailToBody.size <= 10) {
+      console.log(`[Gmail] Mapped emails: ${Array.from(emailToBody.keys()).join(', ')}`);
+    }
+
     // Extract appointments for each recipient
     const recipientsToEnrich = recipients.filter(r => emailToBody.has(r.email));
+    const unmatchedRecipients = recipients.filter(r => !emailToBody.has(r.email));
+
     console.log(`[Gmail] Extracting appointments from ${recipientsToEnrich.length} emails with concurrency=3...`);
+    if (unmatchedRecipients.length > 0) {
+      console.log(`[Gmail] WARNING: ${unmatchedRecipients.length} recipients not found in emailToBody map`);
+      if (unmatchedRecipients.length <= 5) {
+        console.log(`[Gmail] Unmatched: ${unmatchedRecipients.map(r => r.email).join(', ')}`);
+      }
+    }
 
     const appointmentResults = await batchWithConcurrency(
       recipientsToEnrich,
@@ -691,8 +705,12 @@ async function extractAppointmentTime(emailBody: string, subject?: string, fromE
   rawDateTime: string | null;
 }> {
   if (!emailBody || emailBody.length < 20) {
+    console.log(`[Gmail] Skipping appointment extraction: body too short (${emailBody?.length || 0} chars)`);
     return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
   }
+
+  // Debug: Log what we're about to analyze
+  console.log(`[Gmail] Extracting appointment from email (${emailBody.length} chars), from: ${fromEmail || 'unknown'}, subject: ${subject || 'none'}`);
 
   try {
     // Use current year for date examples to avoid Claude defaulting to old years
@@ -751,10 +769,21 @@ If no appointment is mentioned, return null for all fields.`;
 
     const text = (response as any).content || '';
 
+    // Debug: Log Claude's raw response (truncated)
+    const truncatedResponse = text.length > 300 ? text.slice(0, 300) + '...' : text;
+    console.log(`[Gmail] Claude response: ${truncatedResponse}`);
+
     // Parse JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
+
+      // Log what was extracted
+      if (parsed.appointmentDate || parsed.appointmentTime) {
+        console.log(`[Gmail] Extracted: date="${parsed.appointmentDate}", time="${parsed.appointmentTime}", raw="${parsed.rawDateTime}"`);
+      } else {
+        console.log(`[Gmail] No appointment found in email body (first 100 chars): ${emailBody.slice(0, 100).replace(/\n/g, ' ')}`);
+      }
 
       // Log timezone conversion for debugging
       if (parsed.detectedTeam && parsed.originalTimezone) {
@@ -768,6 +797,7 @@ If no appointment is mentioned, return null for all fields.`;
       };
     }
 
+    console.log(`[Gmail] WARNING: No JSON found in Claude response`);
     return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
   } catch (error) {
     console.error('Error extracting appointment time:', error);
