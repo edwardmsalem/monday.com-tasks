@@ -219,19 +219,22 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
  *
  * @param subject - Email subject to search for
  * @param extractCodesAndLinks - If true, also extract presale codes and links (default: false)
+ * @param referenceDate - Date to center the ±48h search window around (defaults to now)
  */
-export async function findRelatedRecipients(subject: string, extractCodesAndLinks: boolean = false): Promise<RecipientWithAppointment[]> {
+export async function findRelatedRecipients(subject: string, extractCodesAndLinks: boolean = false, referenceDate?: Date): Promise<RecipientWithAppointment[]> {
   const normalizedSubject = normalizeSubject(subject);
 
   console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}`);
 
-  // Build search query - last 48 hours
-  const twoDaysAgo = new Date();
-  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-  const afterDate = twoDaysAgo.toISOString().split('T')[0].replace(/-/g, '/');
+  // Build search query - ±48 hours around reference date
+  const refDate = referenceDate ?? new Date();
+  const afterDate = new Date(refDate.getTime() - 48 * 60 * 60 * 1000);
+  const beforeDate = new Date(refDate.getTime() + 48 * 60 * 60 * 1000);
+  const afterStr = afterDate.toISOString().split('T')[0].replace(/-/g, '/');
+  const beforeStr = beforeDate.toISOString().split('T')[0].replace(/-/g, '/');
 
-  const query = `subject:"${normalizedSubject}" after:${afterDate}`;
-  console.log(`Gmail search query: ${query}`);
+  const query = `subject:"${normalizedSubject}" after:${afterStr} before:${beforeStr}`;
+  console.log(`Gmail search query: ${query} (reference: ${refDate.toISOString()})`);
 
   try {
     // Search for messages via core-api (wrapped in circuit breaker TD-05)

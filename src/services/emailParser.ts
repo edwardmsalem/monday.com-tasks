@@ -30,6 +30,7 @@ export async function parseIncomingEmail(
     text: parsed.text ?? '',
     fromEmail: extractEmail(getAddressText(parsed.from)),
     toEmail: extractEmail(getAddressText(parsed.to)),
+    date: parsed.date ?? null,
     attachments: parseAttachments(parsed),
   };
 }

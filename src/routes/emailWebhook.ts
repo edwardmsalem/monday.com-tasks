@@ -181,6 +181,7 @@ router.post('/webhook/json', express.json(), async (req: Request, res: Response)
       text: body.text,
       fromEmail: null,
       toEmail: null,
+      date: null,
       attachments: (body.attachments ?? []).map((att) => ({
         filename: att.filename,
         content: Buffer.from(att.content, 'base64'),
@@ -331,6 +332,7 @@ router.post('/webhook/make', upload.any(), async (req: Request, res: Response): 
       text: String(bodyText),
       fromEmail: from ? String(from) : null,
       toEmail: null,
+      date: null,
       attachments: [
         {
           filename: String(emlFilename),
@@ -384,6 +386,9 @@ router.post(
       const bodyText = String(req.body.body || req.body['body-plain'] || req.body.text || '');
       const fromEmail = req.body.fromEmail || req.body.from || null;
       const toEmail = req.body.toEmail || req.body.to || null;
+      const emailDateRaw = req.body.date || req.body.emailDate || null;
+      const emailDate = emailDateRaw ? new Date(emailDateRaw) : null;
+      const validEmailDate = emailDate && !isNaN(emailDate.getTime()) ? emailDate : null;
 
       // Enhanced logging for debugging
       console.log('=== FULL BODY TEXT START ===');
@@ -611,7 +616,7 @@ router.post(
             const extractCodesAndLinks = contentType === 'presale';
             console.log(`[Background Scan] Content type: ${contentType}, extracting codes/links: ${extractCodesAndLinks}`);
 
-            const scannedRecipients = await findRelatedRecipients(subject, extractCodesAndLinks);
+            const scannedRecipients = await findRelatedRecipients(subject, extractCodesAndLinks, validEmailDate ?? undefined);
             if (scannedRecipients.length > 0) {
               console.log(`[Background Scan] Found ${scannedRecipients.length} related recipients, creating Google Sheet...`);
 

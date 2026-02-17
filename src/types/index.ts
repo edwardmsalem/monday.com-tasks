@@ -8,6 +8,7 @@ export interface ParsedEmail {
   text: string;
   fromEmail: string | null;
   toEmail: string | null;
+  date: Date | null;
   attachments: EmailAttachment[];
 }
 
