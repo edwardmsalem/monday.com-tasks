@@ -9,40 +9,132 @@
 const CORE_API_URL = process.env.CORE_API_URL || 'http://core-api.railway.internal';
 const CORE_API_KEY = process.env.CORE_API_KEY;
 
+// Default timeout: 60 seconds (Monday API can be slow)
+const DEFAULT_TIMEOUT_MS = 60000;
+// Max retries for transient errors
+const MAX_RETRIES = 3;
+// Retry delays: 2s, 4s, 8s
+const RETRY_DELAYS = [2000, 4000, 8000];
+
+/**
+ * Check if an error is retryable (timeouts, network errors, 5xx)
+ */
+function isRetryableError(error: unknown, status?: number): boolean {
+  if (status && status >= 500 && status < 600) {
+    return true;
+  }
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    return (
+      msg.includes('timeout') ||
+      msg.includes('timed out') ||
+      msg.includes('aborted') ||
+      msg.includes('network') ||
+      msg.includes('econnreset') ||
+      msg.includes('econnrefused')
+    );
+  }
+  return false;
+}
+
+/**
+ * Sleep for a given number of milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function coreApiRequest<T = unknown>(
   endpoint: string,
   options: {
     method?: string;
     body?: Record<string, unknown>;
     headers?: Record<string, string>;
+    timeout?: number;
+    retries?: number;
   } = {}
 ): Promise<T> {
   const url = `${CORE_API_URL}${endpoint}`;
+  const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
+  const maxRetries = options.retries ?? MAX_RETRIES;
 
-  try {
-    const response = await fetch(url, {
-      method: options.method || 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': CORE_API_KEY || '',
-        ...options.headers,
-      },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: AbortSignal.timeout(60000), // 60 second timeout for core-api calls
-    });
+  let lastError: Error | null = null;
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Core API error (${response.status}): ${error}`);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Create abort controller for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const response = await fetch(url, {
+        method: options.method || 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': CORE_API_KEY || '',
+          ...options.headers,
+        },
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        const error = new Error(`Core API error (${response.status}): ${errorText}`);
+
+        // Check if this is a retryable error (5xx or timeout in response)
+        if (isRetryableError(error, response.status) && attempt < maxRetries) {
+          const delay = RETRY_DELAYS[attempt] || RETRY_DELAYS[RETRY_DELAYS.length - 1];
+          console.warn(
+            `[coreApi] Retryable error on ${endpoint} (attempt ${attempt + 1}/${maxRetries + 1}): ${error.message}. Retrying in ${delay}ms...`
+          );
+          lastError = error;
+          await sleep(delay);
+          continue;
+        }
+
+        throw error;
+      }
+
+      return response.json() as Promise<T>;
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      // Handle abort (timeout)
+      if (error instanceof Error && error.name === 'AbortError') {
+        const timeoutError = new Error(
+          `Core API request to ${endpoint} timed out after ${timeout}ms`
+        );
+        if (attempt < maxRetries) {
+          const delay = RETRY_DELAYS[attempt] || RETRY_DELAYS[RETRY_DELAYS.length - 1];
+          console.warn(
+            `[coreApi] Timeout on ${endpoint} (attempt ${attempt + 1}/${maxRetries + 1}). Retrying in ${delay}ms...`
+          );
+          lastError = timeoutError;
+          await sleep(delay);
+          continue;
+        }
+        throw timeoutError;
+      }
+
+      // Check if other errors are retryable
+      if (isRetryableError(error) && attempt < maxRetries) {
+        const delay = RETRY_DELAYS[attempt] || RETRY_DELAYS[RETRY_DELAYS.length - 1];
+        console.warn(
+          `[coreApi] Retryable error on ${endpoint} (attempt ${attempt + 1}/${maxRetries + 1}): ${error instanceof Error ? error.message : error}. Retrying in ${delay}ms...`
+        );
+        lastError = error instanceof Error ? error : new Error(String(error));
+        await sleep(delay);
+        continue;
+      }
+
+      throw error;
     }
-
-    return response.json() as Promise<T>;
-  } catch (error: any) {
-    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
-      throw new Error(`Core API request to ${endpoint} timed out after 60 seconds`);
-    }
-    throw error;
   }
+
+  // Should not reach here, but just in case
+  throw lastError || new Error(`Core API request failed after ${maxRetries + 1} attempts`);
 }
 
 // ============================================
@@ -398,8 +490,10 @@ export const monday = {
   },
 
   async getAllUsers(): Promise<MondayUser[]> {
+    // Users list can be slow to fetch - use longer timeout (90s)
     return coreApiRequest<MondayUser[]>('/monday/users', {
       method: 'GET',
+      timeout: 90000,
     });
   },
 
@@ -418,8 +512,10 @@ export const monday = {
   },
 
   async query(query: string, variables?: Record<string, unknown>): Promise<unknown> {
+    // Monday queries can be slow for large datasets - use longer timeout (90s)
     return coreApiRequest('/monday/query', {
       body: { query, variables },
+      timeout: 90000,
     });
   },
 };

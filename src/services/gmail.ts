@@ -235,12 +235,12 @@ export async function findRelatedRecipients(
 
   console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}, skipAppointmentExtraction: ${skipAppointmentExtraction}`);
 
-  // Build search query - last 48 hours
-  const twoDaysAgo = new Date();
-  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-  const afterDate = twoDaysAgo.toISOString().split('T')[0].replace(/-/g, '/');
+  // Build search query - last 14 days
+  const fourteenDaysAgo = new Date();
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  const afterStr = fourteenDaysAgo.toISOString().split('T')[0].replace(/-/g, '/');
 
-  const query = `subject:"${normalizedSubject}" after:${afterDate}`;
+  const query = `subject:"${normalizedSubject}" after:${afterStr}`;
   console.log(`Gmail search query: ${query}`);
 
   try {

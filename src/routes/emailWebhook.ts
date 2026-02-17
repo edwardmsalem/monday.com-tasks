@@ -181,6 +181,7 @@ router.post('/webhook/json', express.json(), async (req: Request, res: Response)
       text: body.text,
       fromEmail: null,
       toEmail: null,
+      date: null,
       attachments: (body.attachments ?? []).map((att) => ({
         filename: att.filename,
         content: Buffer.from(att.content, 'base64'),
@@ -331,6 +332,7 @@ router.post('/webhook/make', upload.any(), async (req: Request, res: Response): 
       text: String(bodyText),
       fromEmail: from ? String(from) : null,
       toEmail: null,
+      date: null,
       attachments: [
         {
           filename: String(emlFilename),

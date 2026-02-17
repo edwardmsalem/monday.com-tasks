@@ -8,6 +8,7 @@ export interface ParsedEmail {
   text: string;
   fromEmail: string | null;
   toEmail: string | null;
+  date: Date | null;
   attachments: EmailAttachment[];
 }
 
@@ -30,6 +31,7 @@ export interface EmlHeaders {
   to: string | null;
   bcc: string[] | null;  // BCC recipients (from headers if available)
   body: string | null;   // The actual email content
+  date: Date | null;     // Original email date
 }
 
 export interface ConvertedFile {
