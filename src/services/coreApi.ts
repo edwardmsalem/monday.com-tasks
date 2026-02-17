@@ -751,6 +751,60 @@ export const google = {
       });
     },
   },
+
+  calendar: {
+    /**
+     * Create a calendar event via core-api
+     */
+    async createEvent(params: {
+      summary: string;
+      description?: string;
+      start: { dateTime?: string; date?: string; timeZone?: string };
+      end: { dateTime?: string; date?: string; timeZone?: string };
+      attendees?: Array<{ email: string }>;
+      reminders?: { useDefault: boolean; overrides?: Array<{ method: string; minutes: number }> };
+      source?: { title: string; url: string };
+      calendarId?: string;
+      sendUpdates?: 'all' | 'externalOnly' | 'none';
+    }): Promise<{ eventId: string; htmlLink: string; status: string }> {
+      return coreApiRequest('/google/calendar/events', {
+        body: params as Record<string, unknown>,
+      });
+    },
+
+    /**
+     * Update a calendar event via core-api
+     */
+    async updateEvent(
+      eventId: string,
+      params: {
+        summary?: string;
+        description?: string;
+        start?: { dateTime?: string; date?: string; timeZone?: string };
+        end?: { dateTime?: string; date?: string; timeZone?: string };
+        attendees?: Array<{ email: string }>;
+        calendarId?: string;
+      }
+    ): Promise<{ eventId: string; htmlLink: string; status: string }> {
+      return coreApiRequest(`/google/calendar/events/${eventId}`, {
+        method: 'PATCH',
+        body: params as Record<string, unknown>,
+      });
+    },
+
+    /**
+     * Delete a calendar event via core-api
+     */
+    async deleteEvent(
+      eventId: string,
+      calendarId?: string
+    ): Promise<{ ok: boolean }> {
+      const query = calendarId ? `?calendarId=${encodeURIComponent(calendarId)}` : '';
+      return coreApiRequest(`/google/calendar/events/${eventId}${query}`, {
+        method: 'DELETE',
+      });
+    },
+  },
 };
 
 // ============================================
