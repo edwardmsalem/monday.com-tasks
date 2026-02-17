@@ -26,8 +26,8 @@ const router = Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB max file size
-    fieldSize: 50 * 1024 * 1024, // 50MB max field value size (for pdfData base64 which inflates ~33%)
+    fileSize: 75 * 1024 * 1024, // 75MB max file size
+    fieldSize: 75 * 1024 * 1024, // 75MB max field value size (for pdfData base64 which inflates ~33%)
   },
 });
 
