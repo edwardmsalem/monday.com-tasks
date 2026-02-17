@@ -4,76 +4,31 @@
  * Creates spreadsheets for presale/relocation tracking
  * with recipient emails and appointment times
  *
- * Uses core-api for basic operations, keeps googleapis for advanced formatting
+ * All operations go through core-api (centralized Google API access)
  */
 
-import { google } from 'googleapis';
 import { config, configCompat } from '../config/environment.js';
 import type { RecipientWithAppointment } from './gmail.js';
 import { google as coreApiGoogle } from './coreApi.js';
 
-// Keep googleapis client for advanced operations (batchUpdate, spreadsheets.get)
-// that aren't yet supported by core-api
-let sheetsClient: ReturnType<typeof google.sheets> | null = null;
-
 /**
- * Initialize Google Sheets API client for advanced operations
- * (batchUpdate for cell formatting, spreadsheets.get for listing sheets)
- */
-async function getSheetsClient() {
-  if (sheetsClient) return sheetsClient;
-
-  const clientId = config.google.clientId;
-  const clientSecret = config.google.clientSecret;
-  const refreshToken = config.google.refreshToken;
-
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error('Google OAuth credentials not configured (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)');
-  }
-
-  const oauth2Client = new google.auth.OAuth2(
-    clientId,
-    clientSecret,
-    'https://developers.google.com/oauthplayground'
-  );
-
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  sheetsClient = google.sheets({ version: 'v4', auth: oauth2Client });
-
-  return sheetsClient;
-}
-
-/**
- * Safely share a sheet with anyone who has the link via core-api.
+ * Safely share a sheet with anyone in the workspace domain via core-api.
  * If sharing fails (e.g., due to workspace restrictions), logs a warning but continues.
  * @returns true if sharing succeeded, false if it failed
  */
 async function safeShareSheet(spreadsheetId: string): Promise<boolean> {
   try {
+    const domain = config.google.workspaceDomain;
     await coreApiGoogle.drive.shareFile(spreadsheetId, {
       role: 'writer',
-      type: 'anyone',
+      type: 'domain',
+      domain,
     });
+    console.log(`[Sheets] Shared sheet with ${domain} workspace`);
     return true;
   } catch (error) {
-    // Check if this is a workspace sharing restriction error
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isWorkspaceRestriction =
-      errorMessage.includes('sharing outside') ||
-      errorMessage.includes('domain') ||
-      errorMessage.includes('organization') ||
-      errorMessage.includes('policy') ||
-      errorMessage.includes('not allowed');
-
-    if (isWorkspaceRestriction) {
-      console.warn(`[Sheets] Cannot share sheet publicly (workspace policy restricts external sharing). Sheet ID: ${spreadsheetId}`);
-      console.warn('[Sheets] The sheet was created successfully but is only accessible to workspace members.');
-    } else {
-      console.error(`[Sheets] Failed to share sheet: ${errorMessage}`);
-    }
+    console.error(`[Sheets] Failed to share sheet with workspace: ${errorMessage}`);
     return false;
   }
 }
@@ -145,29 +100,20 @@ export async function createRecipientSheet(
   title: string,
   recipients: RecipientWithAppointment[]
 ): Promise<SheetResult> {
-  const sheets = await getSheetsClient();
-
-  // Create the spreadsheet
-  const createResponse = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: {
-        title: title,
+  // Create the spreadsheet via core-api
+  const createResponse = await coreApiGoogle.sheets.createWithOptions({
+    title: title,
+    sheets: [
+      {
+        title: 'Recipients',
+        frozenRowCount: 1, // Freeze header row
       },
-      sheets: [
-        {
-          properties: {
-            title: 'Recipients',
-            gridProperties: {
-              frozenRowCount: 1, // Freeze header row
-            },
-          },
-        },
-      ],
-    },
+    ],
   });
 
-  const spreadsheetId = createResponse.data.spreadsheetId!;
-  const spreadsheetUrl = createResponse.data.spreadsheetUrl!;
+  const spreadsheetId = createResponse.spreadsheetId;
+  const spreadsheetUrl = createResponse.spreadsheetUrl;
+  const sheetId = createResponse.sheets?.[0]?.sheetId ?? 0;
 
   // Build the data rows with proper date/time values
   const headerRow = ['Email', 'Date', 'Time', 'Status', 'Notes'];
@@ -179,95 +125,86 @@ export async function createRecipientSheet(
     '', // Notes column
   ]);
 
-  // Add data to the sheet (USER_ENTERED allows Google Sheets to interpret numbers)
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
+  // Add data to the sheet
+  await coreApiGoogle.sheets.updateValues(spreadsheetId, {
     range: 'Recipients!A1',
-    valueInputOption: 'USER_ENTERED',
-    requestBody: {
-      values: [headerRow, ...dataRows],
-    },
+    values: [headerRow, ...dataRows],
   });
 
   // Format the header row and apply date/time formatting
   const dataRowCount = recipients.length;
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: [
-        // Header row formatting (bold, background color)
-        {
-          repeatCell: {
-            range: {
-              sheetId: 0,
-              startRowIndex: 0,
-              endRowIndex: 1,
-            },
-            cell: {
-              userEnteredFormat: {
-                backgroundColor: { red: 0.2, green: 0.4, blue: 0.8 },
-                textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
-              },
-            },
-            fields: 'userEnteredFormat(backgroundColor,textFormat)',
+  await coreApiGoogle.sheets.batchUpdate(spreadsheetId, [
+    // Header row formatting (bold, background color)
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+        },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: { red: 0.2, green: 0.4, blue: 0.8 },
+            textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
           },
         },
-        // Date column formatting (column B = index 1)
-        {
-          repeatCell: {
-            range: {
-              sheetId: 0,
-              startRowIndex: 1,
-              endRowIndex: dataRowCount + 1,
-              startColumnIndex: 1,
-              endColumnIndex: 2,
-            },
-            cell: {
-              userEnteredFormat: {
-                numberFormat: {
-                  type: 'DATE',
-                  pattern: 'ddd M/d',
-                },
-              },
-            },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
-        // Time column formatting (column C = index 2)
-        {
-          repeatCell: {
-            range: {
-              sheetId: 0,
-              startRowIndex: 1,
-              endRowIndex: dataRowCount + 1,
-              startColumnIndex: 2,
-              endColumnIndex: 3,
-            },
-            cell: {
-              userEnteredFormat: {
-                numberFormat: {
-                  type: 'TIME',
-                  pattern: 'h:mm AM/PM',
-                },
-              },
-            },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
-        // Auto-resize columns
-        {
-          autoResizeDimensions: {
-            dimensions: {
-              sheetId: 0,
-              dimension: 'COLUMNS',
-              startIndex: 0,
-              endIndex: 5,
-            },
-          },
-        },
-      ],
+        fields: 'userEnteredFormat(backgroundColor,textFormat)',
+      },
     },
-  });
+    // Date column formatting (column B = index 1)
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 1,
+          endRowIndex: dataRowCount + 1,
+          startColumnIndex: 1,
+          endColumnIndex: 2,
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: {
+              type: 'DATE',
+              pattern: 'ddd M/d',
+            },
+          },
+        },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    },
+    // Time column formatting (column C = index 2)
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 1,
+          endRowIndex: dataRowCount + 1,
+          startColumnIndex: 2,
+          endColumnIndex: 3,
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: {
+              type: 'TIME',
+              pattern: 'h:mm AM/PM',
+            },
+          },
+        },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    },
+    // Auto-resize columns
+    {
+      autoResizeDimensions: {
+        dimensions: {
+          sheetId,
+          dimension: 'COLUMNS',
+          startIndex: 0,
+          endIndex: 5,
+        },
+      },
+    },
+  ]);
 
   // Try to make the sheet accessible to anyone with the link
   // (may fail if workspace restricts external sharing)
@@ -297,7 +234,6 @@ export interface ScanSheetOptions {
  */
 export async function createScanSheet(options: ScanSheetOptions): Promise<SheetResult> {
   const { title: teamName, recipients, contentType } = options;
-  const sheets = await getSheetsClient();
 
   // Format title as "{Team} Relocation {Year}"
   const currentYear = new Date().getFullYear();
@@ -324,28 +260,20 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
 
   const columnCount = headerRow.length;
 
-  // Create the spreadsheet
-  const createResponse = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: {
-        title: title,
+  // Create the spreadsheet via core-api
+  const createResponse = await coreApiGoogle.sheets.createWithOptions({
+    title: title,
+    sheets: [
+      {
+        title: 'Recipients',
+        frozenRowCount: 1,
       },
-      sheets: [
-        {
-          properties: {
-            title: 'Recipients',
-            gridProperties: {
-              frozenRowCount: 1,
-            },
-          },
-        },
-      ],
-    },
+    ],
   });
 
-  const spreadsheetId = createResponse.data.spreadsheetId!;
-  const spreadsheetUrl = createResponse.data.spreadsheetUrl!;
-  const sheetId = createResponse.data.sheets?.[0]?.properties?.sheetId ?? 0;
+  const spreadsheetId = createResponse.spreadsheetId;
+  const spreadsheetUrl = createResponse.spreadsheetUrl;
+  const sheetId = createResponse.sheets?.[0]?.sheetId ?? 0;
 
   // Build the data rows dynamically (using sorted recipients)
   // Use rawDateTime for proper date/time values that sort correctly
@@ -373,95 +301,86 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     }
   });
 
-  // Add data to the sheet (USER_ENTERED allows Google Sheets to interpret numbers)
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
+  // Add data to the sheet
+  await coreApiGoogle.sheets.updateValues(spreadsheetId, {
     range: 'Recipients!A1',
-    valueInputOption: 'USER_ENTERED',
-    requestBody: {
-      values: [headerRow, ...dataRows],
-    },
+    values: [headerRow, ...dataRows],
   });
 
   // Format the header row and apply date/time formatting
   const dataRowCount = sortedRecipients.length;
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: [
-        // Header row formatting (bold, background color)
-        {
-          repeatCell: {
-            range: {
-              sheetId,
-              startRowIndex: 0,
-              endRowIndex: 1,
-            },
-            cell: {
-              userEnteredFormat: {
-                backgroundColor: { red: 0.2, green: 0.4, blue: 0.8 },
-                textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
-              },
-            },
-            fields: 'userEnteredFormat(backgroundColor,textFormat)',
+  await coreApiGoogle.sheets.batchUpdate(spreadsheetId, [
+    // Header row formatting (bold, background color)
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+        },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: { red: 0.2, green: 0.4, blue: 0.8 },
+            textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
           },
         },
-        // Date column formatting (column B = index 1)
-        {
-          repeatCell: {
-            range: {
-              sheetId,
-              startRowIndex: 1,
-              endRowIndex: dataRowCount + 1,
-              startColumnIndex: 1,
-              endColumnIndex: 2,
-            },
-            cell: {
-              userEnteredFormat: {
-                numberFormat: {
-                  type: 'DATE',
-                  pattern: 'ddd M/d',
-                },
-              },
-            },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
-        // Time column formatting (column C = index 2)
-        {
-          repeatCell: {
-            range: {
-              sheetId,
-              startRowIndex: 1,
-              endRowIndex: dataRowCount + 1,
-              startColumnIndex: 2,
-              endColumnIndex: 3,
-            },
-            cell: {
-              userEnteredFormat: {
-                numberFormat: {
-                  type: 'TIME',
-                  pattern: 'h:mm AM/PM',
-                },
-              },
-            },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
-        // Auto-resize columns
-        {
-          autoResizeDimensions: {
-            dimensions: {
-              sheetId,
-              dimension: 'COLUMNS',
-              startIndex: 0,
-              endIndex: columnCount,
-            },
-          },
-        },
-      ],
+        fields: 'userEnteredFormat(backgroundColor,textFormat)',
+      },
     },
-  });
+    // Date column formatting (column B = index 1)
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 1,
+          endRowIndex: dataRowCount + 1,
+          startColumnIndex: 1,
+          endColumnIndex: 2,
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: {
+              type: 'DATE',
+              pattern: 'ddd M/d',
+            },
+          },
+        },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    },
+    // Time column formatting (column C = index 2)
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 1,
+          endRowIndex: dataRowCount + 1,
+          startColumnIndex: 2,
+          endColumnIndex: 3,
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: {
+              type: 'TIME',
+              pattern: 'h:mm AM/PM',
+            },
+          },
+        },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    },
+    // Auto-resize columns
+    {
+      autoResizeDimensions: {
+        dimensions: {
+          sheetId,
+          dimension: 'COLUMNS',
+          startIndex: 0,
+          endIndex: columnCount,
+        },
+      },
+    },
+  ]);
 
   // Try to make the sheet accessible to anyone with the link
   // (may fail if workspace restricts external sharing)
@@ -784,17 +703,12 @@ async function findSheetByName(
   spreadsheetId: string,
   searchName: string
 ): Promise<{ sheetName: string; sheetId: number } | null> {
-  const sheets = await getSheetsClient();
-
   console.log(`[Sheets] findSheetByName: Fetching sheet list from spreadsheet ${spreadsheetId.substring(0, 10)}...`);
 
-  const response = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: 'sheets.properties',
-  });
+  const response = await coreApiGoogle.sheets.getMetadata(spreadsheetId);
 
-  const sheetList = response.data.sheets || [];
-  const allSheetNames = sheetList.map(s => s.properties?.title || 'unnamed').join(', ');
+  const sheetList = response.sheets || [];
+  const allSheetNames = sheetList.map(s => s.title || 'unnamed').join(', ');
   console.log(`[Sheets] findSheetByName: Found ${sheetList.length} sheets: [${allSheetNames}]`);
 
   const normalized = searchName.toLowerCase().trim();
@@ -802,31 +716,31 @@ async function findSheetByName(
 
   // First try exact match
   for (const sheet of sheetList) {
-    const title = sheet.properties?.title || '';
+    const title = sheet.title || '';
     if (title.toLowerCase() === normalized) {
       console.log(`[Sheets] findSheetByName: EXACT MATCH found: "${title}"`);
-      return { sheetName: title, sheetId: sheet.properties?.sheetId || 0 };
+      return { sheetName: title, sheetId: sheet.sheetId || 0 };
     }
   }
 
   // Then try partial match (search term in sheet name or vice versa)
   for (const sheet of sheetList) {
-    const title = sheet.properties?.title || '';
+    const title = sheet.title || '';
     const titleLower = title.toLowerCase();
     if (titleLower.includes(normalized) || normalized.includes(titleLower)) {
       console.log(`[Sheets] findSheetByName: PARTIAL MATCH found: "${title}" (contains "${normalized}")`);
-      return { sheetName: title, sheetId: sheet.properties?.sheetId || 0 };
+      return { sheetName: title, sheetId: sheet.sheetId || 0 };
     }
   }
 
   // Try word-by-word matching (e.g., "astros" matches "Houston Astros")
   const searchWords = normalized.split(/\s+/);
   for (const sheet of sheetList) {
-    const title = sheet.properties?.title || '';
+    const title = sheet.title || '';
     const titleLower = title.toLowerCase();
     if (searchWords.some(word => titleLower.includes(word))) {
       console.log(`[Sheets] findSheetByName: WORD MATCH found: "${title}" (contains word from "${normalized}")`);
-      return { sheetName: title, sheetId: sheet.properties?.sheetId || 0 };
+      return { sheetName: title, sheetId: sheet.sheetId || 0 };
     }
   }
 
@@ -882,8 +796,7 @@ export async function lookupTeamAccounts(
   }
 
   try {
-    console.log(`[Sheets] Connecting to Google Sheets API...`);
-    const sheets = await getSheetsClient();
+    console.log(`[Sheets] Connecting to core-api for Google Sheets...`);
 
     // Find the matching sheet
     console.log(`[Sheets] Searching for sheet matching "${teamName}" in spreadsheet ${spreadsheetId.substring(0, 10)}...`);
@@ -903,14 +816,13 @@ export async function lookupTeamAccounts(
 
     console.log(`[Sheets] Found matching sheet: "${sheetMatch.sheetName}" (sheetId: ${sheetMatch.sheetId})`);
 
-    // Read all data from the sheet
+    // Read all data from the sheet via core-api
     console.log(`[Sheets] Reading data from sheet "${sheetMatch.sheetName}"...`);
-    const dataResponse = await sheets.spreadsheets.values.get({
+    const rows = await coreApiGoogle.sheets.getValues(
       spreadsheetId,
-      range: `'${sheetMatch.sheetName}'`,  // Quotes handle special chars in sheet names
-    });
+      `'${sheetMatch.sheetName}'`  // Quotes handle special chars in sheet names
+    );
 
-    const rows = dataResponse.data.values || [];
     console.log(`[Sheets] Retrieved ${rows.length} rows from sheet`);
 
     if (rows.length === 0) {

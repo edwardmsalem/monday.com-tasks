@@ -22,8 +22,8 @@ import { monday as coreApiMonday, getCachedConfig } from './coreApi.js';
 function getChannels() {
   const coreConfig = getCachedConfig();
   return {
-    issueCall: coreConfig.slack.channels.issueCall || 'C07JS45GTQC',
-    teamOverview: coreConfig.slack.channels.seasonTicketAdmin || 'C08QCFC4Y0H',
+    issueCall: coreConfig.slack.channels.issueCall,
+    teamOverview: coreConfig.slack.channels.seasonTicketAdmin,
   };
 }
 
@@ -71,10 +71,10 @@ export const ESCALATION_CONFIG = {
 };
 
 // Channels - now loaded from core-api config via getChannels()
-// Legacy export for backwards compatibility
+// Legacy export for backwards compatibility - channels must be configured in core-api
 export const CHANNELS = {
-  issueCall: 'C07JS45GTQC', // Fallback - prefer getChannels()
-  teamOverview: 'C08QCFC4Y0H', // Fallback - prefer getChannels()
+  get issueCall() { return getChannels().issueCall; },
+  get teamOverview() { return getChannels().teamOverview; },
 };
 
 // ============================================================================

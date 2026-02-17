@@ -97,6 +97,7 @@ const channelId = config.slack.channels.seasonTicketAdmin;
 
 ### Migration Status
 - [x] digest.ts - Migrated to core-api for Monday queries
+- [x] sheets.ts - Migrated to core-api for all Sheets operations (create, batchUpdate, getMetadata, getValues, updateValues)
 - [ ] monday.ts - Check if using direct API calls
 - [ ] slack.ts - Check if using direct API calls
 - [ ] Other files - Audit for direct API usage

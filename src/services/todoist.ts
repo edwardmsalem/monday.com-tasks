@@ -66,6 +66,7 @@ async function todoistRequest<T>(
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(30000),
   });
 
   if (!response.ok) {

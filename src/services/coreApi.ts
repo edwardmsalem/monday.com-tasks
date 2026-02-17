@@ -618,30 +618,30 @@ export const google = {
 
   sheets: {
     async getValues(
-      sheetId: string,
+      spreadsheetId: string,
       range?: string
-    ): Promise<{ values: unknown[][] }> {
+    ): Promise<unknown[][]> {
       const query = range ? `?range=${encodeURIComponent(range)}` : '';
-      return coreApiRequest(`/google/sheets/${sheetId}${query}`, {
+      return coreApiRequest(`/google/sheets/${spreadsheetId}${query}`, {
         method: 'GET',
       });
     },
 
     async updateValues(
-      sheetId: string,
+      spreadsheetId: string,
       params: { range: string; values: unknown[][] }
     ): Promise<{ ok: boolean; updatedCells: number }> {
-      return coreApiRequest(`/google/sheets/${sheetId}`, {
+      return coreApiRequest(`/google/sheets/${spreadsheetId}`, {
         method: 'PUT',
         body: params as Record<string, unknown>,
       });
     },
 
     async appendValues(
-      sheetId: string,
+      spreadsheetId: string,
       params: { range: string; values: unknown[][] }
     ): Promise<{ ok: boolean; updatedCells: number }> {
-      return coreApiRequest(`/google/sheets/${sheetId}`, {
+      return coreApiRequest(`/google/sheets/${spreadsheetId}`, {
         body: params as Record<string, unknown>,
       });
     },
@@ -652,6 +652,61 @@ export const google = {
     }): Promise<{ spreadsheetId: string; spreadsheetUrl: string; title: string }> {
       return coreApiRequest('/google/sheets', {
         body: params,
+      });
+    },
+
+    /**
+     * Create a spreadsheet with full options (frozen rows, multiple sheets, etc.)
+     */
+    async createWithOptions(params: {
+      title: string;
+      sheets?: Array<{
+        title: string;
+        frozenRowCount?: number;
+        frozenColumnCount?: number;
+      }>;
+    }): Promise<{
+      spreadsheetId: string;
+      spreadsheetUrl: string;
+      title: string;
+      sheets?: Array<{ sheetId: number; title: string }>;
+    }> {
+      return coreApiRequest('/google/sheets', {
+        body: params,
+      });
+    },
+
+    /**
+     * Get spreadsheet metadata (list of sheets)
+     */
+    async getMetadata(spreadsheetId: string): Promise<{
+      spreadsheetId: string;
+      title: string;
+      sheets: Array<{
+        sheetId: number;
+        title: string;
+        index: number;
+        rowCount?: number;
+        columnCount?: number;
+      }>;
+    }> {
+      return coreApiRequest(`/google/sheets/${spreadsheetId}/metadata`, {
+        method: 'GET',
+      });
+    },
+
+    /**
+     * Batch update spreadsheet (formatting, auto-resize, cell properties, etc.)
+     * @param spreadsheetId - The spreadsheet to update
+     * @param requests - Array of batchUpdate request objects
+     * @see https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets/request
+     */
+    async batchUpdate(
+      spreadsheetId: string,
+      requests: unknown[]
+    ): Promise<{ spreadsheetId: string; replies: unknown[] }> {
+      return coreApiRequest(`/google/sheets/${spreadsheetId}/batchUpdate`, {
+        body: { requests },
       });
     },
   },
@@ -671,12 +726,18 @@ export const google = {
   },
 
   drive: {
+    /**
+     * Share a file with permissions
+     * @param type - 'user' (specific email), 'anyone' (public), or 'domain' (workspace)
+     * @param domain - Required when type is 'domain' (e.g., 'salemseats.com')
+     */
     async shareFile(
       fileId: string,
       params: {
         email?: string;
         role?: 'reader' | 'writer' | 'commenter';
-        type?: 'user' | 'anyone';
+        type?: 'user' | 'anyone' | 'domain';
+        domain?: string;
       }
     ): Promise<{ ok: boolean; permissionId: string }> {
       return coreApiRequest('/google/drive/share', {
@@ -685,6 +746,7 @@ export const google = {
           email: params.email,
           role: params.role || 'reader',
           type: params.type || 'user',
+          domain: params.domain,
         },
       });
     },
