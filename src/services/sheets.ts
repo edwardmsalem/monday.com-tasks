@@ -225,6 +225,7 @@ export interface ScanSheetOptions {
   title: string;
   recipients: RecipientWithAppointment[];
   contentType: ScanContentType;
+  accountInfo?: Map<string, ScanAccountInfo>;  // email → account info from sport sheets
 }
 
 /**
@@ -1007,6 +1008,201 @@ export function formatAccountsForDisplay(result: AccountLookupResult): string {
   return lines.join('\n');
 }
 
+
+// ============================================================================
+// SCAN ACCOUNT ENRICHMENT
+// Batch lookup account info for /scan recipients from sport-specific sheets
+// ============================================================================
+
+/**
+ * Parsed seat location with numeric data for adjacency detection
+ */
+export interface ParsedSeatLocation {
+  section: string;
+  row: string;
+  lowSeat: number;
+  highSeat: number;
+  qty: string;          // e.g., "4"
+  seasonTotal: string;  // e.g., "$5,000"
+  display: string;      // e.g., "Sec 100 Row 5 Seats 1-4 | Qty: 4 | Total: $5,000"
+}
+
+/**
+ * Account info for a single recipient (used by /scan)
+ */
+export interface ScanAccountInfo {
+  name: string;
+  seats: string;        // Newline-separated: "Sec 100 Row 5 Seats 1-4\nSec 200 Row 10 Seats 1-2"
+  seatLocations: ParsedSeatLocation[];  // Structured data for adjacency detection
+  connecting: string;   // Adjacent seat holders: "email@example.com (Sec 100 Row 5 Seats 5-8)"
+}
+
+/**
+ * Batch lookup account info for multiple recipient emails against a team's account sheet.
+ * Fetches the team sheet ONCE and matches all emails in-memory.
+ *
+ * @param teamName - Team name (e.g., "Miami Dolphins")
+ * @param emails - Array of recipient emails to look up
+ * @returns Map of lowercase email → account info
+ */
+export async function batchLookupAccountsForScan(
+  teamName: string,
+  emails: string[]
+): Promise<Map<string, ScanAccountInfo>> {
+  const result = new Map<string, ScanAccountInfo>();
+
+  if (emails.length === 0) return result;
+
+  console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)...`);
+
+  // Fetch all accounts for this team (one API call)
+  let teamResult: AccountLookupResult;
+  try {
+    teamResult = await lookupTeamAccounts(teamName);
+  } catch (error) {
+    console.error(`[Sheets] Failed to lookup team accounts for "${teamName}":`, error instanceof Error ? error.message : error);
+    return result;
+  }
+
+  if (!teamResult.success) {
+    console.log(`[Sheets] Account lookup failed for "${teamName}": ${teamResult.error}`);
+    return result;
+  }
+
+  const { headers, accounts } = teamResult;
+  console.log(`[Sheets] Found ${accounts.length} total accounts for "${teamResult.sheetName}"`);
+
+  // Find the email column index
+  const emailIdx = findColumnIndex(headers, 'email', 'e-mail', 'email address');
+  if (emailIdx === -1) {
+    console.log(`[Sheets] No email column found in sheet headers: ${headers.join(', ')}`);
+    return result;
+  }
+
+  // Build a lookup map: lowercase email → array of matching rows
+  const emailToRows = new Map<string, AccountInfo[]>();
+  for (const account of accounts) {
+    const accEmail = account.rowData[emailIdx]?.toLowerCase().trim() || '';
+    if (!accEmail) continue;
+    if (!emailToRows.has(accEmail)) {
+      emailToRows.set(accEmail, []);
+    }
+    emailToRows.get(accEmail)!.push(account);
+  }
+
+  // Helper: parse seat locations from account rows
+  function parseSeatLocations(rows: AccountInfo[]): ParsedSeatLocation[] {
+    const locations: ParsedSeatLocation[] = [];
+    for (const acc of rows) {
+      const section = getColumnValue(acc.rowData, headers, 'section', 'sec');
+      const rowVal = getColumnValue(acc.rowData, headers, 'row');
+      const lowSeatStr = getColumnValue(acc.rowData, headers, 'low seat', 'seat low', 'first seat', 'seat from', 'low');
+      const highSeatStr = getColumnValue(acc.rowData, headers, 'high seat', 'seat high', 'last seat', 'seat to', 'high');
+      const seatsStr = getColumnValue(acc.rowData, headers, 'seats', 'seat', 'seat numbers');
+      const qty = getColumnValue(acc.rowData, headers, 'qty', 'quantity', 'num seats', '# seats', 'count');
+      const seasonTotal = getColumnValue(acc.rowData, headers, 'season total', 'total', 'season price', 'price', 'amount', 'season amt');
+
+      const parts: string[] = [];
+      if (section) parts.push(`Sec ${section}`);
+      if (rowVal) parts.push(`Row ${rowVal}`);
+
+      let lowSeat = 0;
+      let highSeat = 0;
+
+      if (lowSeatStr && highSeatStr) {
+        lowSeat = parseInt(lowSeatStr, 10) || 0;
+        highSeat = parseInt(highSeatStr, 10) || 0;
+        parts.push(`Seats ${lowSeatStr}-${highSeatStr}`);
+      } else if (lowSeatStr) {
+        lowSeat = parseInt(lowSeatStr, 10) || 0;
+        highSeat = lowSeat;
+        parts.push(`Seat ${lowSeatStr}`);
+      } else if (seatsStr) {
+        // Try to parse "1-4" format
+        const range = seatsStr.match(/(\d+)\s*-\s*(\d+)/);
+        if (range) {
+          lowSeat = parseInt(range[1], 10) || 0;
+          highSeat = parseInt(range[2], 10) || 0;
+        }
+        parts.push(`Seats ${seatsStr}`);
+      }
+
+      if (qty) parts.push(`Qty: ${qty}`);
+      if (seasonTotal) parts.push(`Total: ${seasonTotal}`);
+
+      if (parts.length > 0) {
+        locations.push({
+          section: section.toLowerCase().trim(),
+          row: rowVal.toLowerCase().trim(),
+          lowSeat,
+          highSeat,
+          qty,
+          seasonTotal,
+          display: parts.join(' | '),
+        });
+      }
+    }
+    return locations;
+  }
+
+  // First pass: build account info for ALL accounts (not just recipients)
+  // so we can detect adjacency across all seat holders
+  const allAccountsByEmail = new Map<string, { name: string; seatLocations: ParsedSeatLocation[] }>();
+  for (const [email, rows] of emailToRows.entries()) {
+    const firstRow = rows[0].rowData;
+    const name = getColumnValue(firstRow, headers, 'name', 'account name', 'customer name', 'full name');
+    const seatLocations = parseSeatLocations(rows);
+    allAccountsByEmail.set(email, { name, seatLocations });
+  }
+
+  // Match each recipient email and compute adjacency
+  const emailSet = new Set(emails.map(e => e.toLowerCase().trim()));
+  let matched = 0;
+
+  for (const email of emailSet) {
+    const accountData = allAccountsByEmail.get(email);
+    if (!accountData) continue;
+
+    const { name, seatLocations } = accountData;
+
+    // Find connecting seats: other accounts in same section+row with adjacent seats
+    const connectingEntries: string[] = [];
+    for (const loc of seatLocations) {
+      if (!loc.section || !loc.row || (!loc.lowSeat && !loc.highSeat)) continue;
+
+      for (const [otherEmail, otherData] of allAccountsByEmail.entries()) {
+        if (otherEmail === email) continue; // Skip self
+
+        for (const otherLoc of otherData.seatLocations) {
+          // Same section and row?
+          if (otherLoc.section !== loc.section || otherLoc.row !== loc.row) continue;
+          // Adjacent? (other's high seat + 1 = our low, or our high + 1 = other's low)
+          const isAdjacent =
+            (otherLoc.highSeat > 0 && loc.lowSeat > 0 && otherLoc.highSeat + 1 === loc.lowSeat) ||
+            (loc.highSeat > 0 && otherLoc.lowSeat > 0 && loc.highSeat + 1 === otherLoc.lowSeat);
+
+          if (isAdjacent) {
+            const entry = `${otherEmail} (${otherLoc.display})`;
+            if (!connectingEntries.includes(entry)) {
+              connectingEntries.push(entry);
+            }
+          }
+        }
+      }
+    }
+
+    result.set(email, {
+      name,
+      seats: seatLocations.map(l => l.display).join('\n'),
+      seatLocations,
+      connecting: connectingEntries.join('\n'),
+    });
+    matched++;
+  }
+
+  console.log(`[Sheets] Matched ${matched}/${emailSet.size} recipient emails to accounts`);
+  return result;
+}
 
 // ============================================================================
 // ISSUE CALL ACCOUNT LOOKUP
