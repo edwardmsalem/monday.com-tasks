@@ -520,7 +520,7 @@ router.post(
 
       // Check for /scan command in body text (now also matches /scantimes - merged behavior)
       const { shouldScanForRecipients, findRelatedRecipients, enrichRecipientsWithAppointments } = await import('../services/gmail.js');
-      const { createScanSheet, detectContentType } = await import('../services/sheets.js');
+      const { createScanSheet, detectContentType, batchLookupAccountsForScan } = await import('../services/sheets.js');
 
       // Just detect if scan is needed - we'll run it AFTER sending the response
       const scanDetected = shouldScanForRecipients(bodyText);
@@ -626,25 +626,43 @@ router.post(
 
             console.log(`[Background Scan] Found ${scannedRecipients.length} related recipients`);
 
-            // STEP 2: Post email list IMMEDIATELY (no waiting for Claude)
+            // STEP 2: Post email list and lookup account info in parallel
             const teamName = analysisResult.team || 'this team';
+            const teamForTitle = analysisResult.team || 'Team';
+
+            // Lookup account info from sport sheets (single API call)
+            let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
             try {
-              const emailList = scannedRecipients.map(r => `• ${r.email}`).join('\n');
-              const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 48 hours):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
+              accountInfo = await batchLookupAccountsForScan(
+                teamForTitle,
+                scannedRecipients.map(r => r.email)
+              );
+              console.log(`[Background Scan] Account lookup: ${accountInfo.size} accounts matched`);
+            } catch (accountErr) {
+              console.error('[Background Scan] Failed to lookup accounts:', accountErr);
+            }
+
+            try {
+              const emailList = scannedRecipients.map(r => {
+                const account = accountInfo?.get(r.email.toLowerCase());
+                const info = account ? ` (${account.name}${account.seats ? ' - ' + account.seats : ''})` : '';
+                return `• ${r.email}${info}`;
+              }).join('\n');
+              const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 14 days):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
               await slack.postToThread(slackMessage.ts, scanMessage);
               console.log('[Background Scan] Posted email list to Slack thread');
             } catch (threadErr) {
               console.error('[Background Scan] Failed to post email list:', threadErr);
             }
 
-            // STEP 3: Create Google Sheet with emails (fast)
-            const teamForTitle = analysisResult.team || 'Team';
+            // STEP 3: Create Google Sheet with emails and account info
             let sheetUrl = '';
             try {
               const sheetResult = await createScanSheet({
                 title: teamForTitle,
                 recipients: scannedRecipients,
                 contentType,
+                accountInfo,
               });
               sheetUrl = sheetResult.spreadsheetUrl;
               console.log('[Background Scan] Google Sheet created:', sheetUrl);
@@ -666,7 +684,9 @@ router.post(
               try {
                 const timesMessage = recipientsWithTimes.map(r => {
                   const timeStr = [r.appointmentDate, r.appointmentTime].filter(Boolean).join(' ');
-                  return `• ${r.email} - ${timeStr}`;
+                  const account = accountInfo?.get(r.email.toLowerCase());
+                  const nameStr = account?.name ? ` (${account.name})` : '';
+                  return `• ${r.email}${nameStr} - ${timeStr}`;
                 }).join('\n');
                 await slack.postToThread(slackMessage.ts, `📅 *Appointment times found:*\n\n${timesMessage}`);
                 console.log(`[Background Scan] Posted ${recipientsWithTimes.length} appointment times`);
@@ -674,13 +694,14 @@ router.post(
                 console.error('[Background Scan] Failed to post appointment times:', timesErr);
               }
 
-              // Update the sheet with appointment times
+              // Update the sheet with appointment times + account info
               if (sheetUrl) {
                 try {
                   await createScanSheet({
                     title: teamForTitle,
                     recipients: enrichedRecipients,
                     contentType,
+                    accountInfo,
                   });
                   console.log('[Background Scan] Updated sheet with appointment times');
                 } catch (updateErr) {
