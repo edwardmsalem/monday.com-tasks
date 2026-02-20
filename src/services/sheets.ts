@@ -314,7 +314,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
 
   // Format the header row and apply date/time formatting
   const dataRowCount = sortedRecipients.length;
-  await coreApiGoogle.sheets.batchUpdate(spreadsheetId, [
+  const batchRequests: Record<string, unknown>[] = [
     // Header row formatting (bold, background color)
     {
       repeatCell: {
@@ -374,18 +374,85 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         fields: 'userEnteredFormat.numberFormat',
       },
     },
-    // Auto-resize columns
-    {
-      autoResizeDimensions: {
-        dimensions: {
-          sheetId,
-          dimension: 'COLUMNS',
-          startIndex: 0,
-          endIndex: columnCount,
-        },
+  ];
+
+  // Apply rich text color-coding for multi-location cells (Seats & Connecting columns)
+  // Each location line gets a different color so they're visually distinct
+  if (includeAccountColumns) {
+    const seatsColIdx = headerRow.indexOf('Seats');
+    const connectingColIdx = headerRow.indexOf('Connecting');
+    const colorColumns = [seatsColIdx, connectingColIdx].filter(idx => idx !== -1);
+
+    // Colors cycle: dark blue, dark red, dark green
+    const LOCATION_COLORS = [
+      { red: 0x11 / 255, green: 0x55 / 255, blue: 0xCC / 255 }, // #1155CC
+      { red: 0xCC / 255, green: 0x00 / 255, blue: 0x00 / 255 }, // #CC0000
+      { red: 0x38 / 255, green: 0x76 / 255, blue: 0x1D / 255 }, // #38761D
+    ];
+
+    for (let rowIdx = 0; rowIdx < sortedRecipients.length; rowIdx++) {
+      const r = sortedRecipients[rowIdx];
+      const account = accountInfo?.get(r.email.toLowerCase());
+      if (!account) continue;
+
+      for (const colIdx of colorColumns) {
+        const cellValue = colIdx === seatsColIdx ? (account.seats || '') : (account.connecting || '');
+        const lines = cellValue.split('\n');
+        if (lines.length < 2) continue; // Only color multi-location cells
+
+        // Build textFormatRuns: each line gets a color from the cycle
+        const runs: Array<{ startIndex: number; format: { foregroundColor: { red: number; green: number; blue: number } } }> = [];
+        let charOffset = 0;
+
+        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+          const color = LOCATION_COLORS[lineIdx % LOCATION_COLORS.length];
+          runs.push({
+            startIndex: charOffset,
+            format: {
+              foregroundColor: color,
+            },
+          });
+          // +1 for the newline character between lines
+          charOffset += lines[lineIdx].length + (lineIdx < lines.length - 1 ? 1 : 0);
+        }
+
+        batchRequests.push({
+          updateCells: {
+            range: {
+              sheetId,
+              startRowIndex: rowIdx + 1, // +1 for header
+              endRowIndex: rowIdx + 2,
+              startColumnIndex: colIdx,
+              endColumnIndex: colIdx + 1,
+            },
+            rows: [{
+              values: [{
+                userEnteredValue: { stringValue: cellValue },
+                textFormatRuns: runs,
+              }],
+            }],
+            fields: 'userEnteredValue,textFormatRuns',
+          },
+        });
+      }
+    }
+
+    console.log(`[Sheets] Added textFormatRuns for ${batchRequests.length - 3} multi-location cells`);
+  }
+
+  // Auto-resize columns (always last)
+  batchRequests.push({
+    autoResizeDimensions: {
+      dimensions: {
+        sheetId,
+        dimension: 'COLUMNS',
+        startIndex: 0,
+        endIndex: columnCount,
       },
     },
-  ]);
+  });
+
+  await coreApiGoogle.sheets.batchUpdate(spreadsheetId, batchRequests);
 
   // Try to make the sheet accessible to anyone with the link
   // (may fail if workspace restricts external sharing)
@@ -929,7 +996,9 @@ export interface ParsedSeatLocation {
   row: string;
   lowSeat: number;
   highSeat: number;
-  display: string;  // e.g., "Sec 100 Row 5 Seats 1-4"
+  qty: string;          // e.g., "4"
+  seasonTotal: string;  // e.g., "$5,000"
+  display: string;      // e.g., "Sec 100 Row 5 Seats 1-4 | Qty: 4 | Total: $5,000"
 }
 
 /**
@@ -1004,6 +1073,8 @@ export async function batchLookupAccountsForScan(
       const lowSeatStr = getColumnValue(acc.rowData, headers, 'low seat', 'seat low', 'first seat', 'seat from', 'low');
       const highSeatStr = getColumnValue(acc.rowData, headers, 'high seat', 'seat high', 'last seat', 'seat to', 'high');
       const seatsStr = getColumnValue(acc.rowData, headers, 'seats', 'seat', 'seat numbers');
+      const qty = getColumnValue(acc.rowData, headers, 'qty', 'quantity', 'num seats', '# seats', 'count');
+      const seasonTotal = getColumnValue(acc.rowData, headers, 'season total', 'total', 'season price', 'price', 'amount', 'season amt');
 
       const parts: string[] = [];
       if (section) parts.push(`Sec ${section}`);
@@ -1030,13 +1101,18 @@ export async function batchLookupAccountsForScan(
         parts.push(`Seats ${seatsStr}`);
       }
 
+      if (qty) parts.push(`Qty: ${qty}`);
+      if (seasonTotal) parts.push(`Total: ${seasonTotal}`);
+
       if (parts.length > 0) {
         locations.push({
           section: section.toLowerCase().trim(),
           row: rowVal.toLowerCase().trim(),
           lowSeat,
           highSeat,
-          display: parts.join(' '),
+          qty,
+          seasonTotal,
+          display: parts.join(' | '),
         });
       }
     }
