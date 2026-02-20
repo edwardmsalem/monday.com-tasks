@@ -363,9 +363,59 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     dataRows = rowsWithTimes.map(r => r.row);
 
     console.log(`[Sheets] Built ${dataRows.length} rows from master sheet (${appointmentByEmail.size} with appointment times)`);
+  } else if (options.accountInfo && options.accountInfo.size > 0) {
+    // Fallback: master sheet lookup failed but we have pre-fetched accountInfo
+    console.log(`[Sheets] Master sheet lookup failed, using pre-fetched accountInfo for "${teamName}" (${options.accountInfo.size} accounts)`);
+    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty', 'Status', 'Notes'];
+    columnCount = headerRow.length;
+
+    const rowsWithTimes: { sortKey: number; row: (string | number)[] }[] = [];
+
+    for (const recipient of recipients) {
+      const email = recipient.email.toLowerCase();
+      const account = options.accountInfo.get(email);
+      const appointment = appointmentByEmail.get(email);
+
+      const dateValue = appointment ? isoToSheetDate(appointment.rawDateTime) : '';
+      const timeValue = appointment ? isoToSheetTime(appointment.rawDateTime) : '';
+      const sortKey = appointment?.rawDateTime
+        ? new Date(appointment.rawDateTime).getTime()
+        : Number.MAX_SAFE_INTEGER;
+
+      if (account && account.seatLocations.length > 0) {
+        // One row per seat location (same account may have multiple seat sets)
+        for (const loc of account.seatLocations) {
+          const seats = loc.lowSeat && loc.highSeat
+            ? (loc.lowSeat === loc.highSeat ? String(loc.lowSeat) : `${loc.lowSeat}-${loc.highSeat}`)
+            : '';
+          rowsWithTimes.push({
+            sortKey,
+            row: [dateValue, timeValue, recipient.email, account.name,
+              loc.section, loc.row, seats, loc.qty, '', ''],
+          });
+        }
+      } else if (account) {
+        rowsWithTimes.push({
+          sortKey,
+          row: [dateValue, timeValue, recipient.email, account.name,
+            '', '', '', '', '', ''],
+        });
+      } else {
+        rowsWithTimes.push({
+          sortKey,
+          row: [dateValue, timeValue, recipient.email, '',
+            '', '', '', '', '', ''],
+        });
+      }
+    }
+
+    rowsWithTimes.sort((a, b) => a.sortKey - b.sortKey);
+    dataRows = rowsWithTimes.map(r => r.row);
+
+    console.log(`[Sheets] Built ${dataRows.length} rows from accountInfo (${appointmentByEmail.size} with appointment times)`);
   } else {
-    // Fallback: simple format (no master sheet data available)
-    console.log(`[Sheets] No master sheet data for "${teamName}", using simple format`);
+    // Final fallback: simple format (no master sheet data, no accountInfo)
+    console.log(`[Sheets] No master sheet data or accountInfo for "${teamName}", using simple format`);
     headerRow = ['Date', 'Time', 'Email', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
