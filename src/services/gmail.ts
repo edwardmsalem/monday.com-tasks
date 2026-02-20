@@ -767,7 +767,7 @@ If no appointment is mentioned, return null for all fields.`;
       })
     );
 
-    // Check response validity - core-api returns 'text' field, not 'content'
+    // core-api returns { text: "..." } — read .text (with .content fallback for safety)
     const claudeResponse = response as { ok?: boolean; text?: string; content?: string; error?: string; model?: string; usage?: unknown };
     const text = claudeResponse.text || claudeResponse.content || '';
 
@@ -777,35 +777,42 @@ If no appointment is mentioned, return null for all fields.`;
       console.log(`[Gmail] Full response:`, JSON.stringify(response).slice(0, 800));
     }
 
-    // Debug: Log Claude's raw response (truncated)
-    const truncatedResponse = text.length > 300 ? text.slice(0, 300) + '...' : text;
-    console.log(`[Gmail] Claude response: ${truncatedResponse}`);
-
-    // Parse JSON from response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      // Log what was extracted
-      if (parsed.appointmentDate || parsed.appointmentTime) {
-        console.log(`[Gmail] Extracted: date="${parsed.appointmentDate}", time="${parsed.appointmentTime}", raw="${parsed.rawDateTime}"`);
-      } else {
-        console.log(`[Gmail] No appointment found in email body (first 100 chars): ${emailBody.slice(0, 100).replace(/\n/g, ' ')}`);
-      }
-
-      // Log timezone conversion for debugging
-      if (parsed.detectedTeam && parsed.originalTimezone) {
-        console.log(`[Gmail] Timezone conversion: ${parsed.detectedTeam} (${parsed.originalTimezone}) → ET, time: ${parsed.rawDateTime}`);
-      }
-
-      return {
-        appointmentDate: parsed.appointmentDate || null,
-        appointmentTime: parsed.appointmentTime || null,
-        rawDateTime: parsed.rawDateTime || null,
-      };
+    // Strip markdown code fences if present (Claude sometimes wraps JSON in ```json ... ```)
+    let cleanText = text.trim();
+    if (cleanText.startsWith('```')) {
+      cleanText = cleanText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     }
 
-    console.log(`[Gmail] WARNING: No JSON found in Claude response`);
+    // Parse JSON from response
+    const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+
+        // Log what was extracted
+        if (parsed.appointmentDate || parsed.appointmentTime) {
+          console.log(`[Gmail] Extracted: date="${parsed.appointmentDate}", time="${parsed.appointmentTime}", raw="${parsed.rawDateTime}"`);
+        } else {
+          console.log(`[Gmail] No appointment found in email body (first 100 chars): ${emailBody.slice(0, 100).replace(/\n/g, ' ')}`);
+        }
+
+        // Log timezone conversion for debugging
+        if (parsed.detectedTeam && parsed.originalTimezone) {
+          console.log(`[Gmail] Timezone conversion: ${parsed.detectedTeam} (${parsed.originalTimezone}) → ET, time: ${parsed.rawDateTime}`);
+        }
+
+        return {
+          appointmentDate: parsed.appointmentDate || null,
+          appointmentTime: parsed.appointmentTime || null,
+          rawDateTime: parsed.rawDateTime || null,
+        };
+      } catch (parseError) {
+        console.warn('[Gmail] Failed to parse Claude response as JSON:', parseError);
+        return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+      }
+    }
+
+    console.warn('[Gmail] No JSON found in Claude response. Raw response:', text.slice(0, 200));
     return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
   } catch (error) {
     console.error('Error extracting appointment time:', error);
