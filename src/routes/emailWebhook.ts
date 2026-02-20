@@ -770,4 +770,117 @@ router.post(
   }
 );
 
+// ============================================================================
+// /test-scan-sheet - Test endpoint for scan sheet creation with account data
+// ============================================================================
+
+/**
+ * Test endpoint to verify scan sheet creation with account data pull.
+ * Creates a test sheet with real account data from sport sheets.
+ * Does NOT create calendar events, Gmail search, or Slack messages.
+ *
+ * Usage: GET /test-scan-sheet?team=dolphins&emails=test1@example.com,test2@example.com
+ *
+ * If no emails provided, uses first 3 accounts from the team sheet.
+ */
+router.get('/test-scan-sheet', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const team = req.query.team as string;
+    if (!team) {
+      res.status(400).json({ error: 'Missing required query param: team' });
+      return;
+    }
+
+    const emailsParam = req.query.emails as string;
+    let emails: string[] = emailsParam ? emailsParam.split(',').map(e => e.trim()) : [];
+
+    console.log(`[Test] Starting test-scan-sheet for team="${team}", emails=${emails.length > 0 ? emails.join(', ') : '(auto)'}`);
+
+    // Import sheets service
+    const sheets = await import('../services/sheets.js');
+
+    // If no emails provided, fetch team accounts and use first few
+    if (emails.length === 0) {
+      console.log('[Test] No emails provided, fetching team accounts to get test emails...');
+      const teamResult = await sheets.lookupTeamAccounts(team);
+      if (!teamResult.success) {
+        res.status(400).json({ error: `Failed to lookup team: ${teamResult.error}` });
+        return;
+      }
+
+      // Find email column and extract first 3 emails
+      const headers = teamResult.headers;
+      const emailIdx = headers.findIndex(h =>
+        h.toLowerCase().includes('email') || h.toLowerCase().includes('e-mail')
+      );
+      if (emailIdx === -1) {
+        res.status(400).json({ error: 'No email column found in team sheet' });
+        return;
+      }
+
+      emails = teamResult.accounts
+        .slice(0, 5) // Get up to 5 accounts
+        .map(acc => acc.rowData[emailIdx]?.trim())
+        .filter(Boolean);
+
+      console.log(`[Test] Using ${emails.length} emails from team sheet: ${emails.join(', ')}`);
+    }
+
+    // Pull account data using the real batchLookupAccountsForScan function
+    console.log('[Test] Calling batchLookupAccountsForScan...');
+    const accountInfo = await sheets.batchLookupAccountsForScan(team, emails);
+    console.log(`[Test] Got account info for ${accountInfo.size} emails`);
+
+    // Log the account data for debugging
+    for (const [email, info] of accountInfo.entries()) {
+      console.log(`[Test] Account ${email}:`);
+      console.log(`  Name: ${info.name}`);
+      console.log(`  Seats: ${info.seats.replace(/\n/g, ' | ')}`);
+      console.log(`  Locations: ${info.seatLocations.length}`);
+      console.log(`  Connecting: ${info.connecting || '(none)'}`);
+    }
+
+    // Create mock recipients with appointment times
+    const now = new Date();
+    const recipients = emails.map((email, idx) => {
+      const apptTime = new Date(now.getTime() + idx * 30 * 60 * 1000);
+      return {
+        email,
+        appointmentDate: apptTime.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+        appointmentTime: apptTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+        rawDateTime: apptTime.toISOString(),
+        code: null,
+        link: null,
+      };
+    });
+
+    // Create the scan sheet
+    console.log('[Test] Creating scan sheet...');
+    const sheetResult = await sheets.createScanSheet({
+      title: `TEST ${team}`,
+      recipients,
+      contentType: 'relocation',
+      accountInfo,
+    });
+
+    console.log(`[Test] Created sheet: ${sheetResult.spreadsheetUrl}`);
+
+    res.json({
+      success: true,
+      message: 'Test sheet created successfully',
+      spreadsheetUrl: sheetResult.spreadsheetUrl,
+      spreadsheetId: sheetResult.spreadsheetId,
+      title: sheetResult.title,
+      accountsMatched: accountInfo.size,
+      emails,
+    });
+  } catch (error) {
+    console.error('[Test] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 export default router;
