@@ -1080,7 +1080,7 @@ export async function batchLookupAccountsForScan(
             (loc.highSeat > 0 && otherLoc.lowSeat > 0 && loc.highSeat + 1 === otherLoc.lowSeat);
 
           if (isAdjacent) {
-            const entry = `${otherData.name || otherEmail} (${otherLoc.display})`;
+            const entry = `${otherEmail} (${otherLoc.display})`;
             if (!connectingEntries.includes(entry)) {
               connectingEntries.push(entry);
             }
