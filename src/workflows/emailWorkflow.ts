@@ -150,6 +150,9 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // All narrative/context/provenance goes to Updates
   const initialUpdateParts: string[] = [];
 
+  // Mention the assigned owner in the initial update
+  initialUpdateParts.push(`👤 Assigned to @${user.name}`);
+
   // Notes (if present)
   if (analysisResult.notes) {
     initialUpdateParts.push(`📝 ${analysisResult.notes}`);
@@ -173,7 +176,7 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   initialUpdateParts.push(`🔗 Run ID: ${runId.substring(0, 8)}`);
 
   log.log('Creating initial Monday update...');
-  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
+  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'), [user.mondayId]);
 
   // Step 8.5: Apply intent-driven mode behavior (Phase 4/5)
   // - Relocation: Creates 4 checklist subitems with owners from Slack config
@@ -295,23 +298,9 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Post Run ID to Slack thread for debugging/tracing
   await postRunIdToSlack(slackMessage.ts, runId);
 
-  // Post scan summary to Slack thread if scan was performed
+  // Scan summary is only logged, not posted to Slack thread
   if (scanSummary) {
-    try {
-      const scanSummaryText = [
-        `✅ *Scan Complete*`,
-        `• ${scanSummary.recipientCount} accounts found`,
-        scanSummary.calendarEventCount > 0
-          ? `• ${scanSummary.calendarEventCount} calendar event(s) created`
-          : `• No calendar events (calendar disabled or no appointment times)`,
-        `• <${scanSummary.sheetUrl}|View Tracking Sheet>`,
-      ].join('\n');
-
-      await slack.postToThread(slackMessage.ts, scanSummaryText);
-      log.log('Posted scan summary to Slack thread');
-    } catch (summaryError) {
-      log.error('Failed to post scan summary to Slack:', summaryError);
-    }
+    log.log(`Scan complete: ${scanSummary.recipientCount} accounts, ${scanSummary.calendarEventCount} calendar events, sheet: ${scanSummary.sheetUrl}`);
   }
 
   // Step 11: Upload PDF - Slack first (human value), then Monday (best effort with retry)
