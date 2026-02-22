@@ -188,10 +188,13 @@ export async function analyzeEmail(
   const systemPrompt = buildSystemPrompt(userNames);
   const extractTaskTool = buildExtractTaskTool(userNames);
 
+  // Strip /scan and /scantimes commands from body (system commands, not content for notes)
+  const cleanedBody = emailBody.replace(/\/scan(?:times)?\b\s*/gi, '').trim();
+
   // Build the message content
   let content = `Please analyze this forwarded email and extract task assignment details.\n\n`;
   content += `**Forwarding Email Subject:** ${emailSubject}\n\n`;
-  content += `**Forwarding Email Body:**\n${emailBody}\n\n`;
+  content += `**Forwarding Email Body:**\n${cleanedBody}\n\n`;
 
   if (emlSubject || emlFrom || emlTo) {
     content += `**Original Email Details:**\n`;

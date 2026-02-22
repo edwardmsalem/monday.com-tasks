@@ -423,7 +423,7 @@ router.post(
 
       // Dynamic imports to avoid circular dependencies
       const { analyzeEmailSafe } = await import('../services/claude.js');
-      const { findUserByName, getUserNamesString } = await import('../services/userResolver.js');
+      const { findUserByName, getUserNamesString, resolveNamesInText } = await import('../services/userResolver.js');
       const monday = await import('../services/monday.js');
       const slack = await import('../services/slack.js');
       const { parseDate, formatDateForDisplay } = await import('../utils/dateParser.js');
@@ -500,8 +500,14 @@ router.post(
       // Mention the assigned owner in the initial update
       initialUpdateParts.push(`👤 Assigned to @${user.name}`);
 
-      if (analysisResult.notes) {
-        initialUpdateParts.push(`📝 ${analysisResult.notes}`);
+      // Resolve names in notes to @mentions
+      let notesText = analysisResult.notes || '';
+      const notesMentionIds: number[] = [];
+      if (notesText) {
+        const resolved = await resolveNamesInText(notesText);
+        notesText = resolved.text;
+        notesMentionIds.push(...resolved.mentionUserIds);
+        initialUpdateParts.push(`📝 ${notesText}`);
       }
       if (fromEmail) {
         initialUpdateParts.push(`📧 From: ${fromEmail}`);
@@ -510,11 +516,15 @@ router.post(
         initialUpdateParts.push(`📬 To: ${toEmail}`);
       }
 
+      // Merge owner + notes mention IDs (deduplicated)
+      const allMentionIds = [user.mondayId, ...notesMentionIds]
+        .filter((id, i, arr) => arr.indexOf(id) === i);
+
       console.log('Creating initial Monday update...');
       await monday.createUpdate(
         mondayItem.id,
         initialUpdateParts.join('\n\n'),
-        [user.mondayId]
+        allMentionIds
       );
 
       if (!analysisResult.team) {

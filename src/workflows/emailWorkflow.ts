@@ -33,7 +33,7 @@ import { convertEmlToPdf } from '../services/convertApi.js';
 import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import * as calendar from '../services/calendar.js';
-import { findUserByName, getUserNamesString } from '../services/userResolver.js';
+import { findUserByName, getUserNamesString, resolveNamesInText } from '../services/userResolver.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { config } from '../config/environment.js';
 import { parseDate, formatDateForDisplay } from '../utils/dateParser.js';
@@ -153,9 +153,14 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Mention the assigned owner in the initial update
   initialUpdateParts.push(`👤 Assigned to @${user.name}`);
 
-  // Notes (if present)
-  if (analysisResult.notes) {
-    initialUpdateParts.push(`📝 ${analysisResult.notes}`);
+  // Notes (if present) - resolve names to @mentions
+  let notesText = analysisResult.notes || '';
+  const notesMentionIds: number[] = [];
+  if (notesText) {
+    const resolved = await resolveNamesInText(notesText);
+    notesText = resolved.text;
+    notesMentionIds.push(...resolved.mentionUserIds);
+    initialUpdateParts.push(`📝 ${notesText}`);
   }
 
   // Email provenance (From/To)
@@ -175,8 +180,12 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Run ID (always)
   initialUpdateParts.push(`🔗 Run ID: ${runId.substring(0, 8)}`);
 
+  // Merge owner + notes mention IDs (deduplicated)
+  const allMentionIds = [user.mondayId, ...notesMentionIds]
+    .filter((id, i, arr) => arr.indexOf(id) === i);
+
   log.log('Creating initial Monday update...');
-  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'), [user.mondayId]);
+  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'), allMentionIds);
 
   // Step 8.5: Apply intent-driven mode behavior (Phase 4/5)
   // - Relocation: Creates 4 checklist subitems with owners from Slack config
