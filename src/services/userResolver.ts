@@ -239,3 +239,48 @@ export async function getUserNamesString(): Promise<string> {
   const names = await getUserNames();
   return names.join(', ');
 }
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Scan text for known user names and replace with @FullName mentions.
+ * Returns the updated text and an array of Monday user IDs for mentions_list.
+ */
+export async function resolveNamesInText(text: string): Promise<{
+  text: string;
+  mentionUserIds: number[];
+}> {
+  if (!text) return { text, mentionUserIds: [] };
+
+  const users = await getAllUsers();
+  const mentionUserIds: number[] = [];
+  let result = text;
+
+  // Sort by full name length (longest first) to avoid partial replacements
+  const sortedUsers = [...users].sort((a, b) => b.name.length - a.name.length);
+
+  for (const user of sortedUsers) {
+    // Try full name first, then first name
+    const names = [user.name];
+    const firstName = user.name.split(' ')[0];
+    if (firstName !== user.name) names.push(firstName);
+
+    for (const name of names) {
+      // Word-boundary match, case-insensitive; skip if already an @mention
+      const regex = new RegExp(`(?<!@)\\b${escapeRegex(name)}\\b`, 'gi');
+      if (regex.test(result)) {
+        // Reset lastIndex after test()
+        regex.lastIndex = 0;
+        result = result.replace(regex, `@${user.name}`);
+        if (!mentionUserIds.includes(user.mondayId)) {
+          mentionUserIds.push(user.mondayId);
+        }
+        break; // Don't also match first name if full name matched
+      }
+    }
+  }
+
+  return { text: result, mentionUserIds };
+}

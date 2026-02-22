@@ -33,7 +33,7 @@ import { convertEmlToPdf } from '../services/convertApi.js';
 import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import * as calendar from '../services/calendar.js';
-import { findUserByName, getUserNamesString } from '../services/userResolver.js';
+import { findUserByName, getUserNamesString, resolveNamesInText } from '../services/userResolver.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { config } from '../config/environment.js';
 import { parseDate, formatDateForDisplay } from '../utils/dateParser.js';
@@ -150,9 +150,17 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // All narrative/context/provenance goes to Updates
   const initialUpdateParts: string[] = [];
 
-  // Notes (if present)
-  if (analysisResult.notes) {
-    initialUpdateParts.push(`📝 ${analysisResult.notes}`);
+  // Mention the assigned owner in the initial update
+  initialUpdateParts.push(`👤 Assigned to @${user.name}`);
+
+  // Notes (if present) - resolve names to @mentions
+  let notesText = analysisResult.notes || '';
+  const notesMentionIds: number[] = [];
+  if (notesText) {
+    const resolved = await resolveNamesInText(notesText);
+    notesText = resolved.text;
+    notesMentionIds.push(...resolved.mentionUserIds);
+    initialUpdateParts.push(`📝 ${notesText}`);
   }
 
   // Email provenance (From/To)
@@ -172,8 +180,12 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Run ID (always)
   initialUpdateParts.push(`🔗 Run ID: ${runId.substring(0, 8)}`);
 
+  // Merge owner + notes mention IDs (deduplicated)
+  const allMentionIds = [user.mondayId, ...notesMentionIds]
+    .filter((id, i, arr) => arr.indexOf(id) === i);
+
   log.log('Creating initial Monday update...');
-  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
+  await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'), allMentionIds);
 
   // Step 8.5: Apply intent-driven mode behavior (Phase 4/5)
   // - Relocation: Creates 4 checklist subitems with owners from Slack config
@@ -295,23 +307,9 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
   // Post Run ID to Slack thread for debugging/tracing
   await postRunIdToSlack(slackMessage.ts, runId);
 
-  // Post scan summary to Slack thread if scan was performed
+  // Scan summary is only logged, not posted to Slack thread
   if (scanSummary) {
-    try {
-      const scanSummaryText = [
-        `✅ *Scan Complete*`,
-        `• ${scanSummary.recipientCount} accounts found`,
-        scanSummary.calendarEventCount > 0
-          ? `• ${scanSummary.calendarEventCount} calendar event(s) created`
-          : `• No calendar events (calendar disabled or no appointment times)`,
-        `• <${scanSummary.sheetUrl}|View Tracking Sheet>`,
-      ].join('\n');
-
-      await slack.postToThread(slackMessage.ts, scanSummaryText);
-      log.log('Posted scan summary to Slack thread');
-    } catch (summaryError) {
-      log.error('Failed to post scan summary to Slack:', summaryError);
-    }
+    log.log(`Scan complete: ${scanSummary.recipientCount} accounts, ${scanSummary.calendarEventCount} calendar events, sheet: ${scanSummary.sheetUrl}`);
   }
 
   // Step 11: Upload PDF - Slack first (human value), then Monday (best effort with retry)

@@ -423,7 +423,7 @@ router.post(
 
       // Dynamic imports to avoid circular dependencies
       const { analyzeEmailSafe } = await import('../services/claude.js');
-      const { findUserByName, getUserNamesString } = await import('../services/userResolver.js');
+      const { findUserByName, getUserNamesString, resolveNamesInText } = await import('../services/userResolver.js');
       const monday = await import('../services/monday.js');
       const slack = await import('../services/slack.js');
       const { parseDate, formatDateForDisplay } = await import('../utils/dateParser.js');
@@ -496,8 +496,18 @@ router.post(
       console.log('Monday item created:', mondayItem.id);
 
       const initialUpdateParts: string[] = [];
-      if (analysisResult.notes) {
-        initialUpdateParts.push(`📝 ${analysisResult.notes}`);
+
+      // Mention the assigned owner in the initial update
+      initialUpdateParts.push(`👤 Assigned to @${user.name}`);
+
+      // Resolve names in notes to @mentions
+      let notesText = analysisResult.notes || '';
+      const notesMentionIds: number[] = [];
+      if (notesText) {
+        const resolved = await resolveNamesInText(notesText);
+        notesText = resolved.text;
+        notesMentionIds.push(...resolved.mentionUserIds);
+        initialUpdateParts.push(`📝 ${notesText}`);
       }
       if (fromEmail) {
         initialUpdateParts.push(`📧 From: ${fromEmail}`);
@@ -506,10 +516,16 @@ router.post(
         initialUpdateParts.push(`📬 To: ${toEmail}`);
       }
 
-      if (initialUpdateParts.length > 0) {
-        console.log('Creating initial Monday update...');
-        await monday.createUpdate(mondayItem.id, initialUpdateParts.join('\n\n'));
-      }
+      // Merge owner + notes mention IDs (deduplicated)
+      const allMentionIds = [user.mondayId, ...notesMentionIds]
+        .filter((id, i, arr) => arr.indexOf(id) === i);
+
+      console.log('Creating initial Monday update...');
+      await monday.createUpdate(
+        mondayItem.id,
+        initialUpdateParts.join('\n\n'),
+        allMentionIds
+      );
 
       if (!analysisResult.team) {
         await monday.createUpdate(
@@ -648,7 +664,7 @@ router.post(
                 const info = account ? ` (${account.name}${account.seats ? ' - ' + account.seats : ''})` : '';
                 return `• ${r.email}${info}`;
               }).join('\n');
-              const scanMessage = `📧 *Scanned ${scannedRecipients.length} email addresses* (from forwarded emails in the last 14 days):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
+              const scanMessage = `📧 *Found ${scannedRecipients.length} email addresses* (from forwarded emails in the last 14 days):\n\n${emailList}\n\n⚠️ _Note: Some emails may not have been forwarded. Please verify against all accounts for ${teamName}._`;
               await slack.postToThread(slackMessage.ts, scanMessage);
               console.log('[Background Scan] Posted email list to Slack thread');
             } catch (threadErr) {
@@ -704,25 +720,6 @@ router.post(
               } catch (calendarError) {
                 console.error('[Background Scan] Failed to create calendar events:', calendarError);
               }
-            }
-
-            // STEP 6: Post final summary
-            try {
-              const scanSummaryText = [
-                `✅ *Scan Complete*`,
-                `• ${scannedRecipients.length} emails scanned`,
-                recipientsWithTimes.length > 0
-                  ? `• ${recipientsWithTimes.length} with appointment times`
-                  : `• No appointment times found`,
-                calendarEventCount > 0
-                  ? `• ${calendarEventCount} calendar event(s) created`
-                  : null,
-                sheetUrl ? `• <${sheetUrl}|View Tracking Sheet>` : null,
-              ].filter(Boolean).join('\n');
-              await slack.postToThread(slackMessage.ts, scanSummaryText);
-              console.log('[Background Scan] Posted scan summary to Slack thread');
-            } catch (summaryError) {
-              console.error('[Background Scan] Failed to post scan summary:', summaryError);
             }
 
             console.log('[Background Scan] Scan completed successfully!');
