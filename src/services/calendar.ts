@@ -277,7 +277,8 @@ export async function createScanAppointmentEvents(
         reminders: {
           useDefault: false,
           overrides: [
-            { method: 'popup', minutes: 60 },
+            { method: 'popup', minutes: 60 * 24 }, // 1 business day before
+            { method: 'popup', minutes: 60 },       // 1 hour before
           ],
         },
         source: {
