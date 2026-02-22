@@ -511,23 +511,9 @@ export async function getItemUpdates(itemId: string): Promise<MondayUpdate[]> {
 export async function createUpdate(
   itemId: string,
   body: string,
-  mentionUserIds?: number[]
+  _mentionUserIds?: number[]
 ): Promise<string> {
-  // Build mentions_list if user IDs provided
-  const mentionsList =
-    mentionUserIds && mentionUserIds.length > 0
-      ? mentionUserIds.map(id => ({ id, type: 'User' }))
-      : undefined;
-
-  const query = mentionsList
-    ? `
-    mutation CreateUpdate($itemId: ID!, $body: String!, $mentionsList: [MentionInput!]) {
-      create_update(item_id: $itemId, body: $body, mentions_list: $mentionsList) {
-        id
-      }
-    }
-  `
-    : `
+  const query = `
     mutation CreateUpdate($itemId: ID!, $body: String!) {
       create_update(item_id: $itemId, body: $body) {
         id
@@ -535,12 +521,7 @@ export async function createUpdate(
     }
   `;
 
-  const variables: Record<string, unknown> = { itemId, body };
-  if (mentionsList) {
-    variables.mentionsList = mentionsList;
-  }
-
-  const result = await executeQuery<{ create_update: { id: string } }>(query, variables);
+  const result = await executeQuery<{ create_update: { id: string } }>(query, { itemId, body });
 
   return result.create_update.id;
 }
