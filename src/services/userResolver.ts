@@ -110,6 +110,22 @@ export async function findUserByName(name: string): Promise<UnifiedUser | null> 
 
   if (!searchName) return null;
 
+  // 0. Email match (highest priority - emails are unambiguous)
+  if (searchName.includes('@')) {
+    const emailMatch = users.find(u => u.email.toLowerCase() === searchName);
+    if (emailMatch) {
+      console.log(`User match: email "${searchName}" → ${emailMatch.name}`);
+      return emailMatch;
+    }
+    // Also try matching just the email local part as a name
+    const localPart = searchName.split('@')[0];
+    if (localPart) {
+      console.log(`Email "${searchName}" not found, trying local part "${localPart}" as name...`);
+      return findUserByName(localPart);
+    }
+    return null;
+  }
+
   // 1. Exact full name match (highest priority)
   let match = users.find(u => u.name.toLowerCase() === searchName);
   if (match) {

@@ -102,7 +102,7 @@ function buildExtractTaskTool(userNames: string): ToolDefinition {
       properties: {
         owner: {
           type: 'string',
-          description: `The team member to assign this task to. Should match one of: ${userNames}. Use first name or full name.`,
+          description: `The team member to assign this task to. Should match one of: ${userNames}. Use first name, full name, or email address.`,
         },
         supporters: {
           type: 'array',
@@ -501,7 +501,7 @@ function buildSlackTaskTool(userNames: string): ToolDefinition {
         owner: {
           type: 'string',
           nullable: true,
-          description: `The team member to own this task. Match to: ${userNames}. Return null if not specified.`,
+          description: `The team member to own this task. Match to: ${userNames}. Use first name, full name, or email address. Return null if not specified.`,
         },
         supporters: {
           type: 'array',
