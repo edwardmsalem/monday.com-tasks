@@ -259,7 +259,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   if (options.accountInfo && options.accountInfo.size > 0) {
     // Use pre-fetched accountInfo from batchLookupAccountsForScan
     console.log(`[Sheets] Building sheet with accountInfo for "${teamName}" (${options.accountInfo.size} accounts)`);
-    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty', 'Status', 'Notes'];
+    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
     const rowsWithTimes: { sortKey: number; row: (string | number)[] }[] = [];
@@ -284,20 +284,26 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           rowsWithTimes.push({
             sortKey,
             row: [dateValue, timeValue, recipient.email, account.name,
-              loc.section, loc.row, seats, loc.qty, '', ''],
+              loc.section, loc.row, seats, loc.qty,
+              account.last4, account.exp, account.cvv, account.billingAddress,
+              '', ''],
           });
         }
       } else if (account) {
         rowsWithTimes.push({
           sortKey,
           row: [dateValue, timeValue, recipient.email, account.name,
-            '', '', '', '', '', ''],
+            '', '', '', '',
+            account.last4, account.exp, account.cvv, account.billingAddress,
+            '', ''],
         });
       } else {
         rowsWithTimes.push({
           sortKey,
           row: [dateValue, timeValue, recipient.email, '',
-            '', '', '', '', '', ''],
+            '', '', '', '',
+            '', '', '', '',
+            '', ''],
         });
       }
     }
@@ -979,6 +985,10 @@ export interface ScanAccountInfo {
   seats: string;        // Newline-separated: "Sec 100 Row 5 Seats 1-4\nSec 200 Row 10 Seats 1-2"
   seatLocations: ParsedSeatLocation[];  // Structured data for adjacency detection
   connecting: string;   // Adjacent seat holders: "email@example.com (Sec 100 Row 5 Seats 5-8)"
+  last4: string;        // Last 4 digits of card on file
+  exp: string;          // Card expiration date
+  cvv: string;          // Card CVV/CVC
+  billingAddress: string; // Billing/mailing address
 }
 
 /**
@@ -1091,12 +1101,16 @@ export async function batchLookupAccountsForScan(
 
   // First pass: build account info for ALL accounts (not just recipients)
   // so we can detect adjacency across all seat holders
-  const allAccountsByEmail = new Map<string, { name: string; seatLocations: ParsedSeatLocation[] }>();
+  const allAccountsByEmail = new Map<string, { name: string; seatLocations: ParsedSeatLocation[]; last4: string; exp: string; cvv: string; billingAddress: string }>();
   for (const [email, rows] of emailToRows.entries()) {
     const firstRow = rows[0].rowData;
     const name = getColumnValue(firstRow, headers, 'name', 'account name', 'customer name', 'full name');
+    const last4 = getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4');
+    const exp = getColumnValue(firstRow, headers, 'exp', 'expiration', 'exp date', 'expiry');
+    const cvv = getColumnValue(firstRow, headers, 'cvc', 'cvv', 'security code', 'cv2');
+    const billingAddress = getColumnValue(firstRow, headers, 'address', 'street address', 'mailing address', 'billing address');
     const seatLocations = parseSeatLocations(rows);
-    allAccountsByEmail.set(email, { name, seatLocations });
+    allAccountsByEmail.set(email, { name, seatLocations, last4, exp, cvv, billingAddress });
   }
 
   // Match each recipient email and compute adjacency
@@ -1107,7 +1121,7 @@ export async function batchLookupAccountsForScan(
     const accountData = allAccountsByEmail.get(email);
     if (!accountData) continue;
 
-    const { name, seatLocations } = accountData;
+    const { name, seatLocations, last4, exp, cvv, billingAddress } = accountData;
 
     // Find connecting seats: other accounts in same section+row with adjacent seats
     const connectingEntries: string[] = [];
@@ -1140,6 +1154,10 @@ export async function batchLookupAccountsForScan(
       seats: seatLocations.map(l => l.display).join('\n'),
       seatLocations,
       connecting: connectingEntries.join('\n'),
+      last4,
+      exp,
+      cvv,
+      billingAddress,
     });
     matched++;
   }
