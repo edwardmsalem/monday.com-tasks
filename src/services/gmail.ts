@@ -696,8 +696,117 @@ function extractOriginalToFromBody(bodyText: string): string[] {
 }
 
 /**
+ * Map timezone abbreviations to IANA timezone names for programmatic conversion.
+ * Covers all US sports team timezones.
+ */
+const TZ_ABBREV_TO_IANA: Record<string, string> = {
+  'CT': 'America/Chicago',
+  'CST': 'America/Chicago',
+  'CDT': 'America/Chicago',
+  'MT': 'America/Denver',
+  'MST': 'America/Denver',
+  'MDT': 'America/Denver',
+  'PT': 'America/Los_Angeles',
+  'PST': 'America/Los_Angeles',
+  'PDT': 'America/Los_Angeles',
+  'ET': 'America/New_York',
+  'EST': 'America/New_York',
+  'EDT': 'America/New_York',
+};
+
+/**
+ * Convert a naive ISO datetime from a source timezone to Eastern Time.
+ * Uses Intl.DateTimeFormat for correct DST handling.
+ *
+ * @param isoDateTime - ISO 8601 without timezone offset, e.g. "2026-03-15T14:00:00"
+ * @param sourceTzAbbrev - Timezone abbreviation, e.g. "CT", "PT", "MT"
+ * @returns Converted date/time fields, or null if conversion fails
+ */
+function convertToET(
+  isoDateTime: string,
+  sourceTzAbbrev: string
+): { rawDateTime: string; appointmentDate: string; appointmentTime: string } | null {
+  const sourceIana = TZ_ABBREV_TO_IANA[sourceTzAbbrev];
+  if (!sourceIana) return null;
+
+  try {
+    // Parse the naive ISO string as a date in the source timezone.
+    // We do this by formatting the date parts in the source timezone to find the UTC offset,
+    // then constructing the correct UTC instant.
+    const [datePart, timePart] = isoDateTime.split('T');
+    if (!datePart || !timePart) return null;
+
+    const [year, month, day] = datePart.split('-').map(Number);
+    const [hour, minute, secondStr] = timePart.split(':');
+    const second = parseInt(secondStr || '0', 10);
+
+    // Create a rough UTC date to start with, then find the actual UTC offset for the source tz
+    const roughDate = new Date(Date.UTC(year, month - 1, day, parseInt(hour), parseInt(minute), second));
+
+    // Get what the source timezone shows for this UTC instant
+    const sourceFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: sourceIana,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+    const sourceParts = Object.fromEntries(
+      sourceFormatter.formatToParts(roughDate).map(p => [p.type, p.value])
+    );
+    const sourceHour = parseInt(sourceParts.hour || '0', 10);
+
+    // The difference between what we wanted (hour) and what the source tz shows (sourceHour)
+    // tells us how to adjust to get the correct UTC instant
+    let hourDiff = parseInt(hour) - sourceHour;
+    // Handle day boundary wrapping
+    if (hourDiff > 12) hourDiff -= 24;
+    if (hourDiff < -12) hourDiff += 24;
+
+    const correctUtc = new Date(roughDate.getTime() + hourDiff * 3600000);
+
+    // Now format in ET
+    const etFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+    const etParts = Object.fromEntries(
+      etFormatter.formatToParts(correctUtc).map(p => [p.type, p.value])
+    );
+
+    const etYear = etParts.year;
+    const etMonth = etParts.month;
+    const etDay = etParts.day;
+    const etHour = etParts.hour === '24' ? '00' : etParts.hour;
+    const etMinute = etParts.minute;
+
+    const rawDateTime = `${etYear}-${etMonth}-${etDay}T${etHour}:${etMinute}:00`;
+
+    // Human-readable date
+    const dateFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short', month: 'short', day: 'numeric',
+    });
+    const appointmentDate = dateFormatter.format(correctUtc);
+
+    // Human-readable time
+    const timeFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric', minute: '2-digit', hour12: true,
+    });
+    const appointmentTime = `${timeFormatter.format(correctUtc)} ET`;
+
+    return { rawDateTime, appointmentDate, appointmentTime };
+  } catch (error) {
+    console.error(`[Gmail] Timezone conversion error:`, error);
+    return null;
+  }
+}
+
+/**
  * Use Claude via core-api to extract appointment date/time from email body
- * Times are converted to Eastern Time based on the team mentioned in the email
+ * Times are extracted as-is, then converted to ET programmatically
  */
 async function extractAppointmentTime(emailBody: string, subject?: string, fromEmail?: string): Promise<{
   appointmentDate: string | null;
@@ -738,23 +847,17 @@ IMPORTANT - TEAM DETECTION (in priority order):
 2. SECOND: Check the From email domain (e.g., @astros.com = Astros, @buccaneers.com = Buccaneers)
 3. THIRD: Fall back to the subject line if needed
 
-TIMEZONE HANDLING:
-Once you identify the team, determine their timezone by their home city:
-- Eastern (ET): Buccaneers, Rays, Lightning, Heat, Marlins, Dolphins, Panthers, Magic, Jaguars, Braves, Hawks, Falcons, Hornets, Yankees, Mets, Knicks, Nets, Rangers, Islanders, Devils, Giants, Jets, Eagles, Phillies, Flyers, 76ers, Celtics, Red Sox, Bruins, Patriots, Nationals, Wizards, Capitals, Orioles, Ravens, Pirates, Steelers, Penguins, Cavaliers, Guardians, Browns, Bengals, Reds, Tigers, Lions, Pistons, Red Wings, Blue Jackets, Pacers, Colts, Bucks, Brewers, etc.
-- Central (CT): Astros, Rockets, Texans, Dynamo, Rangers (Texas), Mavericks, Stars, Cowboys, Spurs, Saints, Pelicans, Grizzlies, Predators, Titans, Cardinals (STL), Blues, Chiefs, Royals, Cubs, White Sox, Bears, Bulls, Blackhawks, Packers, Twins, Timberwolves, Wild, etc.
-- Mountain (MT): Diamondbacks, Suns, Cardinals (AZ), Coyotes, Broncos, Nuggets, Avalanche, Rockies, Jazz, etc.
-- Pacific (PT): Lakers, Clippers, Dodgers, Angels, Rams, Chargers, Padres, Kings (LA), Ducks, Galaxy, 49ers, Giants (SF), Warriors, Raiders, Athletics, Sharks, Mariners, Seahawks, Sounders, Kraken, Trail Blazers, Timbers, etc.
-
-Convert the appointment time to Eastern Time (ET).
+IMPORTANT: Return the appointment time EXACTLY as stated in the email. Do NOT convert timezones.
+If the email says "2:00 PM CT", return "2:00 PM CT". If it says "3:00 PM" with no timezone, return "3:00 PM".
 
 Today's date is ${new Date().toISOString().split('T')[0]}. When dates don't specify a year, use ${currentYear} (or ${currentYear + 1} if the date has clearly passed this year).
 
 Return ONLY a JSON object with:
 - appointmentDate: Human readable DATE only like "Tue Dec 20" or "December 20, ${currentYear}" or null if not found
-- appointmentTime: Human readable TIME in Eastern Time like "2:00 PM ET" or null if not found
-- rawDateTime: ISO 8601 format in Eastern Time like "${currentYear}-12-20T14:00:00" or null if not found
+- appointmentTime: The time EXACTLY as stated in the email like "2:00 PM" or "2:00 PM CT" or null if not found
+- rawDateTime: ISO 8601 format with the ORIGINAL time (no timezone conversion) like "${currentYear}-12-20T14:00:00" or null if not found
 - detectedTeam: The team name detected, or null if none found
-- originalTimezone: The original timezone detected (e.g., "PT", "CT", "ET"), or null
+- originalTimezone: The timezone stated in the email (e.g., "PT", "CT", "MT", "ET"), or if not stated, infer from the detected team's home city. Return null if unknown.
 
 If no appointment is mentioned, return null for all fields.`;
 
@@ -791,20 +894,33 @@ If no appointment is mentioned, return null for all fields.`;
 
         // Log what was extracted
         if (parsed.appointmentDate || parsed.appointmentTime) {
-          console.log(`[Gmail] Extracted: date="${parsed.appointmentDate}", time="${parsed.appointmentTime}", raw="${parsed.rawDateTime}"`);
+          console.log(`[Gmail] Extracted: date="${parsed.appointmentDate}", time="${parsed.appointmentTime}", raw="${parsed.rawDateTime}", team="${parsed.detectedTeam}", tz="${parsed.originalTimezone}"`);
         } else {
           console.log(`[Gmail] No appointment found in email body (first 100 chars): ${emailBody.slice(0, 100).replace(/\n/g, ' ')}`);
         }
 
-        // Log timezone conversion for debugging
-        if (parsed.detectedTeam && parsed.originalTimezone) {
-          console.log(`[Gmail] Timezone conversion: ${parsed.detectedTeam} (${parsed.originalTimezone}) → ET, time: ${parsed.rawDateTime}`);
+        // Convert from source timezone to ET programmatically
+        let rawDateTime = parsed.rawDateTime || null;
+        let appointmentTime = parsed.appointmentTime || null;
+        let appointmentDate = parsed.appointmentDate || null;
+        const sourceTz = parsed.originalTimezone?.toUpperCase()?.replace(/[^A-Z]/g, '') || null;
+
+        if (rawDateTime && sourceTz && sourceTz !== 'ET' && sourceTz !== 'EST' && sourceTz !== 'EDT') {
+          const converted = convertToET(rawDateTime, sourceTz);
+          if (converted) {
+            console.log(`[Gmail] Timezone conversion: ${rawDateTime} (${sourceTz}) → ${converted.rawDateTime} (ET)`);
+            rawDateTime = converted.rawDateTime;
+            appointmentTime = converted.appointmentTime;
+            appointmentDate = converted.appointmentDate;
+          } else {
+            console.log(`[Gmail] WARNING: Could not convert timezone ${sourceTz} → ET, using original time`);
+          }
         }
 
         return {
-          appointmentDate: parsed.appointmentDate || null,
-          appointmentTime: parsed.appointmentTime || null,
-          rawDateTime: parsed.rawDateTime || null,
+          appointmentDate,
+          appointmentTime,
+          rawDateTime,
         };
       } catch (parseError) {
         console.warn('[Gmail] Failed to parse Claude response as JSON:', parseError);
