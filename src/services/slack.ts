@@ -251,9 +251,9 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     `*From:* ${input.fromEmail ?? 'N/A'}  →  *To:* ${input.toEmail ?? 'N/A'}`,
   ];
 
-  // Add notes inline (skip if none)
+  // Add notes with spacing
   if (input.notes) {
-    detailLines.push(`*Notes:* ${input.notes}`);
+    detailLines.push(`\n*Notes:* ${input.notes}\n`);
   }
 
   // Add meeting info inline

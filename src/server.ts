@@ -932,7 +932,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       contextLines.push(`🎯 *ACTION REQUIRED:* ${parseResult.actionRequired}`);
     }
     if (parseResult.notes) {
-      contextLines.push(`*Context:* ${parseResult.notes}`);
+      contextLines.push(`\n*Context:* ${parseResult.notes}\n`);
     }
     if (parseResult.slackThreadLink) {
       contextLines.push(`*Related Thread:* ${parseResult.slackThreadLink}`);
