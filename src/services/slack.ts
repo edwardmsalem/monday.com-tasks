@@ -239,123 +239,54 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
         emoji: true,
       },
     },
-    {
-      type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Subject:*\n${input.subject}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*Owner:*\n${ownerDisplay}`,
-        },
-      ],
-    },
   ];
 
-  // Add support field if there are support users
-  if (supportDisplay) {
-    blocks.push({
-      type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Support:*\n${supportDisplay}`,
-        },
-      ],
-    });
+  // Build compact details as a single mrkdwn section
+  const priorityStr = `${PRIORITY_CONFIG[input.priority].emoji} ${PRIORITY_CONFIG[input.priority].label}`;
+  const supportPart = supportDisplay ? `  ·  *Support:* ${supportDisplay}` : '';
+  const detailLines = [
+    `*${input.subject}*`,
+    `*Owner:* ${ownerDisplay}${supportPart}`,
+    `*Due:* ${input.dueDate}  ·  ${priorityStr}  ·  ${input.taskType}`,
+    `*From:* ${input.fromEmail ?? 'N/A'}  →  *To:* ${input.toEmail ?? 'N/A'}`,
+  ];
+
+  // Add notes with spacing
+  if (input.notes) {
+    detailLines.push(`\n*Notes:* ${input.notes}\n`);
   }
 
-  // Continue with due date and priority
-  blocks.push(
-    {
-      type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Due:*\n${input.dueDate}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*Priority:*\n${PRIORITY_CONFIG[input.priority].emoji} ${PRIORITY_CONFIG[input.priority].label}`,
-        },
-      ],
-    },
-    {
-      type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Type:*\n${input.taskType}`,
-        },
-      ],
-    },
-    {
-      type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*From:*\n${input.fromEmail ?? 'N/A'}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*To:*\n${input.toEmail ?? 'N/A'}`,
-        },
-      ],
-    },
-    {
-      type: 'divider',
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Notes:*\n${input.notes || '_No notes provided_'}`,
-      },
-    }
-  );
-
-  // Add meeting section if there's a meeting request
+  // Add meeting info inline
   if (input.meeting?.hasMeetingRequest) {
-    let meetingText = '📅 *Meeting Requested*';
+    let meetingStr = '📅 *Meeting:*';
     if (input.meeting.meetingDateTime) {
-      meetingText += `\n• ${formatMeetingTime(input.meeting.meetingDateTime)}`;
+      meetingStr += ` ${formatMeetingTime(input.meeting.meetingDateTime)}`;
     }
     if (input.meeting.meetingDateTimeAlt) {
-      meetingText += `\n• ${formatMeetingTime(input.meeting.meetingDateTimeAlt)} _(alt)_`;
+      meetingStr += `  ·  ${formatMeetingTime(input.meeting.meetingDateTimeAlt)} _(alt)_`;
     }
     if (!input.meeting.meetingDateTime && !input.meeting.meetingDateTimeAlt) {
-      meetingText += '\n_No specific time mentioned_';
+      meetingStr += ' _No specific time mentioned_';
     }
-
-    blocks.push(
-      { type: 'divider' },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: meetingText,
-        },
-      }
-    );
+    detailLines.push(meetingStr);
   }
 
-  blocks.push({ type: 'divider' });
   blocks.push({
-    type: 'actions',
-    elements: [
-      {
-        type: 'button',
-        text: {
-          type: 'plain_text',
-          text: 'View in Monday',
-          emoji: true,
-        },
-        url: mondayUrl,
-        action_id: 'view_monday',
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: detailLines.join('\n'),
+    },
+    accessory: {
+      type: 'button',
+      text: {
+        type: 'plain_text',
+        text: 'View in Monday',
+        emoji: true,
       },
-    ],
+      url: mondayUrl,
+      action_id: 'view_monday',
+    },
   });
 
   // Fallback text for notifications (always with @mention)

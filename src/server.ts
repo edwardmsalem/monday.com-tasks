@@ -926,40 +926,36 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       },
     ];
 
-    // Add ACTION REQUIRED prominently at the top
+    // Build compact context lines (action required, notes, thread link)
+    const contextLines: string[] = [];
     if (parseResult.actionRequired) {
-      issueCallBlocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `🎯 *ACTION REQUIRED:* ${parseResult.actionRequired}`,
-        },
-      });
+      contextLines.push(`🎯 *ACTION REQUIRED:* ${parseResult.actionRequired}`);
     }
-
-    // Add notes if provided (full context from user input)
     if (parseResult.notes) {
-      issueCallBlocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Context:* ${parseResult.notes}`,
-        },
-      });
+      contextLines.push(`\n*Context:* ${parseResult.notes}\n`);
     }
-
-    // Add Slack thread link if provided
     if (parseResult.slackThreadLink) {
+      contextLines.push(`*Related Thread:* ${parseResult.slackThreadLink}`);
+    }
+
+    // Compact assignment line: Due · Owners · Supporter
+    const supporterPart = supporterUser?.slackId
+      ? `*Supporter:* <@${supporterUser.slackId}>`
+      : `⏳ _Waiting for supporter_ — React 👀 or reply to claim`;
+    contextLines.push(`*Due:* ${dueDate}  ·  *Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>  ·  ${supporterPart}`);
+
+    // Single section for all context + assignment info
+    if (contextLines.length > 0) {
       issueCallBlocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Related Thread:* ${parseResult.slackThreadLink}`,
+          text: contextLines.join('\n'),
         },
       });
     }
 
-    // Add account info
+    // Account info stays its own section (can be long)
     issueCallBlocks.push({
       type: 'section',
       text: {
@@ -968,61 +964,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
       },
     });
 
-    // Add due date and owners
-    issueCallBlocks.push({
-      type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Due:*\n${dueDate}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*Owners:*\n<@${dayna.slackId}> & <@${ruzzell.slackId}>`,
-        },
-      ],
-    });
-
-    // Add supporter if assigned
-    if (supporterUser?.slackId) {
-      issueCallBlocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Supporter:* <@${supporterUser.slackId}>`,
-        },
-      });
-    } else {
-      issueCallBlocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `⏳ *Waiting for supporter* - React with 👀 or reply to claim this issue.`,
-        },
-      });
-    }
-
-    // Add Monday link button
-    issueCallBlocks.push(
-      { type: 'divider' },
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: 'View in Monday',
-              emoji: true,
-            },
-            url: mondayUrl,
-            action_id: 'view_monday',
-          },
-        ],
-      }
-    );
-
-    // Add Status buttons
+    // Status buttons + View in Monday in one actions row
     issueCallBlocks.push({
       type: 'actions',
       block_id: `issue_call_${mondayItem.id}_status`,
@@ -1047,16 +989,11 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
           action_id: 'issue_call_stuck',
           value: mondayItem.id,
         },
-      ],
-    });
-
-    // Add Status Legend
-    issueCallBlocks.push({
-      type: 'context',
-      elements: [
         {
-          type: 'mrkdwn',
-          text: '*Status:* React 👀 to acknowledge • Use buttons above to update status',
+          type: 'button',
+          text: { type: 'plain_text', text: 'View in Monday', emoji: true },
+          url: mondayUrl,
+          action_id: 'view_monday',
         },
       ],
     });
