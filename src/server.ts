@@ -1459,6 +1459,25 @@ app.post('/admin/migrate/view-button-position', express.json(), async (_req: Req
   }
 });
 
+/**
+ * Migration endpoint: Convert old verbose messages to new compact format
+ *
+ * Usage: POST /admin/migrate/compact-format
+ */
+app.post('/admin/migrate/compact-format', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const { runMigration } = await import('./scripts/migrateCompactFormat.js');
+    const result = await runMigration();
+    res.json(result);
+  } catch (error) {
+    console.error('[Compact Format Migration] Failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 // ============================================================================
 // Digest System Manual Triggers
 // ============================================================================
