@@ -1440,6 +1440,25 @@ app.all('/admin/migrate/issue-call-buttons', express.json(), async (_req: Reques
   }
 });
 
+/**
+ * Migration endpoint: Move "View in Monday" button from section accessory to bottom actions block
+ *
+ * Usage: POST /admin/migrate/view-button-position
+ */
+app.post('/admin/migrate/view-button-position', express.json(), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const { runMigration } = await import('./scripts/migrateViewButtonPosition.js');
+    const result = await runMigration();
+    res.json(result);
+  } catch (error) {
+    console.error('[View Button Migration] Failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 // ============================================================================
 // Digest System Manual Triggers
 // ============================================================================
