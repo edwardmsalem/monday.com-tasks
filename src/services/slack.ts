@@ -271,23 +271,30 @@ export async function sendNotification(input: SlackNotificationInput): Promise<S
     detailLines.push(meetingStr);
   }
 
-  blocks.push({
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: detailLines.join('\n'),
-    },
-    accessory: {
-      type: 'button',
+  blocks.push(
+    {
+      type: 'section',
       text: {
-        type: 'plain_text',
-        text: 'View in Monday',
-        emoji: true,
+        type: 'mrkdwn',
+        text: detailLines.join('\n'),
       },
-      url: mondayUrl,
-      action_id: 'view_monday',
     },
-  });
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: 'View in Monday',
+            emoji: true,
+          },
+          url: mondayUrl,
+          action_id: 'view_monday',
+        },
+      ],
+    }
+  );
 
   // Fallback text for notifications (always with @mention)
   const fallbackText = `New ${input.taskType} Email: ${input.subject} - Assigned to <@${input.assigneeSlackId}> - Due: ${input.dueDate}`;
