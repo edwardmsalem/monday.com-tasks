@@ -281,7 +281,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           rowsWithTimes.push({
             sortKey,
             row: [dateValue, timeValue, recipient.email, account.name,
-              loc.section, loc.row,
+              loc.section.toUpperCase(), loc.row.toUpperCase(),
               loc.lowSeat ? String(loc.lowSeat) : '', loc.highSeat ? String(loc.highSeat) : '',
               loc.qty,
               account.last4, account.exp, account.cvv, account.billingAddress,
@@ -317,7 +317,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           rowsWithTimes.push({
             sortKey: Number.MAX_SAFE_INTEGER, // No appointment, sort last
             row: ['', '', email, account.name,
-              loc.section, loc.row,
+              loc.section.toUpperCase(), loc.row.toUpperCase(),
               loc.lowSeat ? String(loc.lowSeat) : '', loc.highSeat ? String(loc.highSeat) : '',
               loc.qty,
               account.last4, account.exp, account.cvv, account.billingAddress,
