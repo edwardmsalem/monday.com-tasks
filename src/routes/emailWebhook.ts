@@ -646,14 +646,14 @@ router.post(
             const teamName = analysisResult.team || 'this team';
             const teamForTitle = analysisResult.team || 'Team';
 
-            // Lookup account info from sport sheets (single API call)
+            // Lookup ALL account info from sport sheets (empty array = return all accounts)
             let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
             try {
               accountInfo = await batchLookupAccountsForScan(
                 teamForTitle,
-                scannedRecipients.map(r => r.email)
+                [] // Empty = return all accounts, not just matched recipients
               );
-              console.log(`[Background Scan] Account lookup: ${accountInfo.size} accounts matched`);
+              console.log(`[Background Scan] Account lookup: ${accountInfo.size} total accounts`);
             } catch (accountErr) {
               console.error('[Background Scan] Failed to lookup accounts:', accountErr);
             }
@@ -680,6 +680,7 @@ router.post(
 
             // STEP 4: Create Google Sheet (with master account data + appointment times)
             let sheetUrl = '';
+            let sheetId = '';
             try {
               const sheetResult = await createScanSheet({
                 title: teamForTitle,
@@ -688,6 +689,7 @@ router.post(
                 accountInfo,
               });
               sheetUrl = sheetResult.spreadsheetUrl;
+              sheetId = sheetResult.spreadsheetId;
               console.log('[Background Scan] Google Sheet created:', sheetUrl);
               await monday.createUpdate(
                 mondayItem.id,
@@ -699,6 +701,7 @@ router.post(
 
             // STEP 5: Create calendar events if we have appointment times
             let calendarEventCount = 0;
+            const calendarEventIds: string[] = [];
             const calendar = await import('../services/calendar.js');
             if (calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
               console.log('[Background Scan] Creating calendar events...');
@@ -710,6 +713,9 @@ router.post(
                   sheetUrl
                 );
                 calendarEventCount = calendarEvents.length;
+                for (const event of calendarEvents) {
+                  calendarEventIds.push(event.eventId);
+                }
                 if (calendarEvents.length > 0) {
                   console.log(`[Background Scan] Created ${calendarEvents.length} calendar events`);
                   await monday.createUpdate(
@@ -719,6 +725,31 @@ router.post(
                 }
               } catch (calendarError) {
                 console.error('[Background Scan] Failed to create calendar events:', calendarError);
+              }
+            }
+
+            // STEP 6: Register scan for daily re-scanning
+            if (sheetId && sheetUrl) {
+              try {
+                const { registerScan } = await import('../services/scanState.js');
+                const knownTimes = recipientsWithTimes
+                  .filter(r => r.rawDateTime)
+                  .map(r => r.rawDateTime!);
+                registerScan({
+                  teamName: teamForTitle,
+                  subject: subject,
+                  spreadsheetId: sheetId,
+                  spreadsheetUrl: sheetUrl,
+                  mondayItemId: mondayItem.id,
+                  slackThreadTs: slackMessage.ts,
+                  createdAt: new Date().toISOString(),
+                  lastRescanAt: new Date().toISOString(),
+                  knownAppointmentTimes: knownTimes,
+                  calendarEventIds,
+                });
+                console.log('[Background Scan] Registered for daily re-scan');
+              } catch (regErr) {
+                console.error('[Background Scan] Failed to register for re-scan:', regErr);
               }
             }
 

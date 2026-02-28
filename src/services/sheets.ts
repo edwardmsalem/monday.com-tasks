@@ -259,7 +259,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   if (options.accountInfo && options.accountInfo.size > 0) {
     // Use pre-fetched accountInfo from batchLookupAccountsForScan
     console.log(`[Sheets] Building sheet with accountInfo for "${teamName}" (${options.accountInfo.size} accounts)`);
-    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
+    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Low Seat', 'High Seat', 'Qty', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
     const rowsWithTimes: { sortKey: number; row: (string | number)[] }[] = [];
@@ -278,13 +278,12 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
       if (account && account.seatLocations.length > 0) {
         // One row per seat location (same account may have multiple seat sets)
         for (const loc of account.seatLocations) {
-          const seats = loc.lowSeat && loc.highSeat
-            ? (loc.lowSeat === loc.highSeat ? String(loc.lowSeat) : `${loc.lowSeat}-${loc.highSeat}`)
-            : '';
           rowsWithTimes.push({
             sortKey,
             row: [dateValue, timeValue, recipient.email, account.name,
-              loc.section, loc.row, seats, loc.qty,
+              loc.section, loc.row,
+              loc.lowSeat ? String(loc.lowSeat) : '', loc.highSeat ? String(loc.highSeat) : '',
+              loc.qty,
               account.last4, account.exp, account.cvv, account.billingAddress,
               '', ''],
           });
@@ -293,7 +292,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         rowsWithTimes.push({
           sortKey,
           row: [dateValue, timeValue, recipient.email, account.name,
-            '', '', '', '',
+            '', '', '', '', '',
             account.last4, account.exp, account.cvv, account.billingAddress,
             '', ''],
         });
@@ -301,8 +300,36 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         rowsWithTimes.push({
           sortKey,
           row: [dateValue, timeValue, recipient.email, '',
+            '', '', '', '', '',
             '', '', '', '',
-            '', '', '', '',
+            '', ''],
+        });
+      }
+    }
+
+    // Include ALL accounts from accountInfo even if not in recipients (no forwarded email yet)
+    const recipientEmails = new Set(recipients.map(r => r.email.toLowerCase()));
+    for (const [email, account] of options.accountInfo.entries()) {
+      if (recipientEmails.has(email)) continue; // Already added above
+
+      if (account.seatLocations.length > 0) {
+        for (const loc of account.seatLocations) {
+          rowsWithTimes.push({
+            sortKey: Number.MAX_SAFE_INTEGER, // No appointment, sort last
+            row: ['', '', email, account.name,
+              loc.section, loc.row,
+              loc.lowSeat ? String(loc.lowSeat) : '', loc.highSeat ? String(loc.highSeat) : '',
+              loc.qty,
+              account.last4, account.exp, account.cvv, account.billingAddress,
+              '', ''],
+          });
+        }
+      } else {
+        rowsWithTimes.push({
+          sortKey: Number.MAX_SAFE_INTEGER,
+          row: ['', '', email, account.name,
+            '', '', '', '', '',
+            account.last4, account.exp, account.cvv, account.billingAddress,
             '', ''],
         });
       }
@@ -312,7 +339,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     rowsWithTimes.sort((a, b) => a.sortKey - b.sortKey);
     dataRows = rowsWithTimes.map(r => r.row);
 
-    console.log(`[Sheets] Built ${dataRows.length} rows from accountInfo (${appointmentByEmail.size} with appointment times)`);
+    console.log(`[Sheets] Built ${dataRows.length} rows from accountInfo (${appointmentByEmail.size} with appointment times, ${options.accountInfo.size} total accounts)`);
   } else {
     // Fallback: no accountInfo available, simple format
     console.log(`[Sheets] No accountInfo for "${teamName}", using simple format`);
@@ -439,6 +466,167 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     spreadsheetId,
     spreadsheetUrl,
     title,
+  };
+}
+
+
+// ============================================================================
+// SCAN SHEET UPDATE (Daily Re-scan)
+// Reads existing sheet, finds rows missing appointment times, updates them
+// ============================================================================
+
+export interface ScanSheetUpdateResult {
+  updatedRows: number;
+  newAppointmentTimes: string[]; // ISO datetime strings for new unique times
+}
+
+/**
+ * Update an existing scan sheet with new appointment times.
+ * Reads the sheet, finds rows where Date/Time are empty but the email
+ * now has an appointment, and fills them in.
+ *
+ * Returns the list of NEW unique appointment times (for calendar event creation).
+ */
+export async function updateScanSheet(
+  spreadsheetId: string,
+  recipients: RecipientWithAppointment[]
+): Promise<ScanSheetUpdateResult> {
+  // Build email → appointment lookup
+  const appointmentByEmail = new Map<string, RecipientWithAppointment>();
+  for (const r of recipients) {
+    if (r.rawDateTime) {
+      appointmentByEmail.set(r.email.toLowerCase(), r);
+    }
+  }
+
+  if (appointmentByEmail.size === 0) {
+    return { updatedRows: 0, newAppointmentTimes: [] };
+  }
+
+  // Read existing sheet data
+  const rows = await coreApiGoogle.sheets.getValues(spreadsheetId, 'Recipients');
+  if (!rows || rows.length <= 1) {
+    console.log('[Sheets] updateScanSheet: Sheet is empty or has only headers');
+    return { updatedRows: 0, newAppointmentTimes: [] };
+  }
+
+  const headers = rows[0] as string[];
+  const dateColIdx = headers.findIndex(h => h.toLowerCase() === 'date');
+  const timeColIdx = headers.findIndex(h => h.toLowerCase() === 'time');
+  const emailColIdx = headers.findIndex(h => h.toLowerCase() === 'email');
+
+  if (dateColIdx === -1 || timeColIdx === -1 || emailColIdx === -1) {
+    console.log(`[Sheets] updateScanSheet: Missing required columns (date=${dateColIdx}, time=${timeColIdx}, email=${emailColIdx})`);
+    return { updatedRows: 0, newAppointmentTimes: [] };
+  }
+
+  // Collect existing appointment times to detect new unique ones
+  const existingTimes = new Set<string>();
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] as string[];
+    const dateVal = row[dateColIdx];
+    const timeVal = row[timeColIdx];
+    if (dateVal && timeVal) {
+      existingTimes.add(`${dateVal}|${timeVal}`);
+    }
+  }
+
+  // Find rows that need updating (have email but no date/time, and we now have an appointment)
+  const updates: Array<{ rowIndex: number; dateValue: number | string; timeValue: number | string; rawDateTime: string }> = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] as string[];
+    const email = (row[emailColIdx] || '').toLowerCase().trim();
+    const hasDate = row[dateColIdx] && String(row[dateColIdx]).trim() !== '';
+    const hasTime = row[timeColIdx] && String(row[timeColIdx]).trim() !== '';
+
+    if (email && !hasDate && !hasTime) {
+      const appointment = appointmentByEmail.get(email);
+      if (appointment?.rawDateTime) {
+        updates.push({
+          rowIndex: i + 1, // 1-indexed for Sheets API
+          dateValue: isoToSheetDate(appointment.rawDateTime),
+          timeValue: isoToSheetTime(appointment.rawDateTime),
+          rawDateTime: appointment.rawDateTime,
+        });
+      }
+    }
+  }
+
+  if (updates.length === 0) {
+    console.log('[Sheets] updateScanSheet: No rows need updating');
+    return { updatedRows: 0, newAppointmentTimes: [] };
+  }
+
+  console.log(`[Sheets] updateScanSheet: Updating ${updates.length} rows with new appointment times`);
+
+  // Get sheet metadata to find sheetId
+  const metadata = await coreApiGoogle.sheets.getMetadata(spreadsheetId);
+  const sheetId = metadata.sheets?.[0]?.sheetId ?? 0;
+
+  // Build batch update requests for each row
+  const batchRequests: any[] = [];
+  const newTimes: string[] = [];
+
+  for (const update of updates) {
+    const dateKey = `${update.dateValue}|${update.timeValue}`;
+    if (!existingTimes.has(dateKey)) {
+      newTimes.push(update.rawDateTime);
+      existingTimes.add(dateKey);
+    }
+
+    // Update date cell
+    batchRequests.push({
+      updateCells: {
+        range: {
+          sheetId,
+          startRowIndex: update.rowIndex - 1,
+          endRowIndex: update.rowIndex,
+          startColumnIndex: dateColIdx,
+          endColumnIndex: dateColIdx + 1,
+        },
+        rows: [{
+          values: [{
+            userEnteredValue: { numberValue: update.dateValue as number },
+            userEnteredFormat: {
+              numberFormat: { type: 'DATE', pattern: 'ddd M/d' },
+            },
+          }],
+        }],
+        fields: 'userEnteredValue,userEnteredFormat.numberFormat',
+      },
+    });
+
+    // Update time cell
+    batchRequests.push({
+      updateCells: {
+        range: {
+          sheetId,
+          startRowIndex: update.rowIndex - 1,
+          endRowIndex: update.rowIndex,
+          startColumnIndex: timeColIdx,
+          endColumnIndex: timeColIdx + 1,
+        },
+        rows: [{
+          values: [{
+            userEnteredValue: { numberValue: update.timeValue as number },
+            userEnteredFormat: {
+              numberFormat: { type: 'TIME', pattern: 'h:mm AM/PM' },
+            },
+          }],
+        }],
+        fields: 'userEnteredValue,userEnteredFormat.numberFormat',
+      },
+    });
+  }
+
+  await coreApiGoogle.sheets.batchUpdate(spreadsheetId, batchRequests);
+
+  console.log(`[Sheets] updateScanSheet: Updated ${updates.length} rows, ${newTimes.length} new unique times`);
+
+  return {
+    updatedRows: updates.length,
+    newAppointmentTimes: newTimes,
   };
 }
 
@@ -1005,9 +1193,9 @@ export async function batchLookupAccountsForScan(
 ): Promise<Map<string, ScanAccountInfo>> {
   const result = new Map<string, ScanAccountInfo>();
 
-  if (emails.length === 0) return result;
-
-  console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)...`);
+  // Empty emails array = return ALL accounts from the team sheet
+  const returnAll = emails.length === 0;
+  console.log(`[Sheets] Batch account lookup for "${teamName}" (${returnAll ? 'ALL accounts' : `${emails.length} emails`})...`);
 
   // Fetch all accounts for this team (one API call)
   let teamResult: AccountLookupResult;
@@ -1113,8 +1301,11 @@ export async function batchLookupAccountsForScan(
     allAccountsByEmail.set(email, { name, seatLocations, last4, exp, cvv, billingAddress });
   }
 
-  // Match each recipient email and compute adjacency
-  const emailSet = new Set(emails.map(e => e.toLowerCase().trim()));
+  // Match ALL accounts (not just recipients) and compute adjacency
+  // When emails list is empty, return all accounts from the sheet
+  const emailSet = emails.length > 0
+    ? new Set(emails.map(e => e.toLowerCase().trim()))
+    : new Set(allAccountsByEmail.keys());
   let matched = 0;
 
   for (const email of emailSet) {

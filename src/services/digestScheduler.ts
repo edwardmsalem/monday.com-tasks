@@ -26,6 +26,7 @@ const SCHEDULE = {
   tomorrowPrep: { hour: 17, minute: 30 }, // 5:30 PM
   issueCallEOD: { hour: 17, minute: 30 }, // 5:30 PM
   dailyReports: { hour: 18, minute: 0 }, // 6:00 PM - supervisor & executive reports
+  scanRescan: { hour: 9, minute: 0 }, // 9:00 AM - daily appointment re-scan
 };
 
 // Note: Sent tracking is now persisted in digestState.scheduledTasksSent
@@ -159,6 +160,11 @@ async function runSchedulerCheck(): Promise<void> {
       tasks.push('daily-reports');
     }
 
+    // Scan Re-scan (9:00 AM) - check for new appointment times on existing scans
+    if (isTimeToRun(SCHEDULE.scanRescan) && !digestState.hasScheduledTaskBeenSent('scan-rescan')) {
+      tasks.push('scan-rescan');
+    }
+
     if (tasks.length === 0) {
       lastCheckStatus = 'No tasks to run';
       return;
@@ -209,6 +215,10 @@ async function runSchedulerCheck(): Promise<void> {
           case 'daily-reports':
             await digest.sendAllDailyReports();
             break;
+
+          case 'scan-rescan':
+            await runScanRescan();
+            break;
         }
 
         console.log(`[Scheduler] Completed: ${task}`);
@@ -250,6 +260,143 @@ async function runIssueCallEscalationCheck(): Promise<void> {
   } catch (error) {
     console.error('[Scheduler] Error in issue call escalation check:', error);
   }
+}
+
+// ============================================================================
+// Scan Re-scan (Daily Appointment Check)
+// ============================================================================
+
+/**
+ * Daily re-scan: check for new appointment times on all active scans.
+ * For each active scan:
+ * 1. Re-scan Gmail for the same subject
+ * 2. Extract appointment times
+ * 3. Compare with existing sheet data
+ * 4. Update sheet with new times
+ * 5. Create calendar events for new unique time slots
+ * 6. Post update to Slack/Monday
+ */
+async function runScanRescan(): Promise<void> {
+  const { getActiveScans, updateScanAfterRescan, cleanupOldScans } = await import('./scanState.js');
+  const { findRelatedRecipients, enrichRecipientsWithAppointments } = await import('./gmail.js');
+  const { updateScanSheet } = await import('./sheets.js');
+  const calendar = await import('./calendar.js');
+  const monday = await import('./monday.js');
+  const slack = await import('./slack.js');
+
+  // Cleanup scans older than 30 days
+  cleanupOldScans(30);
+
+  const activeScans = getActiveScans();
+  if (activeScans.length === 0) {
+    console.log('[ScanRescan] No active scans to re-check');
+    return;
+  }
+
+  console.log(`[ScanRescan] Re-scanning ${activeScans.length} active scans for new appointments...`);
+
+  for (const scan of activeScans) {
+    try {
+      console.log(`[ScanRescan] Re-scanning "${scan.teamName}" (subject: "${scan.subject}")...`);
+
+      // Step 1: Re-scan Gmail for the same subject (fast, skip appointment extraction)
+      const recipients = await findRelatedRecipients(scan.subject, {
+        skipAppointmentExtraction: true,
+      });
+
+      if (recipients.length === 0) {
+        console.log(`[ScanRescan] No recipients found for "${scan.teamName}", skipping`);
+        continue;
+      }
+
+      // Step 2: Extract appointment times from emails
+      const enriched = await enrichRecipientsWithAppointments(scan.subject, recipients);
+      const withTimes = enriched.filter(r => r.rawDateTime);
+
+      if (withTimes.length === 0) {
+        console.log(`[ScanRescan] No appointment times found for "${scan.teamName}", skipping`);
+        continue;
+      }
+
+      // Step 3: Compare with known times and find new ones
+      const knownTimesSet = new Set(scan.knownAppointmentTimes);
+      const newRecipients = withTimes.filter(r => !knownTimesSet.has(r.rawDateTime!));
+
+      if (newRecipients.length === 0) {
+        console.log(`[ScanRescan] No new appointment times for "${scan.teamName}"`);
+        continue;
+      }
+
+      console.log(`[ScanRescan] Found ${newRecipients.length} new appointments for "${scan.teamName}"`);
+
+      // Step 4: Update the existing Google Sheet with new times
+      const updateResult = await updateScanSheet(scan.spreadsheetId, enriched);
+      console.log(`[ScanRescan] Updated ${updateResult.updatedRows} rows in sheet`);
+
+      // Step 5: Create calendar events for new unique time slots
+      const newCalendarEventIds: string[] = [];
+      if (calendar.isCalendarEnabled() && updateResult.newAppointmentTimes.length > 0) {
+        try {
+          const calendarEvents = await calendar.createScanAppointmentEvents(
+            scan.teamName,
+            newRecipients,
+            scan.mondayItemId,
+            scan.spreadsheetUrl
+          );
+
+          for (const event of calendarEvents) {
+            newCalendarEventIds.push(event.eventId);
+          }
+
+          if (calendarEvents.length > 0) {
+            console.log(`[ScanRescan] Created ${calendarEvents.length} new calendar events`);
+          }
+        } catch (calError) {
+          console.error(`[ScanRescan] Failed to create calendar events:`, calError);
+        }
+      }
+
+      // Step 6: Update scan state
+      const newTimes = newRecipients.map(r => r.rawDateTime!);
+      updateScanAfterRescan(scan.mondayItemId, newTimes, newCalendarEventIds);
+
+      // Step 7: Post update to Slack thread
+      try {
+        const updateParts: string[] = [
+          `*Daily Re-scan Update*`,
+          `Found ${newRecipients.length} new appointment time(s)`,
+        ];
+        if (updateResult.updatedRows > 0) {
+          updateParts.push(`Updated ${updateResult.updatedRows} rows in the tracking sheet`);
+        }
+        if (newCalendarEventIds.length > 0) {
+          updateParts.push(`Created ${newCalendarEventIds.length} new calendar event(s)`);
+        }
+
+        await slack.postToThread(
+          scan.slackThreadTs,
+          `🔄 ${updateParts.join('\n')}`
+        );
+      } catch (slackErr) {
+        console.error(`[ScanRescan] Failed to post Slack update:`, slackErr);
+      }
+
+      // Step 8: Post Monday update
+      try {
+        await monday.createUpdate(
+          scan.mondayItemId,
+          `🔄 Daily re-scan: ${newRecipients.length} new appointment(s) found, ${newCalendarEventIds.length} calendar event(s) created`
+        );
+      } catch (mondayErr) {
+        console.error(`[ScanRescan] Failed to post Monday update:`, mondayErr);
+      }
+
+    } catch (error) {
+      console.error(`[ScanRescan] Failed to re-scan "${scan.teamName}":`, error);
+    }
+  }
+
+  console.log('[ScanRescan] Daily re-scan complete');
 }
 
 // ============================================================================
