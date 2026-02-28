@@ -300,8 +300,14 @@ async function runScanRescan(): Promise<void> {
       console.log(`[ScanRescan] Re-scanning "${scan.teamName}" (subject: "${scan.subject}")...`);
 
       // Step 1: Re-scan Gmail for the same subject (fast, skip appointment extraction)
+      // Search from 24 hours before the scan was first created to catch emails
+      // that arrive today but are dated yesterday
+      const searchAfter = new Date(new Date(scan.createdAt).getTime() - 24 * 60 * 60 * 1000);
+      console.log(`[ScanRescan] Search window: after ${searchAfter.toISOString()} (24h before scan creation)`);
+
       const recipients = await findRelatedRecipients(scan.subject, {
         skipAppointmentExtraction: true,
+        afterDate: searchAfter,
       });
 
       if (recipients.length === 0) {

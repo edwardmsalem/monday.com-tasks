@@ -223,22 +223,25 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
  */
 export async function findRelatedRecipients(
   subject: string,
-  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean } = false
+  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean; afterDate?: Date } = false
 ): Promise<RecipientWithAppointment[]> {
   // Support both old boolean signature and new options object
   const options = typeof extractCodesAndLinksOrOptions === 'boolean'
-    ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false }
-    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, ...extractCodesAndLinksOrOptions };
+    ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false, afterDate: undefined as Date | undefined }
+    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, afterDate: undefined as Date | undefined, ...extractCodesAndLinksOrOptions };
 
-  const { extractCodesAndLinks, skipAppointmentExtraction } = options;
+  const { extractCodesAndLinks, skipAppointmentExtraction, afterDate } = options;
   const normalizedSubject = normalizeSubject(subject);
 
   console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}, skipAppointmentExtraction: ${skipAppointmentExtraction}`);
 
-  // Build search query - last 14 days
-  const fourteenDaysAgo = new Date();
-  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
-  const afterStr = fourteenDaysAgo.toISOString().split('T')[0].replace(/-/g, '/');
+  // Build search query - use custom afterDate or default to last 14 days
+  const searchAfter = afterDate ?? (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 14);
+    return d;
+  })();
+  const afterStr = searchAfter.toISOString().split('T')[0].replace(/-/g, '/');
 
   const query = `subject:"${normalizedSubject}" after:${afterStr}`;
   console.log(`Gmail search query: ${query}`);
