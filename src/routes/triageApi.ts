@@ -7,7 +7,7 @@
  * Auth: Bearer token matching CORE_API_KEY
  */
 
-import { Router, type Request, type Response } from 'express';
+import express, { Router, type Request, type Response } from 'express';
 import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle } from '../services/coreApi.js';
@@ -23,6 +23,7 @@ import * as slack from '../services/slack.js';
 import { randomUUID } from 'crypto';
 
 const router = Router();
+router.use(express.json());
 
 // ============================================================================
 // Auth Middleware
