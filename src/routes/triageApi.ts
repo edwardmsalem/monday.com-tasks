@@ -11,7 +11,8 @@ import { Router, type Request, type Response } from 'express';
 import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle } from '../services/coreApi.js';
-import { normalizeSubject } from '../services/gmail.js';
+import { normalizeSubject, findRelatedRecipients } from '../services/gmail.js';
+import { createScanSheet, detectContentType } from '../services/sheets.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
@@ -363,6 +364,54 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
       mondayItemUrl: null,
       slackMessageTs: null,
       error: errorMessage,
+    });
+  }
+});
+
+// ============================================================================
+// POST /tasks/scan
+// ============================================================================
+
+router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const { messageId } = req.body as { messageId: string };
+
+  if (!messageId) {
+    res.status(400).json({ success: false, error: 'messageId is required' });
+    return;
+  }
+
+  try {
+    // Fetch email subject
+    const msg = await coreApiGoogle.gmail.getMessage(messageId, 'metadata');
+    const subject = getHeader(msg.payload?.headers ?? [], 'subject') ?? '';
+
+    // Detect content type
+    const contentType = detectContentType(subject);
+    const extractCodesAndLinks = contentType === 'presale';
+
+    // Find related recipients
+    const recipients = await findRelatedRecipients(subject, { extractCodesAndLinks });
+
+    if (recipients.length === 0) {
+      res.json({ success: true, recipientCount: 0, sheetUrl: null });
+      return;
+    }
+
+    // Create scan sheet
+    const sheet = await createScanSheet({ title: subject, recipients, contentType });
+
+    res.json({
+      success: true,
+      recipientCount: recipients.length,
+      sheetUrl: sheet.spreadsheetUrl,
+    });
+  } catch (error) {
+    console.error('[Triage API] Scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Scan failed',
     });
   }
 });
