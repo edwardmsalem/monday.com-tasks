@@ -11,8 +11,9 @@ import express, { Router, type Request, type Response } from 'express';
 import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle } from '../services/coreApi.js';
-import { normalizeSubject, findRelatedRecipients } from '../services/gmail.js';
-import { createScanSheet, detectContentType } from '../services/sheets.js';
+import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from '../services/gmail.js';
+import { createScanSheet, detectContentType, batchLookupAccountsForScan } from '../services/sheets.js';
+import * as calendar from '../services/calendar.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
@@ -144,8 +145,8 @@ router.post('/tasks/review', async (req: Request, res: Response): Promise<void> 
     // Map priority to urgency
     const urgency = asapDetected ? 'High' : mapPriorityToUrgency(analysis.priority);
 
-    // Build task name
-    const taskName = formatTaskName(normalizeSubject(subject), analysis.team);
+    // Build task name (no [Team] prefix — team shown as separate field in triage app)
+    const taskName = normalizeSubject(subject);
 
     // Resolve supporters
     const supporters: Array<{ mondayId: string; name: string }> = [];
@@ -278,10 +279,11 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
       }
     }
 
-    // Create Monday.com item
+    // Create Monday.com item (add [Team] prefix for Monday board visibility)
+    const mondayTaskName = formatTaskName(body.taskName, body.team);
     log.log('Creating Monday.com item...');
     const mondayItem = await monday.createItem({
-      name: body.taskName,
+      name: mondayTaskName,
       dueDate: body.dueDate ?? null,
       ownerIds: [ownerId],
       supportIds: supportMondayIds.length > 0 ? supportMondayIds.map(id => id.toString()) : undefined,
@@ -384,29 +386,70 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
   }
 
   try {
-    // Fetch email subject
+    // 1. Fetch email subject
     const msg = await coreApiGoogle.gmail.getMessage(messageId, 'metadata');
     const subject = getHeader(msg.payload?.headers ?? [], 'subject') ?? '';
 
-    // Detect content type
+    // 2. Detect content type
     const contentType = detectContentType(subject);
     const extractCodesAndLinks = contentType === 'presale';
 
-    // Find related recipients
-    const recipients = await findRelatedRecipients(subject, { extractCodesAndLinks });
+    // 3. Find related recipients
+    const scannedRecipients = await findRelatedRecipients(subject, {
+      extractCodesAndLinks,
+    });
 
-    if (recipients.length === 0) {
-      res.json({ success: true, recipientCount: 0, sheetUrl: null });
+    if (scannedRecipients.length === 0) {
+      res.json({ success: true, recipientCount: 0, sheetUrl: null, calendarEventCount: 0 });
       return;
     }
 
-    // Create scan sheet
-    const sheet = await createScanSheet({ title: subject, recipients, contentType });
+    // 4. Look up account info from sport-specific sheets
+    let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
+    try {
+      accountInfo = await batchLookupAccountsForScan(
+        subject,
+        scannedRecipients.map(r => r.email)
+      );
+      console.log(`[Triage Scan] Account lookup: ${accountInfo.size} accounts matched`);
+    } catch (accountError) {
+      console.error('[Triage Scan] Account lookup failed (non-fatal):', accountError);
+    }
+
+    // 5. Enrich recipients with appointment times
+    const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients);
+    const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
+
+    // 6. Create scan sheet with account info
+    const sheetResult = await createScanSheet({
+      title: subject,
+      recipients: enrichedRecipients,
+      contentType,
+      accountInfo,
+    });
+
+    // 7. Create calendar events if calendar is enabled and we have appointment times
+    let calendarEventCount = 0;
+    if (calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
+      try {
+        const calendarEvents = await calendar.createScanAppointmentEvents(
+          subject,
+          enrichedRecipients,
+          "",  // no mondayItemId in this context
+          sheetResult.spreadsheetUrl
+        );
+        calendarEventCount = calendarEvents.length;
+        console.log(`[Triage Scan] Created ${calendarEventCount} calendar events`);
+      } catch (calendarError) {
+        console.error('[Triage Scan] Calendar events failed (non-fatal):', calendarError);
+      }
+    }
 
     res.json({
       success: true,
-      recipientCount: recipients.length,
-      sheetUrl: sheet.spreadsheetUrl,
+      recipientCount: enrichedRecipients.length,
+      sheetUrl: sheetResult.spreadsheetUrl,
+      calendarEventCount,
     });
   } catch (error) {
     console.error('[Triage API] Scan failed:', error);
