@@ -39,6 +39,7 @@ import {
   slackEventsRouter,
   mondayWebhookRouter,
   relayEventsRouter,
+  triageRouter,
   slackUrlEncodedWithRawBody,
   verifySlackSignature,
   type SlackRequest,
@@ -76,6 +77,9 @@ app.use(mondayWebhookRouter);
 
 // Relay events (Slack events via relay proxy, /relay/events)
 app.use(relayEventsRouter);
+
+// Triage API (/tasks/review, /tasks/from-email)
+app.use(triageRouter);
 
 // Slack interactivity endpoint (/webhook/slack/interactivity) - for button clicks
 // Must use urlencoded parser since Slack sends payload as form-encoded
