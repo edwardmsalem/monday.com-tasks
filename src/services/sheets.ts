@@ -259,7 +259,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   if (options.accountInfo && options.accountInfo.size > 0) {
     // Use pre-fetched accountInfo from batchLookupAccountsForScan
     console.log(`[Sheets] Building sheet with accountInfo for "${teamName}" (${options.accountInfo.size} accounts)`);
-    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
+    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty', 'Season Total', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
     const rowsWithTimes: { sortKey: number; row: (string | number)[] }[] = [];
@@ -284,7 +284,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           rowsWithTimes.push({
             sortKey,
             row: [dateValue, timeValue, recipient.email, account.name,
-              loc.section, loc.row, seats, loc.qty,
+              loc.section, loc.row, seats, loc.qty, loc.seasonTotal,
               account.last4, account.exp, account.cvv, account.billingAddress,
               '', ''],
           });
@@ -293,7 +293,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         rowsWithTimes.push({
           sortKey,
           row: [dateValue, timeValue, recipient.email, account.name,
-            '', '', '', '',
+            '', '', '', '', '',
             account.last4, account.exp, account.cvv, account.billingAddress,
             '', ''],
         });
@@ -301,7 +301,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         rowsWithTimes.push({
           sortKey,
           row: [dateValue, timeValue, recipient.email, '',
-            '', '', '', '',
+            '', '', '', '', '',
             '', '', '', '',
             '', ''],
         });
