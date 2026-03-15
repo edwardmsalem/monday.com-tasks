@@ -378,7 +378,7 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId } = req.body as { messageId: string };
+  const { messageId, instructions } = req.body as { messageId: string; instructions?: string };
 
   if (!messageId) {
     res.status(400).json({ success: false, error: 'messageId is required' });
@@ -397,6 +397,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     // 3. Find related recipients
     const scannedRecipients = await findRelatedRecipients(subject, {
       extractCodesAndLinks,
+      instructions,
     });
 
     if (scannedRecipients.length === 0) {
@@ -417,7 +418,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     }
 
     // 5. Enrich recipients with appointment times
-    const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients);
+    const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients, instructions);
     const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
 
     // 6. Create scan sheet with account info

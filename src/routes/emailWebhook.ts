@@ -819,6 +819,7 @@ router.get('/test-scan-sheet', async (req: Request, res: Response): Promise<void
         rawDateTime: apptTime.toISOString(),
         code: null,
         link: null,
+        custom: null,
       };
     });
 

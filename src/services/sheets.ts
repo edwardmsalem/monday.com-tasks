@@ -335,6 +335,39 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     ]);
   }
 
+  // Append custom columns if any recipients have custom extracted data
+  const allCustomKeys: string[] = [];
+  const customKeysSet = new Set<string>();
+  for (const r of recipients) {
+    if (r.custom) {
+      for (const key of Object.keys(r.custom)) {
+        if (!customKeysSet.has(key)) {
+          customKeysSet.add(key);
+          allCustomKeys.push(key);
+        }
+      }
+    }
+  }
+
+  if (allCustomKeys.length > 0) {
+    // Capitalize custom key names for column headers
+    const customHeaders = allCustomKeys.map(k => k.charAt(0).toUpperCase() + k.slice(1));
+    headerRow.push(...customHeaders);
+    columnCount = headerRow.length;
+
+    // Append custom values to each data row, matching by email column
+    const emailColIdx = headerRow.indexOf('Email');
+    for (const row of dataRows) {
+      const rowEmail = String(row[emailColIdx]).toLowerCase();
+      const recipient = recipients.find(r => r.email.toLowerCase() === rowEmail);
+      for (const key of allCustomKeys) {
+        row.push(recipient?.custom?.[key] ?? '');
+      }
+    }
+
+    console.log(`[Sheets] Added ${allCustomKeys.length} custom columns: ${allCustomKeys.join(', ')}`);
+  }
+
   // Create the spreadsheet via core-api
   const createResponse = await coreApiGoogle.sheets.createWithOptions({
     title: title,

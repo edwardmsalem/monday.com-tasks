@@ -151,6 +151,7 @@ export interface RecipientWithAppointment {
   rawDateTime: string | null;      // ISO format for sorting
   code: string | null;             // Presale code if found
   link: string | null;             // Presale link if found
+  custom: Record<string, string | null> | null;  // Custom extracted fields from instructions
 }
 
 // ============================================================================
@@ -223,14 +224,14 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
  */
 export async function findRelatedRecipients(
   subject: string,
-  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean } = false
+  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean; instructions?: string } = false
 ): Promise<RecipientWithAppointment[]> {
   // Support both old boolean signature and new options object
   const options = typeof extractCodesAndLinksOrOptions === 'boolean'
-    ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false }
-    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, ...extractCodesAndLinksOrOptions };
+    ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false, instructions: undefined as string | undefined }
+    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, instructions: undefined as string | undefined, ...extractCodesAndLinksOrOptions };
 
-  const { extractCodesAndLinks, skipAppointmentExtraction } = options;
+  const { extractCodesAndLinks, skipAppointmentExtraction, instructions } = options;
   const normalizedSubject = normalizeSubject(subject);
 
   console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}, skipAppointmentExtraction: ${skipAppointmentExtraction}`);
@@ -373,7 +374,7 @@ export async function findRelatedRecipients(
     }
 
     // Extract appointments with Claude unless skipped (3 concurrent to avoid API limits)
-    let appointmentResults: Array<{ success: true; value: { appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null } } | { success: false; error: Error }> = [];
+    let appointmentResults: Array<{ success: true; value: { appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; custom: Record<string, string | null> | null } } | { success: false; error: Error }> = [];
 
     if (messagesToProcess.length > 0 && !skipAppointmentExtraction) {
       const appointmentStartTime = Date.now();
@@ -381,7 +382,7 @@ export async function findRelatedRecipients(
 
       appointmentResults = await batchWithConcurrency(
         messagesToProcess,
-        async (msg) => extractAppointmentTime(msg.bodyText, normalizedSubject, msg.fromEmail),
+        async (msg) => extractAppointmentTime(msg.bodyText, normalizedSubject, msg.fromEmail, instructions),
         3 // lower concurrency for Claude API
       );
 
@@ -398,7 +399,7 @@ export async function findRelatedRecipients(
         const appointmentResult = appointmentResults[idx];
         const appointmentInfo = appointmentResult?.success
           ? appointmentResult.value
-          : { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+          : { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
 
         // Extract code and link if requested
         const code = extractCodesAndLinks ? extractCodeFromBody(msg.bodyText) : null;
@@ -420,6 +421,7 @@ export async function findRelatedRecipients(
               rawDateTime: appointmentInfo.rawDateTime,
               code,
               link,
+              custom: appointmentInfo.custom || null,
             });
           }
         }
@@ -458,7 +460,8 @@ export async function findRelatedRecipients(
  */
 export async function enrichRecipientsWithAppointments(
   subject: string,
-  recipients: RecipientWithAppointment[]
+  recipients: RecipientWithAppointment[],
+  instructions?: string
 ): Promise<RecipientWithAppointment[]> {
   if (recipients.length === 0) {
     return recipients;
@@ -586,9 +589,9 @@ export async function enrichRecipientsWithAppointments(
       async (recipient) => {
         const emailData = emailToBody.get(recipient.email);
         if (!emailData) {
-          return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+          return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
         }
-        return extractAppointmentTime(emailData.bodyText, normalizedSubject, emailData.fromEmail);
+        return extractAppointmentTime(emailData.bodyText, normalizedSubject, emailData.fromEmail, instructions);
       },
       3
     );
@@ -608,6 +611,7 @@ export async function enrichRecipientsWithAppointments(
         appointmentDate: result.value.appointmentDate,
         appointmentTime: result.value.appointmentTime,
         rawDateTime: result.value.rawDateTime,
+        custom: result.value.custom || null,
       };
     });
 
@@ -808,14 +812,15 @@ function convertToET(
  * Use Claude via core-api to extract appointment date/time from email body
  * Times are extracted as-is, then converted to ET programmatically
  */
-async function extractAppointmentTime(emailBody: string, subject?: string, fromEmail?: string): Promise<{
+async function extractAppointmentTime(emailBody: string, subject?: string, fromEmail?: string, instructions?: string): Promise<{
   appointmentDate: string | null;
   appointmentTime: string | null;
   rawDateTime: string | null;
+  custom: Record<string, string | null> | null;
 }> {
   if (!emailBody || emailBody.length < 20) {
     console.log(`[Gmail] Skipping appointment extraction: body too short (${emailBody?.length || 0} chars)`);
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
   }
 
   // Debug: Log what we're about to analyze
@@ -858,7 +863,7 @@ Return ONLY a JSON object with:
 - rawDateTime: ISO 8601 format with the ORIGINAL time (no timezone conversion) like "${currentYear}-12-20T14:00:00" or null if not found
 - detectedTeam: The team name detected, or null if none found
 - originalTimezone: The timezone stated in the email (e.g., "PT", "CT", "MT", "ET"), or if not stated, infer from the detected team's home city. Return null if unknown.
-
+${instructions ? `\nAdditionally, extract the following custom fields from the email body:\n${instructions}\n\nInclude any extracted values in a "custom" key in the response as an object with descriptive short key names and string values.\n` : ''}
 If no appointment is mentioned, return null for all fields.`;
 
     // Use core-api Claude analyze endpoint wrapped in circuit breaker (TD-05)
@@ -866,7 +871,7 @@ If no appointment is mentioned, return null for all fields.`;
       coreApiClaude.analyze({
         content: `Extract the appointment date/time from this email:\n\n${emailContent}`,
         systemPrompt,
-        maxTokens: 256,
+        maxTokens: instructions ? 512 : 256,
       })
     );
 
@@ -921,18 +926,19 @@ If no appointment is mentioned, return null for all fields.`;
           appointmentDate,
           appointmentTime,
           rawDateTime,
+          custom: parsed.custom || null,
         };
       } catch (parseError) {
         console.warn('[Gmail] Failed to parse Claude response as JSON:', parseError);
-        return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+        return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
       }
     }
 
     console.warn('[Gmail] No JSON found in Claude response. Raw response:', text.slice(0, 200));
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
   } catch (error) {
     console.error('Error extracting appointment time:', error);
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
   }
 }
 
