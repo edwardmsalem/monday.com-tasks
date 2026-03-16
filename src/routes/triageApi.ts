@@ -378,8 +378,9 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, instructions, skipSheet, skipCalendar } = req.body as {
+  const { messageId, teamName: clientTeamName, instructions, skipSheet, skipCalendar } = req.body as {
     messageId: string;
+    teamName?: string;
     instructions?: string;
     skipSheet?: boolean;
     skipCalendar?: boolean;
@@ -391,15 +392,44 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
   }
 
   try {
-    // 1. Fetch email subject
+    // 1. Fetch email subject and metadata
     const msg = await coreApiGoogle.gmail.getMessage(messageId, 'metadata');
     const subject = getHeader(msg.payload?.headers ?? [], 'subject') ?? '';
 
-    // 2. Detect content type
+    // 2. Resolve team name: prefer client-provided, fall back to Gmail label extraction
+    const sportPrefixes = ['NBA', 'MLB', 'NFL', 'NHL', 'WNBA', 'MLS', 'NCAA'];
+    let teamName = clientTeamName;
+    if (!teamName && msg.labelIds?.length) {
+      try {
+        const allLabels = await coreApiGoogle.gmail.listLabels();
+        const labelMap = new Map(allLabels.map(l => [l.id, l.name]));
+        for (const labelId of msg.labelIds) {
+          const labelName = labelMap.get(labelId);
+          // Team labels follow "<Sport>/<Team Name>" convention (e.g. "NHL/San Jose Sharks")
+          if (labelName) {
+            const slashIdx = labelName.indexOf('/');
+            if (slashIdx > 0) {
+              const prefix = labelName.substring(0, slashIdx);
+              if (sportPrefixes.includes(prefix)) {
+                teamName = labelName.substring(slashIdx + 1);
+                console.log(`[Triage Scan] Resolved team from label: "${teamName}"`);
+                break;
+              }
+            }
+          }
+        }
+      } catch (labelError) {
+        console.warn('[Triage Scan] Label lookup failed, will use subject for account lookup:', labelError);
+      }
+    }
+    const teamForLookup = teamName || subject;
+    console.log(`[Triage Scan] Team for account lookup: "${teamForLookup}" (source: ${teamName ? (clientTeamName ? 'client' : 'label') : 'subject-fallback'})`);
+
+    // 3. Detect content type
     const contentType = detectContentType(subject);
     const extractCodesAndLinks = contentType === 'presale';
 
-    // 3. Find related recipients
+    // 4. Find related recipients
     const scannedRecipients = await findRelatedRecipients(subject, {
       extractCodesAndLinks,
       instructions,
@@ -410,12 +440,12 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    // 4. Look up account info from sport-specific sheets (skip if no sheet needed)
+    // 5. Look up account info from sport-specific sheets using resolved team name (skip if no sheet needed)
     let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
     if (!skipSheet) {
       try {
         accountInfo = await batchLookupAccountsForScan(
-          subject,
+          teamForLookup,
           scannedRecipients.map(r => r.email)
         );
         console.log(`[Triage Scan] Account lookup: ${accountInfo.size} accounts matched`);
@@ -424,11 +454,11 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       }
     }
 
-    // 5. Enrich recipients with appointment times
+    // 6. Enrich recipients with appointment times
     const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients, instructions);
     const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
 
-    // 6. Create scan sheet with account info (unless skipped)
+    // 7. Create scan sheet with account info (unless skipped)
     let sheetUrl: string | null = null;
     if (!skipSheet) {
       const sheetResult = await createScanSheet({
@@ -440,7 +470,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       sheetUrl = sheetResult.spreadsheetUrl;
     }
 
-    // 7. Create calendar events (unless skipped)
+    // 8. Create calendar events (unless skipped)
     let calendarEventCount = 0;
     if (!skipCalendar && calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
       try {
