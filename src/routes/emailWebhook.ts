@@ -705,6 +705,7 @@ router.post(
               try {
                 const calendarEvents = await calendar.createScanAppointmentEvents(
                   teamForTitle,
+                  subject,
                   enrichedRecipients,
                   mondayItem.id,
                   sheetUrl

@@ -247,7 +247,8 @@ export async function executeWorkflow(input: WorkflowInput): Promise<WorkflowRes
             log.log('Creating calendar events for scan appointments...');
             try {
               const calendarEvents = await calendar.createScanAppointmentEvents(
-                taskName,
+                analysisResult.team || taskName,
+                email.subject,
                 recipients,
                 mondayItem.id,
                 sheetUrl

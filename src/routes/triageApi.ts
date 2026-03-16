@@ -475,6 +475,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     if (!skipCalendar && calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
       try {
         const calendarEvents = await calendar.createScanAppointmentEvents(
+          teamForLookup,
           subject,
           enrichedRecipients,
           "",  // no mondayItemId in this context

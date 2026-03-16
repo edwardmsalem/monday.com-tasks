@@ -150,15 +150,6 @@ export interface ScanAppointmentResult {
 }
 
 /**
- * Clean up team name - removes common prefixes if still present
- */
-function extractTeamFromTitle(title: string): string {
-  return title
-    .replace(/^(fwd:|fw:|re:)\s*/gi, '')
-    .trim() || 'Team';
-}
-
-/**
  * Add minutes to an ISO datetime string, keeping it as local time (no Z suffix)
  */
 function addMinutesToIsoString(isoString: string, minutes: number): string {
@@ -181,15 +172,29 @@ function normalizeIsoString(isoString: string): string {
 }
 
 /**
+ * Detect event type from the email subject
+ */
+function detectEventType(subject: string): string {
+  const lower = subject.toLowerCase();
+  if (/\brelocation\b/.test(lower)) return 'Relocation';
+  if (/\bseat\s*selection\b/.test(lower)) return 'Seat Selection';
+  if (/\brenewal\b/.test(lower)) return 'Renewal';
+  if (/\bpresale\b/.test(lower)) return 'Presale';
+  if (/\bdraft\b/.test(lower)) return 'Draft';
+  return 'Presale';
+}
+
+/**
  * Create calendar events for /scan appointments, grouped by time slot
  * - One event per unique time slot
  * - Lists all emails for that time slot in description
- * - Title: "{Team} Relocation {Year}"
+ * - Title: "{Team} {EventType} {Year}"
  * - Invites the team (edward, michael, operations)
  * - 1 hour reminder, 30 minute duration
  */
 export async function createScanAppointmentEvents(
-  taskTitle: string,
+  teamName: string,
+  subject: string,
   recipients: Array<{ email: string; rawDateTime: string | null }>,
   mondayItemId: string,
   sheetUrl?: string
@@ -239,7 +244,7 @@ export async function createScanAppointmentEvents(
 
   const results: ScanAppointmentResult[] = [];
   const mondayUrl = monday.getItemUrl(mondayItemId);
-  const teamName = extractTeamFromTitle(taskTitle);
+  const eventType = detectEventType(subject);
   const currentYear = new Date().getFullYear();
 
   for (const group of timeSlotGroups) {
@@ -263,7 +268,7 @@ export async function createScanAppointmentEvents(
 
     try {
       const result = await coreApiGoogle.calendar.createEvent({
-        summary: `${teamName} Relocation ${currentYear}`,
+        summary: `${teamName} ${eventType} ${currentYear}`,
         description: descriptionParts.join('\n'),
         start: {
           dateTime: startTimeStr,
