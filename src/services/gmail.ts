@@ -838,7 +838,7 @@ async function extractAppointmentTime(emailBody: string, subject?: string, fromE
     if (subject) {
       emailParts.push(`Subject: ${subject}`);
     }
-    emailParts.push('', emailBody.slice(0, 1800));
+    emailParts.push('', emailBody);
     const emailContent = emailParts.join('\n');
 
     const systemPrompt = `Extract appointment/event date and time from emails. Look for:
