@@ -14,6 +14,7 @@ import { google as coreApiGoogle } from '../services/coreApi.js';
 import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from '../services/gmail.js';
 import { createScanSheet, detectContentType, batchLookupAccountsForScan } from '../services/sheets.js';
 import * as calendar from '../services/calendar.js';
+import { detectEventType } from '../services/calendar.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
@@ -493,9 +494,15 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       email: r.email,
       appointmentDate: r.appointmentDate,
       appointmentTime: r.appointmentTime,
+      rawDateTime: r.rawDateTime ?? null,
       code: r.code,
       custom: r.custom,
     }));
+
+    // Build proposed event name for calendar confirmation
+    const currentYear = new Date().getFullYear();
+    const eventType = detectEventType(subject);
+    const proposedEventName = `${teamForLookup} ${eventType} ${currentYear}`;
 
     res.json({
       success: true,
@@ -503,12 +510,47 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       sheetUrl,
       calendarEventCount,
       recipients: recipientSummary,
+      proposedEventName,
     });
   } catch (error) {
     console.error('[Triage API] Scan failed:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Scan failed',
+    });
+  }
+});
+
+// ============================================================================
+// POST /tasks/scan/calendar
+// ============================================================================
+
+router.post('/tasks/scan/calendar', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const { eventName, recipients, sheetUrl } = req.body as {
+    eventName: string;
+    recipients: Array<{ email: string; rawDateTime: string }>;
+    sheetUrl?: string;
+  };
+
+  if (!eventName || !recipients || recipients.length === 0) {
+    res.status(400).json({ success: false, error: 'eventName and recipients are required' });
+    return;
+  }
+
+  try {
+    const events = await calendar.createScanAppointmentEventsWithName(
+      eventName,
+      recipients,
+      sheetUrl
+    );
+    res.json({ success: true, calendarEventCount: events.length });
+  } catch (error) {
+    console.error('[Triage API] Calendar creation failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Calendar creation failed',
     });
   }
 });

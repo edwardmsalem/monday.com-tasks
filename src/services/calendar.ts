@@ -174,7 +174,7 @@ function normalizeIsoString(isoString: string): string {
 /**
  * Detect event type from the email subject
  */
-function detectEventType(subject: string): string {
+export function detectEventType(subject: string): string {
   const lower = subject.toLowerCase();
   if (/\brelocation\b/.test(lower)) return 'Relocation';
   if (/\bseat\s*selection\b/.test(lower)) return 'Seat Selection';
@@ -289,6 +289,111 @@ export async function createScanAppointmentEvents(
         source: {
           title: 'Monday.com Task',
           url: mondayUrl,
+        },
+        sendUpdates: 'none',
+      });
+
+      console.log(`[Calendar] Created event for ${emails.length} accounts at ${startTimeStr}:`, result.eventId);
+
+      results.push({
+        eventId: result.eventId,
+        htmlLink: result.htmlLink,
+        timeSlot: startTimeStr,
+        emailCount: emails.length,
+      });
+    } catch (error) {
+      console.error(`[Calendar] Failed to create event for time slot ${startTimeStr}:`, error);
+    }
+  }
+
+  console.log(`[Calendar] Created ${results.length}/${timeSlotGroups.length} calendar events`);
+  return results;
+}
+
+/**
+ * Create calendar events using a user-provided event name (from scan confirmation flow).
+ * Same grouping/creation logic as createScanAppointmentEvents but uses eventName directly
+ * as the summary instead of building it from team+type+year.
+ */
+export async function createScanAppointmentEventsWithName(
+  eventName: string,
+  recipients: Array<{ email: string; rawDateTime: string }>,
+  sheetUrl?: string
+): Promise<ScanAppointmentResult[]> {
+  if (recipients.length === 0) {
+    console.log('[Calendar] No recipients with appointment times, skipping calendar events');
+    return [];
+  }
+
+  // Sort by time ascending
+  const sorted = [...recipients].sort((a, b) => {
+    return new Date(a.rawDateTime).getTime() - new Date(b.rawDateTime).getTime();
+  });
+
+  // Group recipients by time slot, merging times within 15 minutes of each other
+  const MERGE_WINDOW_MS = 15 * 60 * 1000;
+  const timeSlotGroups: Array<{ startTime: Date; rawDateTime: string; emails: string[] }> = [];
+
+  for (const recipient of sorted) {
+    const recipientTime = new Date(recipient.rawDateTime);
+
+    let addedToGroup = false;
+    for (const group of timeSlotGroups) {
+      const timeDiff = recipientTime.getTime() - group.startTime.getTime();
+      if (timeDiff >= 0 && timeDiff <= MERGE_WINDOW_MS) {
+        group.emails.push(recipient.email);
+        addedToGroup = true;
+        break;
+      }
+    }
+
+    if (!addedToGroup) {
+      timeSlotGroups.push({
+        startTime: recipientTime,
+        rawDateTime: recipient.rawDateTime,
+        emails: [recipient.email],
+      });
+    }
+  }
+
+  console.log(`[Calendar] Creating ${timeSlotGroups.length} calendar events with name "${eventName}" for ${recipients.length} appointments...`);
+
+  const results: ScanAppointmentResult[] = [];
+
+  for (const group of timeSlotGroups) {
+    const { rawDateTime, emails } = group;
+
+    const startTimeStr = normalizeIsoString(rawDateTime);
+    const endTimeStr = addMinutesToIsoString(rawDateTime, 30);
+
+    const descriptionParts: string[] = [];
+    if (sheetUrl) {
+      descriptionParts.push(`Tracking Sheet: ${sheetUrl}`);
+      descriptionParts.push('');
+    }
+    descriptionParts.push(
+      `${emails.length} accounts scheduled for this time slot`,
+    );
+
+    try {
+      const result = await coreApiGoogle.calendar.createEvent({
+        summary: eventName,
+        description: descriptionParts.join('\n'),
+        start: {
+          dateTime: startTimeStr,
+          timeZone: CALENDAR_TIMEZONE,
+        },
+        end: {
+          dateTime: endTimeStr,
+          timeZone: CALENDAR_TIMEZONE,
+        },
+        attendees: SCAN_APPOINTMENT_INVITEES.map(email => ({ email })),
+        reminders: {
+          useDefault: false,
+          overrides: [
+            { method: 'popup', minutes: 60 * 24 },
+            { method: 'popup', minutes: 60 },
+          ],
         },
         sendUpdates: 'none',
       });
