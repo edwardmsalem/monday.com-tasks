@@ -378,7 +378,12 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, instructions } = req.body as { messageId: string; instructions?: string };
+  const { messageId, instructions, skipSheet, skipCalendar } = req.body as {
+    messageId: string;
+    instructions?: string;
+    skipSheet?: boolean;
+    skipCalendar?: boolean;
+  };
 
   if (!messageId) {
     res.status(400).json({ success: false, error: 'messageId is required' });
@@ -401,43 +406,49 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     });
 
     if (scannedRecipients.length === 0) {
-      res.json({ success: true, recipientCount: 0, sheetUrl: null, calendarEventCount: 0 });
+      res.json({ success: true, recipientCount: 0, sheetUrl: null, calendarEventCount: 0, recipients: [] });
       return;
     }
 
-    // 4. Look up account info from sport-specific sheets
+    // 4. Look up account info from sport-specific sheets (skip if no sheet needed)
     let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
-    try {
-      accountInfo = await batchLookupAccountsForScan(
-        subject,
-        scannedRecipients.map(r => r.email)
-      );
-      console.log(`[Triage Scan] Account lookup: ${accountInfo.size} accounts matched`);
-    } catch (accountError) {
-      console.error('[Triage Scan] Account lookup failed (non-fatal):', accountError);
+    if (!skipSheet) {
+      try {
+        accountInfo = await batchLookupAccountsForScan(
+          subject,
+          scannedRecipients.map(r => r.email)
+        );
+        console.log(`[Triage Scan] Account lookup: ${accountInfo.size} accounts matched`);
+      } catch (accountError) {
+        console.error('[Triage Scan] Account lookup failed (non-fatal):', accountError);
+      }
     }
 
     // 5. Enrich recipients with appointment times
     const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients, instructions);
     const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
 
-    // 6. Create scan sheet with account info
-    const sheetResult = await createScanSheet({
-      title: subject,
-      recipients: enrichedRecipients,
-      contentType,
-      accountInfo,
-    });
+    // 6. Create scan sheet with account info (unless skipped)
+    let sheetUrl: string | null = null;
+    if (!skipSheet) {
+      const sheetResult = await createScanSheet({
+        title: subject,
+        recipients: enrichedRecipients,
+        contentType,
+        accountInfo,
+      });
+      sheetUrl = sheetResult.spreadsheetUrl;
+    }
 
-    // 7. Create calendar events if calendar is enabled and we have appointment times
+    // 7. Create calendar events (unless skipped)
     let calendarEventCount = 0;
-    if (calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
+    if (!skipCalendar && calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
       try {
         const calendarEvents = await calendar.createScanAppointmentEvents(
           subject,
           enrichedRecipients,
           "",  // no mondayItemId in this context
-          sheetResult.spreadsheetUrl
+          sheetUrl ?? ""
         );
         calendarEventCount = calendarEvents.length;
         console.log(`[Triage Scan] Created ${calendarEventCount} calendar events`);
@@ -446,11 +457,21 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       }
     }
 
+    // Build recipient summary for client
+    const recipientSummary = enrichedRecipients.map(r => ({
+      email: r.email,
+      appointmentDate: r.appointmentDate,
+      appointmentTime: r.appointmentTime,
+      code: r.code,
+      custom: r.custom,
+    }));
+
     res.json({
       success: true,
       recipientCount: enrichedRecipients.length,
-      sheetUrl: sheetResult.spreadsheetUrl,
+      sheetUrl,
       calendarEventCount,
+      recipients: recipientSummary,
     });
   } catch (error) {
     console.error('[Triage API] Scan failed:', error);
