@@ -379,12 +379,13 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, teamName: clientTeamName, instructions, skipSheet, skipCalendar } = req.body as {
+  const { messageId, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName } = req.body as {
     messageId: string;
     teamName?: string;
     instructions?: string;
     skipSheet?: boolean;
     skipCalendar?: boolean;
+    eventName?: string;
   };
 
   if (!messageId) {
@@ -475,13 +476,23 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     let calendarEventCount = 0;
     if (!skipCalendar && calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
       try {
-        const calendarEvents = await calendar.createScanAppointmentEvents(
-          teamForLookup,
-          subject,
-          enrichedRecipients,
-          "",  // no mondayItemId in this context
-          sheetUrl ?? ""
-        );
+        let calendarEvents;
+        if (clientEventName) {
+          // Client provided a confirmed event name — use it directly
+          calendarEvents = await calendar.createScanAppointmentEventsWithName(
+            clientEventName,
+            recipientsWithTimes.map(r => ({ email: r.email, rawDateTime: r.rawDateTime! })),
+            sheetUrl ?? ""
+          );
+        } else {
+          calendarEvents = await calendar.createScanAppointmentEvents(
+            teamForLookup,
+            subject,
+            enrichedRecipients,
+            "",  // no mondayItemId in this context
+            sheetUrl ?? ""
+          );
+        }
         calendarEventCount = calendarEvents.length;
         console.log(`[Triage Scan] Created ${calendarEventCount} calendar events`);
       } catch (calendarError) {
