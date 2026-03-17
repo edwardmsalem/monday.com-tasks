@@ -1095,8 +1095,6 @@ export async function batchLookupAccountsForScan(
   const matched = new Map<string, ScanAccountInfo>();
   const allAccounts = new Map<string, ScanAccountInfo>();
 
-  if (emails.length === 0) return { matched, allAccounts };
-
   console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)...`);
 
   // Fetch all accounts for this team (one API call)
