@@ -1864,3 +1864,68 @@ export async function getIssueCallItems(): Promise<Array<{
     return [];
   }
 }
+
+// ============================================================================
+// Associates Board — Closer Lookup
+// ============================================================================
+
+const ASSOCIATES_BOARD_ID = '7511353761';
+const ASSOCIATES_SS_EMAIL_COL = 'ss_email';
+const ASSOCIATES_CLOSER_COL = 'lead_closer';
+
+/**
+ * Find the closer assigned to an associate by their SS email address.
+ * Queries the associates board (7511353761) matching the "SS email" column.
+ * Returns the closer name from the matched item, or null if not found.
+ */
+export async function findCloserByEmail(email: string): Promise<string | null> {
+
+  const query = `
+    query FindCloserByEmail($boardId: ID!, $columnId: String!, $value: String!) {
+      items_page_by_column_values(
+        board_id: $boardId
+        columns: [{ column_id: $columnId, column_values: [$value] }]
+        limit: 1
+      ) {
+        items {
+          id
+          name
+          column_values {
+            id
+            text
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items_page_by_column_values: {
+        items: Array<{
+          id: string;
+          name: string;
+          column_values: Array<{ id: string; text: string }>;
+        }>;
+      };
+    }>(query, {
+      boardId: ASSOCIATES_BOARD_ID,
+      columnId: ASSOCIATES_SS_EMAIL_COL,
+      value: email,
+    });
+
+    const item = result.items_page_by_column_values.items[0];
+    if (!item) {
+      console.log(`[Associates] No item found for SS email: ${email}`);
+      return null;
+    }
+
+    const closerCol = item.column_values.find(c => c.id === ASSOCIATES_CLOSER_COL);
+    const closer = closerCol?.text?.trim() || null;
+    console.log(`[Associates] Found closer "${closer}" for ${email} (item ${item.id})`);
+    return closer;
+  } catch (error) {
+    console.error(`[Associates] Closer lookup failed for ${email}:`, error);
+    return null;
+  }
+}

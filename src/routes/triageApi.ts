@@ -637,4 +637,48 @@ router.post('/tasks/scan/backfill', async (req: Request, res: Response): Promise
   }
 });
 
+// ============================================================================
+// POST /tasks/closer-lookup
+// ============================================================================
+
+router.post('/tasks/closer-lookup', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const { email } = req.body as { email?: string };
+
+  if (!email) {
+    res.status(400).json({ error: 'email is required' });
+    return;
+  }
+
+  try {
+    const closer = await monday.findCloserByEmail(email);
+
+    if (!closer) {
+      res.json({ closer: null, closerSlackId: null, ruzzellSlackId: null });
+      return;
+    }
+
+    const closerUser = await findUserByName(closer);
+
+    if (closerUser?.slackId) {
+      // Closer is in Slack — return their Slack ID
+      res.json({ closer: closerUser.name, closerSlackId: closerUser.slackId, ruzzellSlackId: null });
+    } else {
+      // Closer not in Slack — also resolve Ruzzell so client can @mention him
+      const ruzzellUser = await findUserByName('Ruzzell');
+      res.json({
+        closer: closerUser?.name ?? closer,
+        closerSlackId: null,
+        ruzzellSlackId: ruzzellUser?.slackId ?? null,
+      });
+    }
+  } catch (error) {
+    console.error('[Triage API] Closer lookup failed:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Closer lookup failed',
+    });
+  }
+});
+
 export default router;
