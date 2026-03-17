@@ -12,7 +12,7 @@ import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle } from '../services/coreApi.js';
 import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from '../services/gmail.js';
-import { createScanSheet, detectContentType, batchLookupAccountsForScan } from '../services/sheets.js';
+import { createScanSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection } from '../services/sheets.js';
 import * as calendar from '../services/calendar.js';
 import { detectEventType } from '../services/calendar.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
@@ -603,6 +603,36 @@ router.post('/tasks/scan/calendar', async (req: Request, res: Response): Promise
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Calendar creation failed',
+    });
+  }
+});
+
+// ============================================================================
+// POST /tasks/scan/backfill
+// Retroactively add "No Appointment" section to an existing scan sheet
+// ============================================================================
+
+router.post('/tasks/scan/backfill', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const { sheetUrl, teamName } = req.body as {
+    sheetUrl: string;
+    teamName: string;
+  };
+
+  if (!sheetUrl || !teamName) {
+    res.status(400).json({ success: false, error: 'sheetUrl and teamName are required' });
+    return;
+  }
+
+  try {
+    const result = await backfillNoAppointmentSection(sheetUrl, teamName);
+    res.json({ success: true, addedCount: result.addedCount });
+  } catch (error) {
+    console.error('[Triage API] Backfill failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Backfill failed',
     });
   }
 });

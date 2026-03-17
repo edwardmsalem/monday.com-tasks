@@ -1259,6 +1259,111 @@ export async function batchLookupAccountsForScan(
 }
 
 // ============================================================================
+// BACKFILL "NO APPOINTMENT" SECTION ON EXISTING SHEET
+// ============================================================================
+
+/**
+ * Extract spreadsheet ID from a Google Sheets URL
+ */
+function extractSpreadsheetId(url: string): string | null {
+  const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Retroactively add a "No Appointment" section to an existing scan sheet.
+ * Reads the sheet to find which emails are already present, looks up all team
+ * accounts, then appends rows for accounts not already on the sheet
+ * (excluding Not Active, Revoked, Deposit statuses).
+ */
+export async function backfillNoAppointmentSection(
+  sheetUrl: string,
+  teamName: string
+): Promise<{ addedCount: number }> {
+  const spreadsheetId = extractSpreadsheetId(sheetUrl);
+  if (!spreadsheetId) {
+    throw new Error('Invalid sheet URL — could not extract spreadsheet ID');
+  }
+
+  // 1. Read existing sheet to find emails already present
+  const existingRows = await coreApiGoogle.sheets.getValues(spreadsheetId, 'Recipients!A1:Z');
+  if (!existingRows || existingRows.length === 0) {
+    throw new Error('Sheet is empty or could not be read');
+  }
+
+  const headerRow = existingRows[0] as string[];
+  const emailColIdx = headerRow.findIndex(h => String(h).toLowerCase().trim() === 'email');
+  if (emailColIdx < 0) {
+    throw new Error('Could not find "Email" column in sheet header');
+  }
+
+  // Determine if this is a full-format sheet (with account info columns)
+  const hasAccountInfo = headerRow.some(h => String(h).toLowerCase().trim() === 'name');
+
+  // Collect all emails already on the sheet
+  const existingEmails = new Set<string>();
+  for (let i = 1; i < existingRows.length; i++) {
+    const row = existingRows[i] as string[];
+    const email = (row[emailColIdx] || '').toLowerCase().trim();
+    if (email && email.includes('@')) {
+      existingEmails.add(email);
+    }
+  }
+  console.log(`[Sheets Backfill] Found ${existingEmails.size} existing emails on sheet`);
+
+  // 2. Look up all team accounts
+  const lookupResult = await batchLookupAccountsForScan(teamName, []);
+  const { allAccounts } = lookupResult;
+  console.log(`[Sheets Backfill] Team "${teamName}" has ${allAccounts.size} total accounts`);
+
+  // 3. Filter to accounts not already on sheet, excluding bad statuses
+  const excludedStatuses = ['not active', 'revoked', 'deposit'];
+  const noAppointmentRows: (string | number)[][] = [];
+
+  for (const [email, account] of allAccounts.entries()) {
+    if (existingEmails.has(email)) continue;
+    const statusLower = (account.status || '').toLowerCase().trim();
+    if (excludedStatuses.includes(statusLower)) continue;
+
+    if (hasAccountInfo) {
+      if (account.seatLocations.length > 0) {
+        for (const loc of account.seatLocations) {
+          const seats = loc.lowSeat && loc.highSeat
+            ? (loc.lowSeat === loc.highSeat ? String(loc.lowSeat) : `${loc.lowSeat}-${loc.highSeat}`)
+            : '';
+          noAppointmentRows.push(['', '', email, account.name, loc.section, loc.row, seats, loc.qty, loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']);
+        }
+      } else {
+        noAppointmentRows.push(['', '', email, account.name, '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']);
+      }
+    } else {
+      noAppointmentRows.push(['', '', email, account.status || '', '']);
+    }
+  }
+
+  if (noAppointmentRows.length === 0) {
+    console.log('[Sheets Backfill] All team accounts are already on the sheet or excluded');
+    return { addedCount: 0 };
+  }
+
+  // 4. Append separator + header + rows
+  const columnCount = headerRow.length;
+  const separatorRow = new Array(columnCount).fill('');
+  const sectionHeaderRow = new Array(columnCount).fill('');
+  sectionHeaderRow[0] = `NO APPOINTMENT (${noAppointmentRows.length})`;
+
+  const appendRows = [separatorRow, sectionHeaderRow, ...noAppointmentRows];
+
+  await coreApiGoogle.sheets.appendValues(spreadsheetId, {
+    range: 'Recipients!A1',
+    values: appendRows,
+  });
+
+  console.log(`[Sheets Backfill] Appended ${noAppointmentRows.length} "No Appointment" rows to sheet`);
+  return { addedCount: noAppointmentRows.length };
+}
+
+// ============================================================================
 // ISSUE CALL ACCOUNT LOOKUP
 // Lookup specific account by team + email for /issuecall command
 // ============================================================================
