@@ -139,6 +139,7 @@ export function isCalendarEnabled(): boolean {
 const SCAN_APPOINTMENT_INVITEES = [
   'edward@salemseats.com',
   'michael@salemseats.com',
+  'adam@salemseats.com',
   'operations@salemseats.com',
 ];
 
