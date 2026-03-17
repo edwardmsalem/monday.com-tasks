@@ -379,8 +379,9 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName } = req.body as {
-    messageId: string;
+  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName } = req.body as {
+    messageId?: string;
+    messageIds?: string[];
     teamName?: string;
     instructions?: string;
     skipSheet?: boolean;
@@ -388,54 +389,79 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     eventName?: string;
   };
 
-  if (!messageId) {
-    res.status(400).json({ success: false, error: 'messageId is required' });
+  // Support both single messageId and array messageIds
+  const allMessageIds: string[] = rawMessageIds?.length
+    ? rawMessageIds
+    : messageId ? [messageId] : [];
+
+  if (allMessageIds.length === 0) {
+    res.status(400).json({ success: false, error: 'messageId or messageIds is required' });
     return;
   }
 
-  try {
-    // 1. Fetch email subject and metadata
-    const msg = await coreApiGoogle.gmail.getMessage(messageId, 'metadata');
-    const subject = getHeader(msg.payload?.headers ?? [], 'subject') ?? '';
+  console.log(`[Triage Scan] Scanning ${allMessageIds.length} message(s)`);
 
-    // 2. Resolve team name: prefer client-provided, fall back to Gmail label extraction
+  try {
+    // 1. Fetch subjects and metadata for all messages
     const sportPrefixes = ['NBA', 'MLB', 'NFL', 'NHL', 'WNBA', 'MLS', 'NCAA'];
     let teamName = clientTeamName;
-    if (!teamName && msg.labelIds?.length) {
-      try {
-        const allLabels = await coreApiGoogle.gmail.listLabels();
-        const labelMap = new Map(allLabels.map(l => [l.id, l.name]));
-        for (const labelId of msg.labelIds) {
-          const labelName = labelMap.get(labelId);
-          // Team labels follow "<Sport>/<Team Name>" convention (e.g. "NHL/San Jose Sharks")
-          if (labelName) {
-            const slashIdx = labelName.indexOf('/');
-            if (slashIdx > 0) {
-              const prefix = labelName.substring(0, slashIdx);
-              if (sportPrefixes.includes(prefix)) {
-                teamName = labelName.substring(slashIdx + 1);
-                console.log(`[Triage Scan] Resolved team from label: "${teamName}"`);
-                break;
+    const subjects: string[] = [];
+    let allLabels: any[] | null = null;
+
+    for (const msgId of allMessageIds) {
+      const msg = await coreApiGoogle.gmail.getMessage(msgId, 'metadata');
+      const subject = getHeader(msg.payload?.headers ?? [], 'subject') ?? '';
+      subjects.push(subject);
+
+      // Resolve team from first message's labels if not provided by client
+      if (!teamName && msg.labelIds?.length) {
+        try {
+          if (!allLabels) allLabels = await coreApiGoogle.gmail.listLabels();
+          const labelMap = new Map(allLabels!.map((l: any) => [l.id, l.name]));
+          for (const labelId of msg.labelIds) {
+            const labelName = labelMap.get(labelId);
+            if (labelName) {
+              const slashIdx = labelName.indexOf('/');
+              if (slashIdx > 0) {
+                const prefix = labelName.substring(0, slashIdx);
+                if (sportPrefixes.includes(prefix)) {
+                  teamName = labelName.substring(slashIdx + 1);
+                  console.log(`[Triage Scan] Resolved team from label: "${teamName}"`);
+                  break;
+                }
               }
             }
           }
+        } catch (labelError) {
+          console.warn('[Triage Scan] Label lookup failed:', labelError);
         }
-      } catch (labelError) {
-        console.warn('[Triage Scan] Label lookup failed, will use subject for account lookup:', labelError);
       }
     }
-    const teamForLookup = teamName || subject;
-    console.log(`[Triage Scan] Team for account lookup: "${teamForLookup}" (source: ${teamName ? (clientTeamName ? 'client' : 'label') : 'subject-fallback'})`);
 
-    // 3. Detect content type
-    const contentType = detectContentType(subject);
+    // Use first subject as primary for sheet title, event name, etc.
+    const primarySubject = subjects[0];
+    const teamForLookup = teamName || primarySubject;
+    console.log(`[Triage Scan] ${subjects.length} subjects, team: "${teamForLookup}"`);
+
+    // 2. Detect content type from primary subject
+    const contentType = detectContentType(primarySubject);
     const extractCodesAndLinks = contentType === 'presale';
 
-    // 4. Find related recipients
-    const scannedRecipients = await findRelatedRecipients(subject, {
-      extractCodesAndLinks,
-      instructions,
-    });
+    // 3. Find related recipients across ALL subjects, deduplicate by email
+    const recipientMap = new Map<string, import('../services/gmail.js').RecipientWithAppointment>();
+    for (const subject of subjects) {
+      const found = await findRelatedRecipients(subject, {
+        extractCodesAndLinks,
+        instructions,
+      });
+      for (const r of found) {
+        if (!recipientMap.has(r.email)) {
+          recipientMap.set(r.email, r);
+        }
+      }
+    }
+    const scannedRecipients = Array.from(recipientMap.values());
+    console.log(`[Triage Scan] ${scannedRecipients.length} unique recipients across ${subjects.length} subjects`);
 
     if (scannedRecipients.length === 0) {
       res.json({ success: true, recipientCount: 0, sheetUrl: null, calendarEventCount: 0, recipients: [] });
@@ -457,14 +483,14 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     }
 
     // 6. Enrich recipients with appointment times
-    const enrichedRecipients = await enrichRecipientsWithAppointments(subject, scannedRecipients, instructions);
+    const enrichedRecipients = await enrichRecipientsWithAppointments(primarySubject, scannedRecipients, instructions);
     const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
 
     // 7. Create scan sheet with account info (unless skipped)
     let sheetUrl: string | null = null;
     if (!skipSheet) {
       const sheetResult = await createScanSheet({
-        title: subject,
+        title: primarySubject,
         recipients: enrichedRecipients,
         contentType,
         accountInfo,
@@ -487,7 +513,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
         } else {
           calendarEvents = await calendar.createScanAppointmentEvents(
             teamForLookup,
-            subject,
+            primarySubject,
             enrichedRecipients,
             "",  // no mondayItemId in this context
             sheetUrl ?? ""
@@ -512,7 +538,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     // Build proposed event name for calendar confirmation
     const currentYear = new Date().getFullYear();
-    const eventType = detectEventType(subject);
+    const eventType = detectEventType(primarySubject);
     const proposedEventName = `${teamForLookup} ${eventType} ${currentYear}`;
 
     res.json({
