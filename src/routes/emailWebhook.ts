@@ -648,12 +648,15 @@ router.post(
 
             // Lookup account info from sport sheets (single API call)
             let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
+            let allAccounts: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
             try {
-              accountInfo = await batchLookupAccountsForScan(
+              const lookupResult = await batchLookupAccountsForScan(
                 teamForTitle,
                 scannedRecipients.map(r => r.email)
               );
-              console.log(`[Background Scan] Account lookup: ${accountInfo.size} accounts matched`);
+              accountInfo = lookupResult.matched;
+              allAccounts = lookupResult.allAccounts;
+              console.log(`[Background Scan] Account lookup: ${accountInfo.size} matched, ${allAccounts.size} total`);
             } catch (accountErr) {
               console.error('[Background Scan] Failed to lookup accounts:', accountErr);
             }
@@ -686,6 +689,7 @@ router.post(
                 recipients: enrichedRecipients,
                 contentType,
                 accountInfo,
+                allAccounts,
               });
               sheetUrl = sheetResult.spreadsheetUrl;
               console.log('[Background Scan] Google Sheet created:', sheetUrl);
@@ -797,8 +801,9 @@ router.get('/test-scan-sheet', async (req: Request, res: Response): Promise<void
 
     // Pull account data using the real batchLookupAccountsForScan function
     console.log('[Test] Calling batchLookupAccountsForScan...');
-    const accountInfo = await sheets.batchLookupAccountsForScan(team, emails);
-    console.log(`[Test] Got account info for ${accountInfo.size} emails`);
+    const lookupResult = await sheets.batchLookupAccountsForScan(team, emails);
+    const accountInfo = lookupResult.matched;
+    console.log(`[Test] Got account info for ${accountInfo.size} emails (${lookupResult.allAccounts.size} total)`);
 
     // Log the account data for debugging
     for (const [email, info] of accountInfo.entries()) {

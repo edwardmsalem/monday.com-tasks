@@ -447,46 +447,60 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     const contentType = detectContentType(primarySubject);
     const extractCodesAndLinks = contentType === 'presale';
 
-    // 3. Find related recipients across ALL subjects, deduplicate by email
+    // 3. Find related recipients across ALL subjects, dedup by email+time
     const recipientMap = new Map<string, import('../services/gmail.js').RecipientWithAppointment>();
+
     for (const subject of subjects) {
-      const found = await findRelatedRecipients(subject, {
+      const scanned = await findRelatedRecipients(subject, {
         extractCodesAndLinks,
         instructions,
       });
-      for (const r of found) {
-        if (!recipientMap.has(r.email)) {
-          recipientMap.set(r.email, r);
+      const enriched = await enrichRecipientsWithAppointments(subject, scanned, instructions);
+
+      for (const r of enriched) {
+        const email = r.email.toLowerCase();
+        const existing = recipientMap.get(email);
+        if (!existing) {
+          // New email — add it
+          recipientMap.set(email, r);
+        } else if (r.rawDateTime && r.rawDateTime !== existing.rawDateTime) {
+          // Same email, different appointment time — keep the one with a time,
+          // or if both have times and they differ, prefer the newer entry
+          // (multi-subject means different events, keep latest)
+          recipientMap.set(email, r);
         }
+        // Same email, same time (or both null) — skip duplicate
       }
     }
-    const scannedRecipients = Array.from(recipientMap.values());
-    console.log(`[Triage Scan] ${scannedRecipients.length} unique recipients across ${subjects.length} subjects`);
 
-    if (scannedRecipients.length === 0) {
+    const enrichedRecipients = Array.from(recipientMap.values());
+    console.log(`[Triage Scan] ${enrichedRecipients.length} unique recipients after cross-subject dedup`);
+
+    if (enrichedRecipients.length === 0) {
       res.json({ success: true, recipientCount: 0, sheetUrl: null, calendarEventCount: 0, recipients: [] });
       return;
     }
 
-    // 5. Look up account info from sport-specific sheets using resolved team name (skip if no sheet needed)
+    const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
+
+    // 5. Look up account info (skip if no sheet needed)
     let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
+    let allAccounts: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
     if (!skipSheet) {
       try {
-        accountInfo = await batchLookupAccountsForScan(
+        const lookupResult = await batchLookupAccountsForScan(
           teamForLookup,
-          scannedRecipients.map(r => r.email)
+          enrichedRecipients.map(r => r.email)
         );
-        console.log(`[Triage Scan] Account lookup: ${accountInfo.size} accounts matched`);
+        accountInfo = lookupResult.matched;
+        allAccounts = lookupResult.allAccounts;
+        console.log(`[Triage Scan] Account lookup: ${accountInfo.size} matched, ${allAccounts.size} total`);
       } catch (accountError) {
         console.error('[Triage Scan] Account lookup failed (non-fatal):', accountError);
       }
     }
 
-    // 6. Enrich recipients with appointment times
-    const enrichedRecipients = await enrichRecipientsWithAppointments(primarySubject, scannedRecipients, instructions);
-    const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
-
-    // 7. Create scan sheet with account info (unless skipped)
+    // 6. Create scan sheet (unless skipped)
     let sheetUrl: string | null = null;
     if (!skipSheet) {
       const sheetResult = await createScanSheet({
@@ -494,17 +508,18 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
         recipients: enrichedRecipients,
         contentType,
         accountInfo,
+        allAccounts,
+        teamName,
       });
       sheetUrl = sheetResult.spreadsheetUrl;
     }
 
-    // 8. Create calendar events (unless skipped)
+    // 7. Create calendar events (unless skipped)
     let calendarEventCount = 0;
     if (!skipCalendar && calendar.isCalendarEnabled() && recipientsWithTimes.length > 0) {
       try {
         let calendarEvents;
         if (clientEventName) {
-          // Client provided a confirmed event name — use it directly
           calendarEvents = await calendar.createScanAppointmentEventsWithName(
             clientEventName,
             recipientsWithTimes.map(r => ({ email: r.email, rawDateTime: r.rawDateTime! })),
@@ -515,7 +530,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
             teamForLookup,
             primarySubject,
             enrichedRecipients,
-            "",  // no mondayItemId in this context
+            "",
             sheetUrl ?? ""
           );
         }
@@ -536,7 +551,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       custom: r.custom,
     }));
 
-    // Build proposed event name for calendar confirmation
+    // Build proposed event name from primary subject
     const currentYear = new Date().getFullYear();
     const eventType = detectEventType(primarySubject);
     const proposedEventName = `${teamForLookup} ${eventType} ${currentYear}`;

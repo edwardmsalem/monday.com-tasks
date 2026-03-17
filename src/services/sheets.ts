@@ -10,6 +10,7 @@
 import { config, configCompat } from '../config/environment.js';
 import type { RecipientWithAppointment } from './gmail.js';
 import { google as coreApiGoogle } from './coreApi.js';
+import { detectEventType } from './calendar.js';
 
 /**
  * Safely share a sheet with anyone in the workspace domain via core-api.
@@ -225,7 +226,9 @@ export interface ScanSheetOptions {
   title: string;
   recipients: RecipientWithAppointment[];
   contentType: ScanContentType;
-  accountInfo?: Map<string, ScanAccountInfo>;  // email → account info from sport sheets
+  accountInfo?: Map<string, ScanAccountInfo>;  // email → account info for scanned recipients
+  allAccounts?: Map<string, ScanAccountInfo>;  // ALL accounts from team sheet (for "no appointment" section)
+  teamName?: string;  // resolved team name from client (e.g. "San Jose Sharks")
 }
 
 /**
@@ -239,10 +242,12 @@ export interface ScanSheetOptions {
  * Sheet columns (without):          Date | Time | Email | Status | Notes
  */
 export async function createScanSheet(options: ScanSheetOptions): Promise<SheetResult> {
-  const { title: teamName, recipients, contentType } = options;
+  const { title: subject, recipients, contentType } = options;
 
   const currentYear = new Date().getFullYear();
-  const title = `${teamName} Relocation ${currentYear}`;
+  const eventType = detectEventType(subject);
+  const name = options.teamName || subject;
+  const title = `${name} ${eventType} ${currentYear}`;
 
   // Build an email → appointment time lookup from scanned recipients
   const appointmentByEmail = new Map<string, RecipientWithAppointment>();
@@ -258,7 +263,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
 
   if (options.accountInfo && options.accountInfo.size > 0) {
     // Use pre-fetched accountInfo from batchLookupAccountsForScan
-    console.log(`[Sheets] Building sheet with accountInfo for "${teamName}" (${options.accountInfo.size} accounts)`);
+    console.log(`[Sheets] Building sheet with accountInfo for "${name}" (${options.accountInfo.size} accounts)`);
     headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Seats', 'Qty', 'Season Total', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
@@ -315,7 +320,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     console.log(`[Sheets] Built ${dataRows.length} rows from accountInfo (${appointmentByEmail.size} with appointment times)`);
   } else {
     // Fallback: no accountInfo available, simple format
-    console.log(`[Sheets] No accountInfo for "${teamName}", using simple format`);
+    console.log(`[Sheets] No accountInfo for "${name}", using simple format`);
     headerRow = ['Date', 'Time', 'Email', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
@@ -366,6 +371,48 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     }
 
     console.log(`[Sheets] Added ${allCustomKeys.length} custom columns: ${allCustomKeys.join(', ')}`);
+  }
+
+  // Build "No Appointment" section: accounts from the team sheet that weren't scanned
+  // Include only accounts whose status is NOT "Not Active", "Revoked", or "Deposit"
+  const excludedStatuses = ['not active', 'revoked', 'deposit'];
+  let noAppointmentRows: (string | number)[][] = [];
+
+  if (options.allAccounts && options.allAccounts.size > 0) {
+    const scannedEmails = new Set(recipients.map(r => r.email.toLowerCase()));
+
+    for (const [email, account] of options.allAccounts.entries()) {
+      if (scannedEmails.has(email)) continue; // Already in scan results
+      const statusLower = (account.status || '').toLowerCase().trim();
+      if (excludedStatuses.includes(statusLower)) continue;
+
+      // One row per seat location (same as scanned section)
+      if (account.seatLocations.length > 0) {
+        for (const loc of account.seatLocations) {
+          const seats = loc.lowSeat && loc.highSeat
+            ? (loc.lowSeat === loc.highSeat ? String(loc.lowSeat) : `${loc.lowSeat}-${loc.highSeat}`)
+            : '';
+          const row: (string | number)[] = options.accountInfo && options.accountInfo.size > 0
+            ? ['', '', email, account.name, loc.section, loc.row, seats, loc.qty, loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
+            : ['', '', email, account.status || '', ''];
+          noAppointmentRows.push(row);
+        }
+      } else {
+        const row: (string | number)[] = options.accountInfo && options.accountInfo.size > 0
+          ? ['', '', email, account.name, '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
+          : ['', '', email, account.status || '', ''];
+        noAppointmentRows.push(row);
+      }
+    }
+
+    if (noAppointmentRows.length > 0) {
+      // Add a blank separator row + section header
+      const separatorRow = new Array(columnCount).fill('');
+      const sectionHeaderRow = new Array(columnCount).fill('');
+      sectionHeaderRow[0] = `NO APPOINTMENT (${noAppointmentRows.length})`;
+      dataRows.push(separatorRow, sectionHeaderRow, ...noAppointmentRows);
+      console.log(`[Sheets] Added ${noAppointmentRows.length} "No Appointment" rows`);
+    }
   }
 
   // Create the spreadsheet via core-api
@@ -1024,23 +1071,31 @@ export interface ScanAccountInfo {
   exp: string;          // Card expiration date
   cvv: string;          // Card CVV/CVC
   billingAddress: string; // Billing/mailing address
+  status: string;       // Account status (e.g. "Active", "Pending Renewal")
+}
+
+export interface ScanAccountLookupResult {
+  matched: Map<string, ScanAccountInfo>;       // email → account info for scanned recipients
+  allAccounts: Map<string, ScanAccountInfo>;   // email → account info for ALL accounts in team sheet
 }
 
 /**
  * Batch lookup account info for multiple recipient emails against a team's account sheet.
  * Fetches the team sheet ONCE and matches all emails in-memory.
+ * Returns both matched accounts and ALL accounts (for "no appointment" section).
  *
  * @param teamName - Team name (e.g., "Miami Dolphins")
  * @param emails - Array of recipient emails to look up
- * @returns Map of lowercase email → account info
+ * @returns matched map + allAccounts map
  */
 export async function batchLookupAccountsForScan(
   teamName: string,
   emails: string[]
-): Promise<Map<string, ScanAccountInfo>> {
-  const result = new Map<string, ScanAccountInfo>();
+): Promise<ScanAccountLookupResult> {
+  const matched = new Map<string, ScanAccountInfo>();
+  const allAccounts = new Map<string, ScanAccountInfo>();
 
-  if (emails.length === 0) return result;
+  if (emails.length === 0) return { matched, allAccounts };
 
   console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)...`);
 
@@ -1050,12 +1105,12 @@ export async function batchLookupAccountsForScan(
     teamResult = await lookupTeamAccounts(teamName);
   } catch (error) {
     console.error(`[Sheets] Failed to lookup team accounts for "${teamName}":`, error instanceof Error ? error.message : error);
-    return result;
+    return { matched, allAccounts };
   }
 
   if (!teamResult.success) {
     console.log(`[Sheets] Account lookup failed for "${teamName}": ${teamResult.error}`);
-    return result;
+    return { matched, allAccounts };
   }
 
   const { headers, accounts } = teamResult;
@@ -1065,7 +1120,7 @@ export async function batchLookupAccountsForScan(
   const emailIdx = findColumnIndex(headers, 'email', 'e-mail', 'email address');
   if (emailIdx === -1) {
     console.log(`[Sheets] No email column found in sheet headers: ${headers.join(', ')}`);
-    return result;
+    return { matched, allAccounts };
   }
 
   // Build a lookup map: lowercase email → array of matching rows
@@ -1134,57 +1189,37 @@ export async function batchLookupAccountsForScan(
     return locations;
   }
 
-  // First pass: build account info for ALL accounts (not just recipients)
-  // so we can detect adjacency across all seat holders
-  const allAccountsByEmail = new Map<string, { name: string; seatLocations: ParsedSeatLocation[]; last4: string; exp: string; cvv: string; billingAddress: string }>();
-  for (const [email, rows] of emailToRows.entries()) {
+  // Helper: build ScanAccountInfo for an email with adjacency detection
+  function buildAccountInfo(email: string, rows: AccountInfo[], allAccountsByEmail: Map<string, { seatLocations: ParsedSeatLocation[] }>): ScanAccountInfo {
     const firstRow = rows[0].rowData;
     const name = getColumnValue(firstRow, headers, 'name', 'account name', 'customer name', 'full name');
     const last4 = getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4');
     const exp = getColumnValue(firstRow, headers, 'exp', 'expiration', 'exp date', 'expiry');
     const cvv = getColumnValue(firstRow, headers, 'cvc', 'cvv', 'security code', 'cv2');
     const billingAddress = getColumnValue(firstRow, headers, 'address', 'street address', 'mailing address', 'billing address');
+    const status = getColumnValue(firstRow, headers, 'status', 'account status');
     const seatLocations = parseSeatLocations(rows);
-    allAccountsByEmail.set(email, { name, seatLocations, last4, exp, cvv, billingAddress });
-  }
 
-  // Match each recipient email and compute adjacency
-  const emailSet = new Set(emails.map(e => e.toLowerCase().trim()));
-  let matched = 0;
-
-  for (const email of emailSet) {
-    const accountData = allAccountsByEmail.get(email);
-    if (!accountData) continue;
-
-    const { name, seatLocations, last4, exp, cvv, billingAddress } = accountData;
-
-    // Find connecting seats: other accounts in same section+row with adjacent seats
+    // Find connecting seats
     const connectingEntries: string[] = [];
     for (const loc of seatLocations) {
       if (!loc.section || !loc.row || (!loc.lowSeat && !loc.highSeat)) continue;
-
       for (const [otherEmail, otherData] of allAccountsByEmail.entries()) {
-        if (otherEmail === email) continue; // Skip self
-
+        if (otherEmail === email) continue;
         for (const otherLoc of otherData.seatLocations) {
-          // Same section and row?
           if (otherLoc.section !== loc.section || otherLoc.row !== loc.row) continue;
-          // Adjacent? (other's high seat + 1 = our low, or our high + 1 = other's low)
           const isAdjacent =
             (otherLoc.highSeat > 0 && loc.lowSeat > 0 && otherLoc.highSeat + 1 === loc.lowSeat) ||
             (loc.highSeat > 0 && otherLoc.lowSeat > 0 && loc.highSeat + 1 === otherLoc.lowSeat);
-
           if (isAdjacent) {
             const entry = `${otherEmail} (${otherLoc.display})`;
-            if (!connectingEntries.includes(entry)) {
-              connectingEntries.push(entry);
-            }
+            if (!connectingEntries.includes(entry)) connectingEntries.push(entry);
           }
         }
       }
     }
 
-    result.set(email, {
+    return {
       name,
       seats: seatLocations.map(l => l.display).join('\n'),
       seatLocations,
@@ -1193,12 +1228,34 @@ export async function batchLookupAccountsForScan(
       exp,
       cvv,
       billingAddress,
-    });
-    matched++;
+      status,
+    };
   }
 
-  console.log(`[Sheets] Matched ${matched}/${emailSet.size} recipient emails to accounts`);
-  return result;
+  // First pass: parse seat locations for ALL accounts (needed for adjacency)
+  const allSeatsByEmail = new Map<string, { seatLocations: ParsedSeatLocation[] }>();
+  for (const [email, rows] of emailToRows.entries()) {
+    allSeatsByEmail.set(email, { seatLocations: parseSeatLocations(rows) });
+  }
+
+  // Build account info for ALL accounts
+  for (const [email, rows] of emailToRows.entries()) {
+    allAccounts.set(email, buildAccountInfo(email, rows, allSeatsByEmail));
+  }
+
+  // Match recipient emails
+  const emailSet = new Set(emails.map(e => e.toLowerCase().trim()));
+  let matchCount = 0;
+  for (const email of emailSet) {
+    const info = allAccounts.get(email);
+    if (info) {
+      matched.set(email, info);
+      matchCount++;
+    }
+  }
+
+  console.log(`[Sheets] Matched ${matchCount}/${emailSet.size} recipient emails to accounts, ${allAccounts.size} total accounts`);
+  return { matched, allAccounts };
 }
 
 // ============================================================================
