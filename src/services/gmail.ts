@@ -402,8 +402,8 @@ export async function findRelatedRecipients(
           ? appointmentResult.value
           : { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
 
-        // Extract code and link if requested
-        const code = extractCodesAndLinks ? extractCodeFromBody(msg.bodyText) : null;
+        // Always extract codes (passwords); links only for presale content
+        const code = extractCodeFromBody(msg.bodyText);
         const link = extractCodesAndLinks ? extractLinkFromBody(msg.bodyText, msg.bodyHtml ?? undefined) : null;
 
         for (const email of msg.toEmails) {

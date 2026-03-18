@@ -326,7 +326,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   if (options.accountInfo && options.accountInfo.size > 0) {
     // Use pre-fetched accountInfo from batchLookupAccountsForScan
     console.log(`[Sheets] Building sheet with accountInfo for "${name}" (${options.accountInfo.size} accounts)`);
-    headerRow = ['Date', 'Time', 'Email', 'Name', 'Section', 'Row', 'Low Seat', 'High Seat', 'Qty', 'Pack', 'Season Total', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
+    headerRow = ['Date', 'Time', 'Email', 'Password', 'Name', 'Section', 'Row', 'Low Seat', 'High Seat', 'Qty', 'Pack', 'Season Total', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
     const rowsWithTimes: { sortKey: number; row: (string | number)[] }[] = [];
@@ -342,6 +342,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         ? new Date(appointment.rawDateTime).getTime()
         : Number.MAX_SAFE_INTEGER;
       const notes = recipient.additionalAppointment || '';
+      const password = recipient.code || '';
 
       if (account && account.seatLocations.length > 0) {
         // One row per seat location (same account may have multiple seat sets)
@@ -350,7 +351,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           const highSeatStr = loc.highSeat ? String(loc.highSeat) : '';
           rowsWithTimes.push({
             sortKey,
-            row: [dateValue, timeValue, recipient.email, account.name,
+            row: [dateValue, timeValue, recipient.email, password, account.name,
               loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal,
               account.last4, account.exp, account.cvv, account.billingAddress,
               '', notes],
@@ -359,7 +360,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
       } else if (account) {
         rowsWithTimes.push({
           sortKey,
-          row: [dateValue, timeValue, recipient.email, account.name,
+          row: [dateValue, timeValue, recipient.email, password, account.name,
             '', '', '', '', '', '', '',
             account.last4, account.exp, account.cvv, account.billingAddress,
             '', notes],
@@ -367,7 +368,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
       } else {
         rowsWithTimes.push({
           sortKey,
-          row: [dateValue, timeValue, recipient.email, '',
+          row: [dateValue, timeValue, recipient.email, password, '',
             '', '', '', '', '', '', '',
             '', '', '', '',
             '', notes],
@@ -387,7 +388,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   } else {
     // Fallback: no accountInfo available, simple format
     console.log(`[Sheets] No accountInfo for "${name}", using simple format`);
-    headerRow = ['Date', 'Time', 'Email', 'Status', 'Notes'];
+    headerRow = ['Date', 'Time', 'Email', 'Password', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
     const sorted = [...recipients].sort((a, b) => {
@@ -401,6 +402,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
       isoToSheetDate(r.rawDateTime),
       isoToSheetTime(r.rawDateTime),
       r.email,
+      r.code || '', // Password
       '', // Status
       '', // Notes
     ]);
@@ -460,14 +462,14 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           const lowSeatStr = loc.lowSeat ? String(loc.lowSeat) : '';
           const highSeatStr = loc.highSeat ? String(loc.highSeat) : '';
           const row: (string | number)[] = options.accountInfo && options.accountInfo.size > 0
-            ? ['', '', email, account.name, loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
-            : ['', '', email, account.status || '', ''];
+            ? ['', '', email, '', account.name, loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
+            : ['', '', email, '', account.status || '', ''];
           noAppointmentRows.push(row);
         }
       } else {
         const row: (string | number)[] = options.accountInfo && options.accountInfo.size > 0
-          ? ['', '', email, account.name, '', '', '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
-          : ['', '', email, account.status || '', ''];
+          ? ['', '', email, '', account.name, '', '', '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
+          : ['', '', email, '', account.status || '', ''];
         noAppointmentRows.push(row);
       }
     }
@@ -1430,13 +1432,13 @@ export async function backfillNoAppointmentSection(
         for (const loc of account.seatLocations) {
           const lowSeatStr = loc.lowSeat ? String(loc.lowSeat) : '';
           const highSeatStr = loc.highSeat ? String(loc.highSeat) : '';
-          noAppointmentRows.push(['', '', email, account.name, loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']);
+          noAppointmentRows.push(['', '', email, '', account.name, loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']);
         }
       } else {
-        noAppointmentRows.push(['', '', email, account.name, '', '', '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']);
+        noAppointmentRows.push(['', '', email, '', account.name, '', '', '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']);
       }
     } else {
-      noAppointmentRows.push(['', '', email, account.status || '', '']);
+      noAppointmentRows.push(['', '', email, '', account.status || '', '']);
     }
   }
 
