@@ -581,25 +581,6 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     },
   ];
 
-  // Set CVV column to double width (~130px) for easier data entry
-  const cvvIdx = headerRow.indexOf('CVV');
-  if (cvvIdx !== -1) {
-    formatRequests.push({
-      updateDimensionProperties: {
-        range: {
-          sheetId,
-          dimension: 'COLUMNS',
-          startIndex: cvvIdx,
-          endIndex: cvvIdx + 1,
-        },
-        properties: {
-          pixelSize: 130,
-        },
-        fields: 'pixelSize',
-      },
-    });
-  }
-
   await coreApiGoogle.sheets.batchUpdate(spreadsheetId, formatRequests);
 
   // Try to make the sheet accessible to anyone with the link
