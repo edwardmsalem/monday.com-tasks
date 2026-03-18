@@ -149,6 +149,7 @@ export interface RecipientWithAppointment {
   appointmentDate: string | null;  // e.g., "Tue Dec 20" (date only)
   appointmentTime: string | null;  // e.g., "2:00 PM" (time only)
   rawDateTime: string | null;      // ISO format for sorting
+  additionalAppointment: string | null;  // e.g., "Also: Tue Dec 21 3:00 PM ET" if email has 2+ appointments
   code: string | null;             // Presale code if found
   link: string | null;             // Presale link if found
   custom: Record<string, string | null> | null;  // Custom extracted fields from instructions
@@ -374,7 +375,7 @@ export async function findRelatedRecipients(
     }
 
     // Extract appointments with Claude unless skipped (3 concurrent to avoid API limits)
-    let appointmentResults: Array<{ success: true; value: { appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; custom: Record<string, string | null> | null } } | { success: false; error: Error }> = [];
+    let appointmentResults: Array<{ success: true; value: { appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; additionalAppointment: string | null; custom: Record<string, string | null> | null } } | { success: false; error: Error }> = [];
 
     if (messagesToProcess.length > 0 && !skipAppointmentExtraction) {
       const appointmentStartTime = Date.now();
@@ -399,7 +400,7 @@ export async function findRelatedRecipients(
         const appointmentResult = appointmentResults[idx];
         const appointmentInfo = appointmentResult?.success
           ? appointmentResult.value
-          : { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
+          : { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
 
         // Extract code and link if requested
         const code = extractCodesAndLinks ? extractCodeFromBody(msg.bodyText) : null;
@@ -419,6 +420,7 @@ export async function findRelatedRecipients(
               appointmentDate: appointmentInfo.appointmentDate,
               appointmentTime: appointmentInfo.appointmentTime,
               rawDateTime: appointmentInfo.rawDateTime,
+              additionalAppointment: appointmentInfo.additionalAppointment,
               code,
               link,
               custom: appointmentInfo.custom || null,
@@ -589,7 +591,7 @@ export async function enrichRecipientsWithAppointments(
       async (recipient) => {
         const emailData = emailToBody.get(recipient.email);
         if (!emailData) {
-          return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
+          return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
         }
         return extractAppointmentTime(emailData.bodyText, normalizedSubject, emailData.fromEmail, instructions);
       },
@@ -611,6 +613,7 @@ export async function enrichRecipientsWithAppointments(
         appointmentDate: result.value.appointmentDate,
         appointmentTime: result.value.appointmentTime,
         rawDateTime: result.value.rawDateTime,
+        additionalAppointment: result.value.additionalAppointment,
         custom: result.value.custom || null,
       };
     });
@@ -816,11 +819,12 @@ async function extractAppointmentTime(emailBody: string, subject?: string, fromE
   appointmentDate: string | null;
   appointmentTime: string | null;
   rawDateTime: string | null;
+  additionalAppointment: string | null;
   custom: Record<string, string | null> | null;
 }> {
   if (!emailBody || emailBody.length < 20) {
     console.log(`[Gmail] Skipping appointment extraction: body too short (${emailBody?.length || 0} chars)`);
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
   }
 
   // Debug: Log what we're about to analyze
@@ -857,12 +861,15 @@ If the email says "2:00 PM CT", return "2:00 PM CT". If it says "3:00 PM" with n
 
 Today's date is ${new Date().toISOString().split('T')[0]}. When dates don't specify a year, use ${currentYear} (or ${currentYear + 1} if the date has clearly passed this year).
 
+If the email contains MULTIPLE appointments, return the EARLIEST one as the primary appointment and list any others in additionalAppointments.
+
 Return ONLY a JSON object with:
 - appointmentDate: Human readable DATE only like "Tue Dec 20" or "December 20, ${currentYear}" or null if not found
 - appointmentTime: The time EXACTLY as stated in the email like "2:00 PM" or "2:00 PM CT" or null if not found
 - rawDateTime: ISO 8601 format with the ORIGINAL time (no timezone conversion) like "${currentYear}-12-20T14:00:00" or null if not found
 - detectedTeam: The team name detected, or null if none found
 - originalTimezone: The timezone stated in the email (e.g., "PT", "CT", "MT", "ET"), or if not stated, infer from the detected team's home city. Return null if unknown.
+- additionalAppointments: Array of other appointments if the email has more than one, each as a string like "Tue Dec 21 3:00 PM CT". Null if only one or no appointment.
 ${instructions ? `\nAdditionally, extract the following custom fields from the email body:\n${instructions}\n\nInclude any extracted values in a "custom" key in the response as an object with descriptive short key names and string values.\n` : ''}
 If no appointment is mentioned, return null for all fields.`;
 
@@ -922,23 +929,31 @@ If no appointment is mentioned, return null for all fields.`;
           }
         }
 
+        // Build additional appointment note if multiple appointments found
+        let additionalAppointment: string | null = null;
+        if (parsed.additionalAppointments && Array.isArray(parsed.additionalAppointments) && parsed.additionalAppointments.length > 0) {
+          additionalAppointment = 'Also: ' + parsed.additionalAppointments.join(', ');
+          console.log(`[Gmail] Additional appointments: ${additionalAppointment}`);
+        }
+
         return {
           appointmentDate,
           appointmentTime,
           rawDateTime,
+          additionalAppointment,
           custom: parsed.custom || null,
         };
       } catch (parseError) {
         console.warn('[Gmail] Failed to parse Claude response as JSON:', parseError);
-        return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
+        return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
       }
     }
 
     console.warn('[Gmail] No JSON found in Claude response. Raw response:', text.slice(0, 200));
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
   } catch (error) {
     console.error('Error extracting appointment time:', error);
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, custom: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
   }
 }
 

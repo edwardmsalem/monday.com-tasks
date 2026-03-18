@@ -823,6 +823,7 @@ router.get('/test-scan-sheet', async (req: Request, res: Response): Promise<void
         appointmentDate: apptTime.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
         appointmentTime: apptTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
         rawDateTime: apptTime.toISOString(),
+        additionalAppointment: null,
         code: null,
         link: null,
         custom: null,

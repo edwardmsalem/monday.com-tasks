@@ -341,6 +341,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
       const sortKey = appointment?.rawDateTime
         ? new Date(appointment.rawDateTime).getTime()
         : Number.MAX_SAFE_INTEGER;
+      const notes = recipient.additionalAppointment || '';
 
       if (account && account.seatLocations.length > 0) {
         // One row per seat location (same account may have multiple seat sets)
@@ -352,7 +353,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
             row: [dateValue, timeValue, recipient.email, account.name,
               loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal,
               account.last4, account.exp, account.cvv, account.billingAddress,
-              '', ''],
+              '', notes],
           });
         }
       } else if (account) {
@@ -361,7 +362,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           row: [dateValue, timeValue, recipient.email, account.name,
             '', '', '', '', '', '', '',
             account.last4, account.exp, account.cvv, account.billingAddress,
-            '', ''],
+            '', notes],
         });
       } else {
         rowsWithTimes.push({
@@ -369,7 +370,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           row: [dateValue, timeValue, recipient.email, '',
             '', '', '', '', '', '', '',
             '', '', '', '',
-            '', ''],
+            '', notes],
         });
       }
     }
