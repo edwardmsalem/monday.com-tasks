@@ -708,7 +708,7 @@ const TZ_ABBREV_TO_IANA: Record<string, string> = {
   'CST': 'America/Chicago',
   'CDT': 'America/Chicago',
   'MT': 'America/Denver',
-  'MST': 'America/Denver',
+  'MST': 'America/Phoenix',   // MST = no DST (Arizona); Denver teams say MDT in summer
   'MDT': 'America/Denver',
   'PT': 'America/Los_Angeles',
   'PST': 'America/Los_Angeles',
