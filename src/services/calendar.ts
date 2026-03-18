@@ -269,7 +269,7 @@ export async function createScanAppointmentEvents(
 
     try {
       const result = await coreApiGoogle.calendar.createEvent({
-        summary: `${teamName} ${eventType} ${currentYear}`,
+        summary: `(${emails.length}) ${teamName} ${eventType} ${currentYear}`,
         description: descriptionParts.join('\n'),
         start: {
           dateTime: startTimeStr,
@@ -378,7 +378,7 @@ export async function createScanAppointmentEventsWithName(
 
     try {
       const result = await coreApiGoogle.calendar.createEvent({
-        summary: eventName,
+        summary: `(${emails.length}) ${eventName}`,
         description: descriptionParts.join('\n'),
         start: {
           dateTime: startTimeStr,
