@@ -383,7 +383,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
 
     // --- Pack detection (second pass) ---
     // Runs after all scanned rows are built; will also run on noAppointment rows later
-    assignPacks(dataRows, 4, 5, 6, 7, 9); // section=4, row=5, lowSeat=6, highSeat=7, packCol=9
+    assignPacks(dataRows, headerRow.indexOf('Section'), headerRow.indexOf('Row'), headerRow.indexOf('Low Seat'), headerRow.indexOf('High Seat'), headerRow.indexOf('Pack'));
   } else {
     // Fallback: no accountInfo available, simple format
     console.log(`[Sheets] No accountInfo for "${name}", using simple format`);
@@ -423,20 +423,22 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   if (allCustomKeys.length > 0) {
     // Capitalize custom key names for column headers
     const customHeaders = allCustomKeys.map(k => k.charAt(0).toUpperCase() + k.slice(1));
-    headerRow.push(...customHeaders);
+
+    // Insert custom columns right after Email (column index 2 → insert at 3)
+    const emailColIdx = headerRow.indexOf('Email');
+    const insertIdx = emailColIdx + 1;
+    headerRow.splice(insertIdx, 0, ...customHeaders);
     columnCount = headerRow.length;
 
-    // Append custom values to each data row, matching by email column
-    const emailColIdx = headerRow.indexOf('Email');
+    // Insert custom values into each data row at the same position
     for (const row of dataRows) {
       const rowEmail = String(row[emailColIdx]).toLowerCase();
       const recipient = recipients.find(r => r.email.toLowerCase() === rowEmail);
-      for (const key of allCustomKeys) {
-        row.push(recipient?.custom?.[key] ?? '');
-      }
+      const customValues = allCustomKeys.map(key => recipient?.custom?.[key] ?? '');
+      row.splice(insertIdx, 0, ...customValues);
     }
 
-    console.log(`[Sheets] Added ${allCustomKeys.length} custom columns: ${allCustomKeys.join(', ')}`);
+    console.log(`[Sheets] Inserted ${allCustomKeys.length} custom columns after Email: ${allCustomKeys.join(', ')}`);
   }
 
   // Build "No Appointment" section: accounts from the team sheet that weren't scanned
@@ -471,9 +473,25 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     }
 
     if (noAppointmentRows.length > 0) {
+      // Pad noAppointmentRows with empty custom columns if custom columns were inserted
+      if (allCustomKeys.length > 0) {
+        const emailColIdx = headerRow.indexOf('Email');
+        const insertIdx = emailColIdx + 1;
+        const emptyCustom = new Array(allCustomKeys.length).fill('');
+        for (const row of noAppointmentRows) {
+          row.splice(insertIdx, 0, ...emptyCustom);
+        }
+      }
+
       // Run pack detection across all rows (scanned + no-appointment) together
+      // Use header-based index lookup since custom columns may have shifted positions
       if (options.accountInfo && options.accountInfo.size > 0) {
-        assignPacks([...dataRows, ...noAppointmentRows], 4, 5, 6, 7, 9);
+        const secIdx = headerRow.indexOf('Section');
+        const rowIdx = headerRow.indexOf('Row');
+        const lowIdx = headerRow.indexOf('Low Seat');
+        const highIdx = headerRow.indexOf('High Seat');
+        const packIdx = headerRow.indexOf('Pack');
+        assignPacks([...dataRows, ...noAppointmentRows], secIdx, rowIdx, lowIdx, highIdx, packIdx);
       }
 
       // Add a blank separator row + section header
