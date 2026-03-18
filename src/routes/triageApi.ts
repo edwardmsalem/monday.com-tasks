@@ -462,8 +462,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     // 2. Detect content type from primary subject
     const contentType = detectContentType(primarySubject);
-    const instructionsLower = (instructions ?? '').toLowerCase();
-    const extractCodesAndLinks = contentType === 'presale' || /password|code|login\s*(link|url)/i.test(instructionsLower);
+    const extractCodesAndLinks = /password|code|login\s*(link|url)/i.test(instructions ?? '');
 
     // 3. Find related recipients across ALL subjects, dedup by email+time
     const recipientMap = new Map<string, import('../services/gmail.js').RecipientWithAppointment>();
