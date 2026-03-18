@@ -408,39 +408,61 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     ]);
   }
 
-  // Append custom columns if any recipients have custom extracted data
-  const allCustomKeys: string[] = [];
+  // Fill custom extracted data into existing base columns or append as new columns
+  const existingHeadersLower = headerRow.map(h => h.toLowerCase());
+  const newCustomKeys: string[] = [];
   const customKeysSet = new Set<string>();
+  // Keys that match an existing base column — fill in-place instead of appending
+  const inPlaceKeys: { key: string; colIdx: number }[] = [];
+
   for (const r of recipients) {
     if (r.custom) {
       for (const key of Object.keys(r.custom)) {
-        if (!customKeysSet.has(key)) {
-          customKeysSet.add(key);
-          allCustomKeys.push(key);
+        const normalized = key.toLowerCase();
+        if (customKeysSet.has(normalized)) continue;
+        customKeysSet.add(normalized);
+
+        const existingIdx = existingHeadersLower.indexOf(normalized);
+        if (existingIdx >= 0) {
+          inPlaceKeys.push({ key, colIdx: existingIdx });
+        } else {
+          newCustomKeys.push(key);
         }
       }
     }
   }
 
-  if (allCustomKeys.length > 0) {
-    // Capitalize custom key names for column headers
-    const customHeaders = allCustomKeys.map(k => k.charAt(0).toUpperCase() + k.slice(1));
-
-    // Insert custom columns right after Email (column index 2 → insert at 3)
+  // Fill existing base columns with custom extracted values (e.g. Password)
+  if (inPlaceKeys.length > 0) {
     const emailColIdx = headerRow.indexOf('Email');
-    const insertIdx = emailColIdx + 1;
-    headerRow.splice(insertIdx, 0, ...customHeaders);
-    columnCount = headerRow.length;
-
-    // Insert custom values into each data row at the same position
     for (const row of dataRows) {
       const rowEmail = String(row[emailColIdx]).toLowerCase();
       const recipient = recipients.find(r => r.email.toLowerCase() === rowEmail);
-      const customValues = allCustomKeys.map(key => recipient?.custom?.[key] ?? '');
-      row.splice(insertIdx, 0, ...customValues);
+      for (const { key, colIdx } of inPlaceKeys) {
+        const value = recipient?.custom?.[key] ?? '';
+        if (value) row[colIdx] = value;
+      }
+    }
+    console.log(`[Sheets] Filled ${inPlaceKeys.length} existing columns from custom extraction: ${inPlaceKeys.map(k => k.key).join(', ')}`);
+  }
+
+  // Append truly new custom columns
+  if (newCustomKeys.length > 0) {
+    const customHeaders = newCustomKeys.map(k => k.charAt(0).toUpperCase() + k.slice(1));
+    headerRow.push(...customHeaders);
+    columnCount = headerRow.length;
+
+    const emailColIdx = headerRow.indexOf('Email');
+    for (const row of dataRows) {
+      const rowEmail = String(row[emailColIdx]).toLowerCase();
+      const recipient = recipients.find(r => r.email.toLowerCase() === rowEmail);
+      for (const key of newCustomKeys) {
+        row.push(recipient?.custom?.[key] ?? '');
+      }
     }
 
-    console.log(`[Sheets] Inserted ${allCustomKeys.length} custom columns after Email: ${allCustomKeys.join(', ')}`);
+    console.log(`[Sheets] Added ${newCustomKeys.length} new custom columns: ${newCustomKeys.join(', ')}`);
+
   }
 
   // Build "No Appointment" section: accounts from the team sheet that weren't scanned
@@ -475,13 +497,11 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     }
 
     if (noAppointmentRows.length > 0) {
-      // Pad noAppointmentRows with empty custom columns if custom columns were inserted
-      if (allCustomKeys.length > 0) {
-        const emailColIdx = headerRow.indexOf('Email');
-        const insertIdx = emailColIdx + 1;
-        const emptyCustom = new Array(allCustomKeys.length).fill('');
+      // Pad noAppointmentRows with empty values for any new custom columns appended at the end
+      if (newCustomKeys.length > 0) {
+        const emptyCustom = new Array(newCustomKeys.length).fill('');
         for (const row of noAppointmentRows) {
-          row.splice(insertIdx, 0, ...emptyCustom);
+          row.push(...emptyCustom);
         }
       }
 
@@ -1170,6 +1190,7 @@ export interface ScanAccountInfo {
   seats: string;        // Newline-separated: "Sec 100 Row 5 Seats 1-4\nSec 200 Row 10 Seats 1-2"
   seatLocations: ParsedSeatLocation[];  // Structured data for adjacency detection
   connecting: string;   // Adjacent seat holders: "email@example.com (Sec 100 Row 5 Seats 5-8)"
+  password: string;     // Account password
   last4: string;        // Last 4 digits of card on file
   exp: string;          // Card expiration date
   cvv: string;          // Card CVV/CVC
@@ -1326,6 +1347,7 @@ export async function batchLookupAccountsForScan(
       seats: seatLocations.map(l => l.display).join('\n'),
       seatLocations,
       connecting: connectingEntries.join('\n'),
+      password: '',
       last4,
       exp,
       cvv,

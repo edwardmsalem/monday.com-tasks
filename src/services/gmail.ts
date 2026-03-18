@@ -870,7 +870,7 @@ Return ONLY a JSON object with:
 - detectedTeam: The team name detected, or null if none found
 - originalTimezone: The timezone stated in the email (e.g., "PT", "CT", "MT", "ET"), or if not stated, infer from the detected team's home city. Return null if unknown.
 - additionalAppointments: Array of other appointments if the email has more than one, each as a string like "Tue Dec 21 3:00 PM CT". Null if only one or no appointment.
-${instructions ? `\nAdditionally, extract the following custom fields from the email body:\n${instructions}\n\nInclude any extracted values in a "custom" key in the response as an object with descriptive short key names and string values.\n` : ''}
+${instructions ? `\nAdditionally, extract ONLY what is described here: "${instructions}"\n\nReturn these in a "custom" object. Rules:\n- ONLY include keys for what was explicitly requested. Nothing else.\n- If the request says "password", return {"custom": {"password": "..."}}. Do NOT also return email, loginUrl, loginLink, or any other field.\n- One key per requested field. No duplicates. No related fields. No extras.\n- If a requested field is not found in the email, set its value to null.\n` : ''}
 If no appointment is mentioned, return null for all fields.`;
 
     // Use core-api Claude analyze endpoint wrapped in circuit breaker (TD-05)
