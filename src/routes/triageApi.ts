@@ -379,7 +379,7 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName } = req.body as {
+  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId } = req.body as {
     messageId?: string;
     messageIds?: string[];
     teamName?: string;
@@ -387,6 +387,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     skipSheet?: boolean;
     skipCalendar?: boolean;
     eventName?: string;
+    sheetId?: string;
   };
 
   // Support both single messageId and array messageIds
@@ -490,7 +491,8 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       try {
         const lookupResult = await batchLookupAccountsForScan(
           teamForLookup,
-          enrichedRecipients.map(r => r.email)
+          enrichedRecipients.map(r => r.email),
+          clientSheetId
         );
         accountInfo = lookupResult.matched;
         allAccounts = lookupResult.allAccounts;

@@ -959,42 +959,52 @@ async function findSheetByName(
  */
 export async function lookupTeamAccounts(
   teamName: string,
-  sportOverride?: Sport
+  sportOverride?: Sport,
+  spreadsheetIdOverride?: string
 ): Promise<AccountLookupResult> {
-  console.log(`[Sheets] lookupTeamAccounts called with teamName="${teamName}", sportOverride=${sportOverride || 'none'}`);
+  console.log(`[Sheets] lookupTeamAccounts called with teamName="${teamName}", sportOverride=${sportOverride || 'none'}, sheetIdOverride=${spreadsheetIdOverride ? spreadsheetIdOverride.substring(0, 10) + '...' : 'none'}`);
 
-  // Determine sport
-  const sport = sportOverride || getSportFromTeam(teamName);
-  console.log(`[Sheets] Sport detection: "${teamName}" → ${sport || 'NOT FOUND'}`);
+  let spreadsheetId: string | undefined;
+  let sport: Sport | undefined;
 
-  if (!sport) {
-    console.error(`[Sheets] FAILED: Could not determine sport for team "${teamName}"`);
-    return {
-      success: false,
-      sport: 'other',
-      teamName,
-      sheetName: '',
-      accounts: [],
-      headers: [],
-      error: `Could not determine sport for team: ${teamName}`,
-    };
-  }
+  if (spreadsheetIdOverride) {
+    // Manual override: skip sport detection and env var lookup
+    spreadsheetId = spreadsheetIdOverride;
+    sport = sportOverride || getSportFromTeam(teamName) || 'other';
+    console.log(`[Sheets] Using spreadsheet ID override: ${spreadsheetId.substring(0, 10)}...`);
+  } else {
+    // Normal path: detect sport → get spreadsheet ID from config
+    sport = sportOverride || getSportFromTeam(teamName);
+    console.log(`[Sheets] Sport detection: "${teamName}" → ${sport || 'NOT FOUND'}`);
 
-  // Get spreadsheet ID
-  const spreadsheetId = getSpreadsheetIdForSport(sport);
-  console.log(`[Sheets] Spreadsheet lookup: ${sport.toUpperCase()} → ${spreadsheetId ? `ID: ${spreadsheetId.substring(0, 10)}...` : 'NOT CONFIGURED'}`);
+    if (!sport) {
+      console.error(`[Sheets] FAILED: Could not determine sport for team "${teamName}"`);
+      return {
+        success: false,
+        sport: 'other',
+        teamName,
+        sheetName: '',
+        accounts: [],
+        headers: [],
+        error: `Could not determine sport for team: ${teamName}`,
+      };
+    }
 
-  if (!spreadsheetId) {
-    console.error(`[Sheets] FAILED: No spreadsheet ID configured for sport ${sport.toUpperCase()}`);
-    return {
-      success: false,
-      sport,
-      teamName,
-      sheetName: '',
-      accounts: [],
-      headers: [],
-      error: `No spreadsheet configured for sport: ${sport.toUpperCase()}. Set SHEETS_${sport.toUpperCase()}_ID env var.`,
-    };
+    spreadsheetId = getSpreadsheetIdForSport(sport);
+    console.log(`[Sheets] Spreadsheet lookup: ${sport.toUpperCase()} → ${spreadsheetId ? `ID: ${spreadsheetId.substring(0, 10)}...` : 'NOT CONFIGURED'}`);
+
+    if (!spreadsheetId) {
+      console.error(`[Sheets] FAILED: No spreadsheet ID configured for sport ${sport.toUpperCase()}`);
+      return {
+        success: false,
+        sport,
+        teamName,
+        sheetName: '',
+        accounts: [],
+        headers: [],
+        error: `No spreadsheet configured for sport: ${sport.toUpperCase()}. Set SHEETS_${sport.toUpperCase()}_ID env var.`,
+      };
+    }
   }
 
   try {
@@ -1162,17 +1172,18 @@ export interface ScanAccountLookupResult {
  */
 export async function batchLookupAccountsForScan(
   teamName: string,
-  emails: string[]
+  emails: string[],
+  spreadsheetIdOverride?: string
 ): Promise<ScanAccountLookupResult> {
   const matched = new Map<string, ScanAccountInfo>();
   const allAccounts = new Map<string, ScanAccountInfo>();
 
-  console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)...`);
+  console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)${spreadsheetIdOverride ? `, sheetId override: ${spreadsheetIdOverride.substring(0, 10)}...` : ''}...`);
 
   // Fetch all accounts for this team (one API call)
   let teamResult: AccountLookupResult;
   try {
-    teamResult = await lookupTeamAccounts(teamName);
+    teamResult = await lookupTeamAccounts(teamName, undefined, spreadsheetIdOverride);
   } catch (error) {
     console.error(`[Sheets] Failed to lookup team accounts for "${teamName}":`, error instanceof Error ? error.message : error);
     return { matched, allAccounts };
