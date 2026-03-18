@@ -706,6 +706,15 @@ function extractOriginalToFromBody(bodyText: string): string[] {
  * Map timezone abbreviations to IANA timezone names for programmatic conversion.
  * Covers all US sports team timezones.
  */
+// Arizona teams — don't observe DST, always MST (America/Phoenix)
+const ARIZONA_TEAMS = new Set([
+  'arizona cardinals', 'cardinals',
+  'arizona diamondbacks', 'diamondbacks', 'dbacks', 'd-backs',
+  'phoenix suns', 'suns',
+  'phoenix mercury', 'mercury',
+  'arizona coyotes', 'coyotes',
+]);
+
 const TZ_ABBREV_TO_IANA: Record<string, string> = {
   'CT': 'America/Chicago',
   'CST': 'America/Chicago',
@@ -915,7 +924,14 @@ If no appointment is mentioned, return null for all fields.`;
         let rawDateTime = parsed.rawDateTime || null;
         let appointmentTime = parsed.appointmentTime || null;
         let appointmentDate = parsed.appointmentDate || null;
-        const sourceTz = parsed.originalTimezone?.toUpperCase()?.replace(/[^A-Z]/g, '') || null;
+        let sourceTz = parsed.originalTimezone?.toUpperCase()?.replace(/[^A-Z]/g, '') || null;
+
+        // Arizona teams don't observe DST — force MST (America/Phoenix) even if email says "MT"
+        const detectedTeamLower = (parsed.detectedTeam || '').toLowerCase();
+        if (ARIZONA_TEAMS.has(detectedTeamLower) && (sourceTz === 'MT' || sourceTz === 'MDT')) {
+          console.log(`[Gmail] Arizona team "${parsed.detectedTeam}" detected — overriding ${sourceTz} → MST (no DST)`);
+          sourceTz = 'MST';
+        }
 
         if (rawDateTime && sourceTz && sourceTz !== 'ET' && sourceTz !== 'EST' && sourceTz !== 'EDT') {
           const converted = convertToET(rawDateTime, sourceTz);
