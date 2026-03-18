@@ -441,6 +441,22 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     // Use first subject as primary for sheet title, event name, etc.
     const primarySubject = subjects[0];
+
+    // If team still unresolved, try extracting from sender display name
+    // (e.g. "Arizona Cardinals <noreply@paclive.com>" → "Arizona Cardinals")
+    if (!teamName) {
+      const firstMsg = await coreApiGoogle.gmail.getMessage(allMessageIds[0], 'metadata');
+      const fromHeader = getHeader(firstMsg.payload?.headers ?? [], 'from') ?? '';
+      const senderMatch = fromHeader.match(/^([^<]+)</);
+      if (senderMatch) {
+        const senderName = senderMatch[1].trim().replace(/^"|"$/g, '');
+        if (senderName && senderName.length > 2 && senderName.length < 60) {
+          teamName = senderName;
+          console.log(`[Triage Scan] Resolved team from sender: "${teamName}"`);
+        }
+      }
+    }
+
     const teamForLookup = teamName || primarySubject;
     console.log(`[Triage Scan] ${subjects.length} subjects, team: "${teamForLookup}"`);
 
