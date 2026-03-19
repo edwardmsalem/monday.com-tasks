@@ -1703,3 +1703,52 @@ export function formatIssueCallAccount(result: IssueCallAccountResult): string {
 
   return lines.join('\n');
 }
+
+/**
+ * Create a simple Google Sheet with custom headers and rows.
+ * Used by the AI assistant to produce spreadsheets on demand.
+ */
+export async function createCustomSheet(
+  title: string,
+  headers: string[],
+  rows: string[][]
+): Promise<SheetResult> {
+  const createResponse = await coreApiGoogle.sheets.createWithOptions({
+    title,
+    sheets: [{ title: 'Sheet1', frozenRowCount: 1 }],
+  });
+
+  const spreadsheetId = createResponse.spreadsheetId;
+  const spreadsheetUrl = createResponse.spreadsheetUrl;
+  const sheetId = createResponse.sheets?.[0]?.sheetId ?? 0;
+
+  await coreApiGoogle.sheets.updateValues(spreadsheetId, {
+    range: 'Sheet1!A1',
+    values: [headers, ...rows],
+  });
+
+  // Format header row (bold, blue background) + auto-resize columns
+  await coreApiGoogle.sheets.batchUpdate(spreadsheetId, [
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: { red: 0.2, green: 0.4, blue: 0.8 },
+            textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,textFormat)',
+      },
+    },
+    {
+      autoResizeDimensions: {
+        dimensions: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: headers.length },
+      },
+    },
+  ]);
+
+  await safeShareSheet(spreadsheetId);
+
+  return { spreadsheetId, spreadsheetUrl, title };
+}

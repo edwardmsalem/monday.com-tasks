@@ -12,7 +12,7 @@ import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle, claude as coreApiClaude, getCachedConfig } from '../services/coreApi.js';
 import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from '../services/gmail.js';
-import { createScanSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection } from '../services/sheets.js';
+import { createScanSheet, createCustomSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection } from '../services/sheets.js';
 import * as calendar from '../services/calendar.js';
 import { detectEventType } from '../services/calendar.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
@@ -726,9 +726,8 @@ RULES:
 - Be concise and business-focused. This is a ticket brokerage — emails are about season tickets, transfers, orders, gameday, and newsletters.
 
 EFFICIENCY:
-- You have up to 30 tool calls. Use them wisely.
-- When you need details from many emails, call get_email_detail on each one — don't skip emails.
-- When the user asks for a "sheet" or "spreadsheet" or "table", return the data as a table in your response. You don't need a special tool for this — just format the columns as requested.
+- When you need details from 3+ emails, use get_emails_bulk instead of calling get_email_detail one at a time. It fetches all emails in parallel in a single call.
+- When the user asks for a "sheet" or "spreadsheet", use create_custom_sheet to produce a real Google Sheet. Read the emails first with get_emails_bulk, extract the requested columns, then call create_custom_sheet with the data.
 - Always produce a final text response. If you extracted data, summarize it and include a table.
 
 TRIAGE PATTERNS:
@@ -739,7 +738,7 @@ TRIAGE PATTERNS:
 - "Analyze the attachment" → get_attachment_content, summarize findings
 - "Create a task" → propose create_task with extracted details
 - "Share to Slack" → propose share_to_slack with channel and context
-- "Make a sheet/table from emails" → get_email_detail for each, extract requested fields, return as table
+- "Make a sheet from emails" → get_email_detail for each, extract requested fields, propose create_custom_sheet
 
 CONTEXT:
 - When messageIds are provided, those emails are the user's focus
@@ -814,6 +813,17 @@ const AI_TOOLS = [
         filename: { type: 'string' as const, description: 'Original filename (used for content type detection)' },
       },
       required: ['messageId', 'attachmentId', 'filename'],
+    },
+  },
+  {
+    name: 'get_emails_bulk',
+    description: 'Get full email body + metadata for multiple messages at once. Much faster than calling get_email_detail repeatedly. Use this when you need to read 3+ emails.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Array of Gmail message IDs (max 50)' },
+      },
+      required: ['messageIds'],
     },
   },
   {
@@ -988,12 +998,27 @@ const AI_TOOLS = [
       required: ['messageId', 'correction', 'description'],
     },
   },
+  {
+    name: 'create_custom_sheet',
+    description: 'Create a Google Sheet with custom columns and data extracted from emails. Use when the user asks for a "sheet", "spreadsheet", or "export" with specific columns. Read all needed emails first, extract the requested data, then call this tool. Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string' as const, description: 'Sheet title (e.g., "Confirmation of Seats Selection - March 2026")' },
+        headers: { type: 'array' as const, items: { type: 'string' as const }, description: 'Column headers (e.g., ["Email", "To", "Section", "Row", "Seat"])' },
+        rows: { type: 'array' as const, items: { type: 'array' as const, items: { type: 'string' as const } }, description: 'Data rows — each row is an array of strings matching the headers' },
+        description: { type: 'string' as const, description: 'Human-readable description of the sheet being created' },
+      },
+      required: ['title', 'headers', 'rows', 'description'],
+    },
+  },
 ];
 
 const WRITE_TOOLS = new Set([
   'create_gmail_filter', 'update_gmail_filter', 'delete_gmail_filter',
   'bulk_mark_read', 'bulk_archive', 'bulk_trash',
   'create_draft', 'create_task', 'share_to_slack', 'correct_classification',
+  'create_custom_sheet',
 ]);
 
 interface AIChatRequestBody {
@@ -1209,6 +1234,7 @@ function toolDisplayName(tool: string): string {
   switch (tool) {
     case 'search_emails': return 'Searching Gmail...';
     case 'get_email_detail': return 'Reading email...';
+    case 'get_emails_bulk': return 'Reading emails...';
     case 'get_attachment_content': return 'Analyzing attachment...';
     case 'list_gmail_filters': return 'Loading filters...';
     case 'preview_filter': return 'Previewing filter matches...';
@@ -1231,6 +1257,10 @@ function toolResultSummary(tool: string, data: unknown): string {
     }
     case 'get_email_detail':
       return `Loaded: ${(d.subject as string)?.slice(0, 50) || 'email'}`;
+    case 'get_emails_bulk': {
+      const emails = d.emails as unknown[] | undefined;
+      return `Loaded ${emails?.length ?? 0} emails`;
+    }
     case 'list_gmail_filters': {
       const filters = d.filters as unknown[] | undefined;
       const count = filters?.length ?? 0;
@@ -1262,6 +1292,7 @@ function getWriteToolLabel(toolName: string): string {
     case 'create_task': return 'Create Task';
     case 'share_to_slack': return 'Share to Slack';
     case 'correct_classification': return 'Correct Classification';
+    case 'create_custom_sheet': return 'Create Google Sheet';
     default: return 'Execute Action';
   }
 }
@@ -1346,6 +1377,22 @@ async function executeReadOnlyTool(
           attachments: msg.attachments || [],
         },
       };
+    }
+
+    case 'get_emails_bulk': {
+      const messageIds = (input.messageIds as string[]).slice(0, 50);
+      const results = await Promise.all(
+        messageIds.map(async (id) => {
+          try {
+            const msg = await coreApiGoogle.gmail.getTriageMessage(id);
+            const body = (msg.textBody || msg.htmlBody || '').slice(0, 4000);
+            return { id: msg.id, subject: msg.subject, from: msg.from, to: msg.to, date: msg.date, body, attachments: msg.attachments || [] };
+          } catch (e) {
+            return { id, error: e instanceof Error ? e.message : 'fetch failed' };
+          }
+        })
+      );
+      return { data: { count: results.length, emails: results } };
     }
 
     case 'get_attachment_content': {
@@ -1599,6 +1646,16 @@ async function executeWriteAction(
       await coreApiGoogle.gmail.correctClassification(messageId, correction);
       return {
         message: `Classification corrected for message. Correction noted: "${correction}".`,
+      };
+    }
+
+    case 'create_custom_sheet': {
+      const title = toolInput.title as string;
+      const headers = toolInput.headers as string[];
+      const rows = toolInput.rows as string[][];
+      const result = await createCustomSheet(title, headers, rows);
+      return {
+        message: `Google Sheet created: "${result.title}" with ${rows.length} rows.\n\n${result.spreadsheetUrl}`,
       };
     }
 
