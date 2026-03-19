@@ -1130,9 +1130,13 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
       });
     }
 
-    // If no response after loop, provide a fallback
+    // If no response after loop, provide a context-aware fallback
     if (!responseText && proposedActions.length === 0) {
-      responseText = 'I wasn\'t able to process that request. Could you rephrase it?';
+      if (responseTable && responseTable.rows.length > 0) {
+        responseText = `Found ${responseTable.rows.length} result(s). Let me know what you'd like to do with them.`;
+      } else {
+        responseText = 'I wasn\'t able to process that request. Could you rephrase it?';
+      }
     }
 
     res.json({
@@ -1214,7 +1218,20 @@ async function executeReadOnlyTool(
         headers: ['Subject', 'From', 'Date', 'ID'],
         rows: messages.map((m: any) => [m.subject || '', m.from || '', m.date || '', m.id || '']),
       };
-      return { data: messages, table };
+      // Return compact summary for Claude context (full data is too large for many results)
+      const summary = messages.map((m: any) => ({
+        id: m.id, subject: m.subject, from: m.from, date: m.date,
+      }));
+      return {
+        data: {
+          totalCount: result.totalCount || messages.length,
+          count: messages.length,
+          messageIds: messages.map((m: any) => m.id),
+          messages: summary.slice(0, 10), // Only first 10 for Claude context
+          ...(messages.length > 10 ? { note: `Showing 10 of ${messages.length} results. All ${messages.length} messageIds are included above.` } : {}),
+        },
+        table,
+      };
     }
 
     case 'get_email_detail': {
