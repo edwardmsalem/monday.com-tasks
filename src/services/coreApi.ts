@@ -601,6 +601,74 @@ export const google = {
       });
     },
 
+    // Gmail Filters (via triage router on core-api)
+    async listFilters(): Promise<any[]> {
+      return coreApiRequest<any[]>('/gmail/filters', { method: 'GET' });
+    },
+
+    async createFilter(criteria: Record<string, unknown>, action: Record<string, unknown>): Promise<any> {
+      return coreApiRequest('/gmail/filters', { body: { criteria, action } });
+    },
+
+    async previewFilter(criteria: Record<string, unknown>): Promise<{ totalEstimate: number; samples: any[]; query: string }> {
+      return coreApiRequest('/gmail/filters/preview', { body: { criteria } });
+    },
+
+    async updateFilter(filterId: string, criteria: Record<string, unknown>, action: Record<string, unknown>): Promise<any> {
+      return coreApiRequest(`/gmail/filters/${filterId}`, { method: 'PUT', body: { criteria, action } });
+    },
+
+    async deleteFilter(filterId: string): Promise<{ ok: boolean }> {
+      return coreApiRequest(`/gmail/filters/${filterId}`, { method: 'DELETE' });
+    },
+
+    // Triage Gmail endpoints (via triage router on core-api)
+    async getTriageMessage(id: string): Promise<any> {
+      return coreApiRequest(`/gmail/messages/${id}`, { method: 'GET' });
+    },
+
+    async getAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
+      const response = await fetch(`${CORE_API_URL}/gmail/messages/${messageId}/attachments/${attachmentId}`, {
+        method: 'GET',
+        headers: { 'X-API-Key': CORE_API_KEY || '' },
+      });
+      if (!response.ok) throw new Error(`Attachment fetch failed: ${response.status}`);
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    },
+
+    async bulkMarkAsRead(messageIds: string[]): Promise<{ ok: boolean; count: number }> {
+      return coreApiRequest('/gmail/messages/bulk-read', { body: { messageIds } });
+    },
+
+    async bulkArchive(messageIds: string[]): Promise<{ ok: boolean; count: number }> {
+      return coreApiRequest('/gmail/messages/archive', { body: { messageIds } });
+    },
+
+    async bulkTrash(messageIds: string[]): Promise<{ ok: boolean; count: number }> {
+      return coreApiRequest('/gmail/messages/trash', { body: { messageIds } });
+    },
+
+    async createDraft(messageId: string, body: string): Promise<{ draftId: string; threadId: string }> {
+      return coreApiRequest(`/gmail/messages/${messageId}/draft`, { body: { body } });
+    },
+
+    async classify(messageId: string): Promise<any> {
+      return coreApiRequest('/gmail/classify', { body: { messageId } });
+    },
+
+    async correctClassification(messageId: string, correction: string): Promise<{ ok: boolean }> {
+      return coreApiRequest('/gmail/classify/correct', { body: { messageId, correction } });
+    },
+
+    async listTriageMessages(params: { q?: string; maxResults?: number }): Promise<any> {
+      const searchParams = new URLSearchParams();
+      if (params.maxResults) searchParams.set('maxResults', String(params.maxResults));
+      if (params.q) searchParams.set('q', params.q);
+      const query = searchParams.toString();
+      return coreApiRequest(`/gmail/messages${query ? `?${query}` : ''}`, { method: 'GET' });
+    },
+
     async modifyLabels(params: {
       messageId: string;
       addLabels?: string[];

@@ -10,7 +10,7 @@
 import express, { Router, type Request, type Response } from 'express';
 import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
-import { google as coreApiGoogle } from '../services/coreApi.js';
+import { google as coreApiGoogle, claude as coreApiClaude, getCachedConfig } from '../services/coreApi.js';
 import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from '../services/gmail.js';
 import { createScanSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection } from '../services/sheets.js';
 import * as calendar from '../services/calendar.js';
@@ -698,5 +698,800 @@ router.post('/tasks/closer-lookup', async (req: Request, res: Response): Promise
     });
   }
 });
+
+// ============================================================================
+// POST /tasks/ai-chat
+// AI command center with Claude tool-use
+// ============================================================================
+
+const AI_CHAT_SYSTEM_PROMPT = `You are the AI assistant for Salem Triage, a ticket brokerage email management app for Salem Seats LLC.
+
+CAPABILITIES:
+- Search and analyze emails
+- Manage Gmail filters (create, update, delete, preview)
+- Bulk operations (archive, mark read, trash)
+- Create Monday.com tasks from emails
+- Share emails to Slack channels
+- Draft email replies (saved as Gmail drafts — user sends manually)
+- Analyze email attachments (PDFs, documents, spreadsheets)
+- Fix email classification errors
+
+RULES:
+- Write operations (anything that changes data) MUST be returned as proposed actions. Never execute without user confirmation.
+- Before bulk operations, always search first to show the user what will be affected (count + sample).
+- Before creating filters, always preview to show match count.
+- For draft replies, always get the full email detail first so the reply is contextual.
+- When analyzing attachments, use get_attachment_content — it extracts text from PDFs and documents.
+- Use tables for lists of 3+ items. Include sender, subject, date.
+- Be concise and business-focused. This is a ticket brokerage — emails are about season tickets, transfers, orders, gameday, and newsletters.
+
+TRIAGE PATTERNS:
+- "What needs my attention?" → search unread, summarize by urgency/team
+- "Catch me up on [team]" → search by team + recent dates, summarize threads
+- "Archive all [category]" → search, show count + sample, propose bulk_archive
+- "Draft a reply" → get_email_detail first, then propose create_draft
+- "Analyze the attachment" → get_attachment_content, summarize findings
+- "Create a task" → propose create_task with extracted details
+- "Share to Slack" → propose share_to_slack with channel and context
+
+CONTEXT:
+- When messageIds are provided, those emails are the user's focus
+- When no messageIds are provided, use search_emails to find relevant messages
+- teamName provides the sports team context (e.g., "Cardinals", "Cubs")`;
+
+// Tool definitions for Claude
+const AI_TOOLS = [
+  // ── Read-only tools (auto-execute) ──
+  {
+    name: 'list_gmail_filters',
+    description: 'List all Gmail filters with their criteria and actions.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: [] as string[],
+    },
+  },
+  {
+    name: 'preview_filter',
+    description: 'Preview how many existing emails match a filter criteria. Always call this before creating or updating a filter.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        criteria: {
+          type: 'object' as const,
+          description: 'Gmail filter criteria',
+          properties: {
+            from: { type: 'string' as const, description: 'Sender email or pattern' },
+            to: { type: 'string' as const, description: 'Recipient email or pattern' },
+            subject: { type: 'string' as const, description: 'Subject contains' },
+            query: { type: 'string' as const, description: 'Gmail search query' },
+            negatedQuery: { type: 'string' as const, description: 'Exclude messages matching this query' },
+            hasAttachment: { type: 'boolean' as const, description: 'Must have attachment' },
+          },
+        },
+      },
+      required: ['criteria'],
+    },
+  },
+  {
+    name: 'search_emails',
+    description: 'Search Gmail for emails matching a query. Returns subjects, senders, and dates.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string' as const, description: 'Gmail search query (e.g. "from:nfl.com", "subject:gameday", "is:unread")' },
+        maxResults: { type: 'number' as const, description: 'Max results to return (default 10, max 50)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'get_email_detail',
+    description: 'Get full email body + metadata for a single message. Use when you need to read the email content (e.g., before drafting a reply or analyzing content).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageId: { type: 'string' as const, description: 'Gmail message ID' },
+      },
+      required: ['messageId'],
+    },
+  },
+  {
+    name: 'get_attachment_content',
+    description: 'Download and extract text from an email attachment. Supports PDFs, text files, and CSVs.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageId: { type: 'string' as const, description: 'Gmail message ID' },
+        attachmentId: { type: 'string' as const, description: 'Attachment ID from the message' },
+        filename: { type: 'string' as const, description: 'Original filename (used for content type detection)' },
+      },
+      required: ['messageId', 'attachmentId', 'filename'],
+    },
+  },
+  {
+    name: 'get_inbox_summary',
+    description: 'Get a summary of inbox state: unread count, starred count, and recent message breakdown by sender/team.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: [] as string[],
+    },
+  },
+  {
+    name: 'get_classification',
+    description: 'Get how a message is classified (filtered/inbox, reason, category).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageId: { type: 'string' as const, description: 'Gmail message ID' },
+      },
+      required: ['messageId'],
+    },
+  },
+  // ── Write tools (proposed → confirmed) ──
+  {
+    name: 'create_gmail_filter',
+    description: 'Create a new Gmail filter. Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        criteria: {
+          type: 'object' as const,
+          properties: {
+            from: { type: 'string' as const },
+            to: { type: 'string' as const },
+            subject: { type: 'string' as const },
+            query: { type: 'string' as const },
+            negatedQuery: { type: 'string' as const },
+            hasAttachment: { type: 'boolean' as const },
+          },
+        },
+        action: {
+          type: 'object' as const,
+          properties: {
+            addLabelIds: { type: 'array' as const, items: { type: 'string' as const } },
+            removeLabelIds: { type: 'array' as const, items: { type: 'string' as const } },
+            shouldArchive: { type: 'boolean' as const, description: 'Skip the inbox (remove INBOX label)' },
+            shouldMarkAsRead: { type: 'boolean' as const },
+            shouldStar: { type: 'boolean' as const },
+            shouldTrash: { type: 'boolean' as const },
+            shouldNeverSpam: { type: 'boolean' as const },
+          },
+        },
+        description: { type: 'string' as const, description: 'Human-readable description of what this filter does' },
+        previewCount: { type: 'number' as const, description: 'Number of existing emails that match (from preview_filter)' },
+      },
+      required: ['criteria', 'action', 'description'],
+    },
+  },
+  {
+    name: 'update_gmail_filter',
+    description: 'Update an existing Gmail filter (delete + recreate). Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        filterId: { type: 'string' as const, description: 'ID of the filter to update' },
+        criteria: { type: 'object' as const },
+        action: { type: 'object' as const },
+        description: { type: 'string' as const, description: 'Human-readable description of the change' },
+      },
+      required: ['filterId', 'criteria', 'action', 'description'],
+    },
+  },
+  {
+    name: 'delete_gmail_filter',
+    description: 'Delete a Gmail filter. Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        filterId: { type: 'string' as const, description: 'ID of the filter to delete' },
+        description: { type: 'string' as const, description: 'Human-readable description of which filter is being deleted' },
+      },
+      required: ['filterId', 'description'],
+    },
+  },
+  {
+    name: 'bulk_mark_read',
+    description: 'Mark multiple messages as read. Write operation — return as proposed action. Always search first to show what will be affected.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Array of Gmail message IDs' },
+        description: { type: 'string' as const, description: 'Human-readable description of what is being marked read' },
+      },
+      required: ['messageIds', 'description'],
+    },
+  },
+  {
+    name: 'bulk_archive',
+    description: 'Archive multiple messages (remove from inbox). Write operation — return as proposed action. Always search first to show what will be affected.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Array of Gmail message IDs' },
+        description: { type: 'string' as const, description: 'Human-readable description of what is being archived' },
+      },
+      required: ['messageIds', 'description'],
+    },
+  },
+  {
+    name: 'bulk_trash',
+    description: 'Move multiple messages to trash. Write operation — return as proposed action. Always search first to show what will be affected.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Array of Gmail message IDs' },
+        description: { type: 'string' as const, description: 'Human-readable description of what is being trashed' },
+      },
+      required: ['messageIds', 'description'],
+    },
+  },
+  {
+    name: 'create_draft',
+    description: 'Create a Gmail draft reply to a message. The draft is saved — the user sends it manually. Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageId: { type: 'string' as const, description: 'Gmail message ID to reply to' },
+        body: { type: 'string' as const, description: 'The reply text (plain text)' },
+        description: { type: 'string' as const, description: 'Brief summary of the draft content' },
+      },
+      required: ['messageId', 'body', 'description'],
+    },
+  },
+  {
+    name: 'create_task',
+    description: 'Create a Monday.com task from an email. Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageId: { type: 'string' as const, description: 'Gmail message ID to create task from' },
+        taskName: { type: 'string' as const, description: 'Name for the task' },
+        notes: { type: 'string' as const, description: 'Additional notes/instructions for the task' },
+        description: { type: 'string' as const, description: 'Human-readable description of the task being created' },
+      },
+      required: ['messageId', 'taskName', 'description'],
+    },
+  },
+  {
+    name: 'share_to_slack',
+    description: 'Share an email to a Slack channel. Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        channelId: { type: 'string' as const, description: 'Slack channel ID' },
+        messageId: { type: 'string' as const, description: 'Gmail message ID to share' },
+        text: { type: 'string' as const, description: 'Optional context message to include with the share' },
+        description: { type: 'string' as const, description: 'Human-readable description of what is being shared and where' },
+      },
+      required: ['channelId', 'messageId', 'description'],
+    },
+  },
+  {
+    name: 'correct_classification',
+    description: 'Fix a misclassified email. Use when user says an email should be in inbox instead of filtered, or vice versa. Write operation — return as proposed action.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        messageId: { type: 'string' as const, description: 'Gmail message ID to correct' },
+        correction: { type: 'string' as const, description: 'The correction (e.g., "should_be_inbox", "should_be_filtered", or a freeform explanation)' },
+        description: { type: 'string' as const, description: 'Human-readable description of the classification correction' },
+      },
+      required: ['messageId', 'correction', 'description'],
+    },
+  },
+];
+
+const WRITE_TOOLS = new Set([
+  'create_gmail_filter', 'update_gmail_filter', 'delete_gmail_filter',
+  'bulk_mark_read', 'bulk_archive', 'bulk_trash',
+  'create_draft', 'create_task', 'share_to_slack', 'correct_classification',
+]);
+
+interface AIChatRequestBody {
+  messageIds?: string[];
+  prompt: string;
+  conversationHistory?: Array<{ role: string; content: string }>;
+  teamName?: string;
+  confirmedAction?: {
+    id: string;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+  };
+}
+
+router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const { prompt, conversationHistory, messageIds, teamName, confirmedAction } = req.body as AIChatRequestBody;
+
+  if (!prompt && !confirmedAction) {
+    res.status(400).json({ error: 'prompt or confirmedAction is required' });
+    return;
+  }
+
+  try {
+    // If user confirmed a write action, execute it
+    if (confirmedAction) {
+      if (!WRITE_TOOLS.has(confirmedAction.toolName)) {
+        res.status(400).json({ error: `Invalid tool: ${confirmedAction.toolName}` });
+        return;
+      }
+      if (!confirmedAction.toolInput || typeof confirmedAction.toolInput !== 'object') {
+        res.status(400).json({ error: 'toolInput is required' });
+        return;
+      }
+      const result = await executeWriteAction(confirmedAction.toolName, confirmedAction.toolInput);
+      res.json({
+        message: result.message,
+        table: result.table || null,
+        actions: null,
+      });
+      return;
+    }
+
+    // Build messages array for Claude
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+    // Add conversation history (cap to last 20 entries to prevent context overflow)
+    if (conversationHistory) {
+      const entries = conversationHistory.slice(-20);
+      for (const entry of entries) {
+        if (entry.role === 'user' || entry.role === 'assistant') {
+          messages.push({ role: entry.role, content: entry.content });
+        }
+      }
+    }
+
+    // Add the current prompt with context
+    let userContent = prompt;
+    if (messageIds?.length) {
+      userContent = `[Context: User has selected ${messageIds.length} email(s) with IDs: ${messageIds.join(', ')}]\n\n${prompt}`;
+    }
+    if (teamName) {
+      userContent = `[Context: Current team is "${teamName}"]\n\n${userContent}`;
+    }
+    messages.push({ role: 'user', content: userContent });
+
+    // Run Claude tool-use loop (max 10 iterations for complex chains)
+    let responseText: string | null = null;
+    let proposedActions: Array<{ id: string; label: string; description: string; status: string; toolName: string; toolInput: Record<string, unknown> }> = [];
+    let responseTable: { headers: string[]; rows: string[][] } | null = null;
+
+    for (let i = 0; i < 10; i++) {
+      const claudeResponse = await coreApiClaude.toolUse({
+        model: getCachedConfig().claude.models.default,
+        maxTokens: 4096,
+        systemPrompt: AI_CHAT_SYSTEM_PROMPT,
+        tools: AI_TOOLS,
+        toolChoice: { type: 'auto' },
+        messages,
+      });
+
+      // No tool call — Claude is done, use its text response
+      if (!claudeResponse.toolUse) {
+        responseText = claudeResponse.text;
+        break;
+      }
+
+      const { name: toolName, input: toolInput } = claudeResponse.toolUse as {
+        name: string;
+        input: Record<string, unknown>;
+        id: string;
+      };
+
+      // Write tools → return as proposed action, don't execute
+      if (WRITE_TOOLS.has(toolName)) {
+        const input = toolInput as Record<string, unknown>;
+        const description = (input.description as string) || `Execute ${toolName}`;
+        const previewCount = input.previewCount as number | undefined;
+
+        const label = getWriteToolLabel(toolName);
+
+        const actionId = randomUUID();
+        proposedActions.push({
+          id: actionId,
+          label,
+          description: previewCount
+            ? `${description} (${previewCount} existing emails match)`
+            : description,
+          status: 'proposed',
+          toolName,
+          toolInput,
+        });
+
+        // Use Claude's text if it provided one alongside the tool call, else generate a default
+        responseText = claudeResponse.text || `I'd like to ${description.toLowerCase()}. Please confirm to proceed.`;
+        break;
+      }
+
+      // Read-only tools → execute immediately and feed result back to Claude
+      const toolResult = await executeReadOnlyTool(toolName, toolInput as Record<string, unknown>);
+
+      // Keep the last table from tool results for the client
+      if (toolResult.table) {
+        responseTable = toolResult.table;
+      }
+
+      // Build context for Claude: assistant called a tool, here's the result
+      const assistantText = claudeResponse.text
+        ? `${claudeResponse.text}\n[Called ${toolName}]`
+        : `[Called ${toolName}]`;
+      messages.push({ role: 'assistant', content: assistantText });
+      // Truncate tool result to prevent unbounded payloads in conversation context
+      const toolResultJson = JSON.stringify(toolResult.data);
+      const truncatedResult = toolResultJson.length > 8000
+        ? toolResultJson.slice(0, 8000) + '... (truncated)'
+        : toolResultJson;
+      messages.push({
+        role: 'user',
+        content: `[Tool result for ${toolName}]:\n${truncatedResult}`,
+      });
+    }
+
+    // If no response after loop, provide a fallback
+    if (!responseText && proposedActions.length === 0) {
+      responseText = 'I wasn\'t able to process that request. Could you rephrase it?';
+    }
+
+    res.json({
+      message: responseText || '',
+      table: responseTable,
+      actions: proposedActions.length > 0 ? proposedActions : null,
+    });
+  } catch (error) {
+    console.error('[Triage API] AI chat failed:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'AI chat failed',
+    });
+  }
+});
+
+// Map tool names to human-readable action labels
+function getWriteToolLabel(toolName: string): string {
+  switch (toolName) {
+    case 'create_gmail_filter': return 'Create Filter';
+    case 'update_gmail_filter': return 'Update Filter';
+    case 'delete_gmail_filter': return 'Delete Filter';
+    case 'bulk_mark_read': return 'Mark as Read';
+    case 'bulk_archive': return 'Archive Messages';
+    case 'bulk_trash': return 'Trash Messages';
+    case 'create_draft': return 'Create Draft Reply';
+    case 'create_task': return 'Create Task';
+    case 'share_to_slack': return 'Share to Slack';
+    case 'correct_classification': return 'Correct Classification';
+    default: return 'Execute Action';
+  }
+}
+
+// Execute read-only tools immediately
+async function executeReadOnlyTool(
+  toolName: string,
+  input: Record<string, unknown>
+): Promise<{ data: unknown; table?: { headers: string[]; rows: string[][] } }> {
+  switch (toolName) {
+    case 'list_gmail_filters': {
+      const filters = await coreApiGoogle.gmail.listFilters();
+      const headers = ['#', 'Criteria', 'Action', 'ID'];
+      const rows = filters.map((f: any, i: number) => {
+        const critParts: string[] = [];
+        if (f.criteria?.from) critParts.push(`from: ${f.criteria.from}`);
+        if (f.criteria?.to) critParts.push(`to: ${f.criteria.to}`);
+        if (f.criteria?.subject) critParts.push(`subject: ${f.criteria.subject}`);
+        if (f.criteria?.query) critParts.push(`query: ${f.criteria.query}`);
+        if (f.criteria?.hasAttachment) critParts.push('has:attachment');
+
+        const actionParts: string[] = [];
+        if (f.action?.addLabelNames?.length) actionParts.push(`+label: ${f.action.addLabelNames.join(', ')}`);
+        if (f.action?.removeLabelIds?.includes('INBOX')) actionParts.push('archive');
+        if (f.action?.removeLabelIds?.includes('UNREAD')) actionParts.push('mark read');
+        if (f.action?.shouldStar) actionParts.push('star');
+        if (f.action?.shouldTrash) actionParts.push('trash');
+
+        return [
+          String(i + 1),
+          critParts.join(', ') || '(no criteria)',
+          actionParts.join(', ') || '(no action)',
+          f.id || '',
+        ];
+      });
+      return { data: filters, table: { headers, rows } };
+    }
+
+    case 'preview_filter': {
+      const criteria = input.criteria as Record<string, unknown>;
+      const preview = await coreApiGoogle.gmail.previewFilter(criteria);
+      return { data: preview };
+    }
+
+    case 'search_emails': {
+      const query = input.query as string;
+      const maxResults = Math.min((input.maxResults as number) || 10, 50);
+      const result = await coreApiGoogle.gmail.listTriageMessages({ q: query, maxResults });
+      const messages = result.messages || [];
+      const table = {
+        headers: ['Subject', 'From', 'Date', 'ID'],
+        rows: messages.map((m: any) => [m.subject || '', m.from || '', m.date || '', m.id || '']),
+      };
+      return { data: messages, table };
+    }
+
+    case 'get_email_detail': {
+      const messageId = input.messageId as string;
+      const msg = await coreApiGoogle.gmail.getTriageMessage(messageId);
+      // Truncate body to 8000 chars
+      const body = (msg.textBody || msg.htmlBody || '').slice(0, 8000);
+      return {
+        data: {
+          id: msg.id,
+          subject: msg.subject,
+          from: msg.from,
+          to: msg.to,
+          date: msg.date,
+          body,
+          attachments: msg.attachments || [],
+        },
+      };
+    }
+
+    case 'get_attachment_content': {
+      const messageId = input.messageId as string;
+      const attachmentId = input.attachmentId as string;
+      const filename = (input.filename as string) || '';
+      const data = await coreApiGoogle.gmail.getAttachment(messageId, attachmentId);
+
+      let extractedText = '';
+      const lowerFilename = filename.toLowerCase();
+
+      if (lowerFilename.endsWith('.pdf')) {
+        try {
+          const { PDFParse } = await import('pdf-parse');
+          const parser = new PDFParse({ data });
+          const result = await parser.getText();
+          extractedText = result.text;
+        } catch (e) {
+          extractedText = `[PDF extraction failed: ${e instanceof Error ? e.message : e}]`;
+        }
+      } else if (lowerFilename.endsWith('.csv') || lowerFilename.endsWith('.txt') || lowerFilename.endsWith('.json') || lowerFilename.endsWith('.xml') || lowerFilename.endsWith('.html')) {
+        extractedText = data.toString('utf-8');
+      } else {
+        extractedText = `[Unsupported file type: ${filename}. Supported: PDF, TXT, CSV, JSON, XML, HTML]`;
+      }
+
+      // Cap at 50000 chars
+      if (extractedText.length > 50000) {
+        extractedText = extractedText.slice(0, 50000) + '\n... (truncated)';
+      }
+
+      return {
+        data: {
+          filename,
+          size: data.length,
+          extractedText,
+        },
+      };
+    }
+
+    case 'get_inbox_summary': {
+      const [unreadResult, starredResult, recentResult] = await Promise.all([
+        coreApiGoogle.gmail.listTriageMessages({ q: 'is:unread in:inbox', maxResults: 50 }),
+        coreApiGoogle.gmail.listTriageMessages({ q: 'is:starred', maxResults: 10 }),
+        coreApiGoogle.gmail.listTriageMessages({ q: 'in:inbox', maxResults: 50 }),
+      ]);
+
+      const unreadMessages = unreadResult.messages || [];
+      const starredMessages = starredResult.messages || [];
+
+      // Aggregate unread by sender
+      const senderCounts: Record<string, number> = {};
+      for (const msg of unreadMessages) {
+        const sender = (msg.from || 'Unknown').replace(/<[^>]+>/, '').trim();
+        senderCounts[sender] = (senderCounts[sender] || 0) + 1;
+      }
+
+      const topSenders = Object.entries(senderCounts)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 10)
+        .map(([sender, count]) => ({ sender, count }));
+
+      const table = {
+        headers: ['Sender', 'Unread Count'],
+        rows: topSenders.map(s => [s.sender, String(s.count)]),
+      };
+
+      return {
+        data: {
+          unreadCount: unreadResult.totalCount || unreadMessages.length,
+          starredCount: starredResult.totalCount || starredMessages.length,
+          topSenders,
+        },
+        table,
+      };
+    }
+
+    case 'get_classification': {
+      const messageId = input.messageId as string;
+      const result = await coreApiGoogle.gmail.classify(messageId);
+      return { data: result };
+    }
+
+    default:
+      return { data: { error: `Unknown tool: ${toolName}` } };
+  }
+}
+
+// Translate Claude's friendly action fields to Gmail API format
+function normalizeFilterAction(action: Record<string, unknown>): Record<string, unknown> {
+  const gmailAction: Record<string, unknown> = { ...action };
+  const removeLabels = new Set<string>((action.removeLabelIds as string[]) || []);
+  const addLabels = new Set<string>((action.addLabelIds as string[]) || []);
+
+  if (action.shouldArchive) {
+    removeLabels.add('INBOX');
+    delete gmailAction.shouldArchive;
+  }
+  if (action.shouldMarkAsRead) {
+    removeLabels.add('UNREAD');
+    delete gmailAction.shouldMarkAsRead;
+  }
+  if (action.shouldStar) {
+    addLabels.add('STARRED');
+    delete gmailAction.shouldStar;
+  }
+  if (action.shouldTrash) {
+    addLabels.add('TRASH');
+    removeLabels.add('INBOX');
+    delete gmailAction.shouldTrash;
+  }
+  if (action.shouldNeverSpam) {
+    removeLabels.add('SPAM');
+    delete gmailAction.shouldNeverSpam;
+  }
+
+  if (removeLabels.size > 0) {
+    gmailAction.removeLabelIds = [...removeLabels];
+  }
+  if (addLabels.size > 0) {
+    gmailAction.addLabelIds = [...addLabels];
+  }
+  return gmailAction;
+}
+
+// Execute write tools after user confirmation
+async function executeWriteAction(
+  toolName: string,
+  toolInput: Record<string, unknown>
+): Promise<{ message: string; table?: { headers: string[]; rows: string[][] } }> {
+  switch (toolName) {
+    case 'create_gmail_filter': {
+      const criteria = toolInput.criteria as Record<string, unknown>;
+      const action = toolInput.action as Record<string, unknown>;
+      const filter = await coreApiGoogle.gmail.createFilter(criteria, normalizeFilterAction(action));
+      return {
+        message: `Filter created successfully (ID: ${filter.id}). Note: this filter applies to future emails only — existing emails are not affected retroactively.`,
+      };
+    }
+
+    case 'update_gmail_filter': {
+      const filterId = toolInput.filterId as string;
+      const criteria = toolInput.criteria as Record<string, unknown>;
+      const action = toolInput.action as Record<string, unknown>;
+      const filter = await coreApiGoogle.gmail.updateFilter(filterId, criteria, normalizeFilterAction(action));
+      return {
+        message: `Filter updated successfully (new ID: ${filter.id}). Gmail doesn't support in-place updates, so the old filter was replaced.`,
+      };
+    }
+
+    case 'delete_gmail_filter': {
+      const filterId = toolInput.filterId as string;
+      await coreApiGoogle.gmail.deleteFilter(filterId);
+      return {
+        message: 'Filter deleted successfully.',
+      };
+    }
+
+    case 'bulk_mark_read': {
+      const messageIds = toolInput.messageIds as string[];
+      const result = await coreApiGoogle.gmail.bulkMarkAsRead(messageIds);
+      return {
+        message: `Marked ${result.count} message(s) as read.`,
+      };
+    }
+
+    case 'bulk_archive': {
+      const messageIds = toolInput.messageIds as string[];
+      const result = await coreApiGoogle.gmail.bulkArchive(messageIds);
+      return {
+        message: `Archived ${result.count} message(s).`,
+      };
+    }
+
+    case 'bulk_trash': {
+      const messageIds = toolInput.messageIds as string[];
+      const result = await coreApiGoogle.gmail.bulkTrash(messageIds);
+      return {
+        message: `Moved ${result.count} message(s) to trash.`,
+      };
+    }
+
+    case 'create_draft': {
+      const messageId = toolInput.messageId as string;
+      const body = toolInput.body as string;
+      const result = await coreApiGoogle.gmail.createDraft(messageId, body);
+      return {
+        message: `Draft reply created (ID: ${result.draftId}). Open Gmail to review and send it.`,
+      };
+    }
+
+    case 'create_task': {
+      const messageId = toolInput.messageId as string;
+      const taskName = toolInput.taskName as string;
+      const notes = (toolInput.notes as string) || '';
+
+      // Call the local review endpoint first, then we'd need to create — but the from-email
+      // endpoint needs ownerId. For now, use the review endpoint to get AI analysis,
+      // then return the result as a message (user can refine in task sheet).
+      try {
+        const CORE_API_KEY = process.env.CORE_API_KEY;
+        const response = await fetch(`http://localhost:${process.env.PORT || 3000}/tasks/review`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${CORE_API_KEY}`,
+          },
+          body: JSON.stringify({ messageId, notes }),
+        });
+        const review = await response.json();
+        return {
+          message: `Task reviewed: "${review.taskName || taskName}"\nOwner: ${review.owner?.name || 'Unassigned'}\nType: ${review.taskType || 'General'}\nUrgency: ${review.urgency || 'Medium'}\nTeam: ${review.team || 'N/A'}\n\nOpen the task sheet in the app to finalize and create the Monday.com item.`,
+        };
+      } catch {
+        return {
+          message: `Task analysis requested for: "${taskName}". Open the task sheet in the app to create the Monday.com item.`,
+        };
+      }
+    }
+
+    case 'share_to_slack': {
+      const channelId = toolInput.channelId as string;
+      const messageId = toolInput.messageId as string;
+      const text = (toolInput.text as string) || '';
+
+      // Call core-api's share endpoint
+      const CORE_API_URL = process.env.CORE_API_URL || 'http://core-api.railway.internal';
+      const CORE_API_KEY = process.env.CORE_API_KEY;
+      const response = await fetch(`${CORE_API_URL}/slack/share`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': CORE_API_KEY || '',
+        },
+        body: JSON.stringify({ channelId, messageId, text }),
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Slack share failed: ${err}`);
+      }
+
+      return {
+        message: `Email shared to Slack channel successfully.`,
+      };
+    }
+
+    case 'correct_classification': {
+      const messageId = toolInput.messageId as string;
+      const correction = toolInput.correction as string;
+      await coreApiGoogle.gmail.correctClassification(messageId, correction);
+      return {
+        message: `Classification corrected for message. Correction noted: "${correction}".`,
+      };
+    }
+
+    default:
+      return { message: `Unknown action: ${toolName}` };
+  }
+}
 
 export default router;
