@@ -726,9 +726,19 @@ RULES:
 - Be concise and business-focused. This is a ticket brokerage — emails are about season tickets, transfers, orders, gameday, and newsletters.
 
 EFFICIENCY:
-- When you need details from 3+ emails, use get_emails_bulk instead of calling get_email_detail one at a time. It fetches all emails in parallel in a single call.
-- When the user asks for a "sheet" or "spreadsheet", use create_custom_sheet to produce a real Google Sheet. Read the emails first with get_emails_bulk, extract the requested columns, then call create_custom_sheet with the data.
-- Always produce a final text response. If you extracted data, summarize it and include a table.
+- When you need details from 3+ emails, use get_emails_bulk instead of calling get_email_detail one at a time.
+- Always produce a final text response. If you extracted data, summarize it.
+
+SHEET CREATION (extract_and_create_sheet):
+When the user asks for a "sheet" or "spreadsheet" from emails:
+1. Call get_email_detail on ONE sample email to understand the body format
+2. Analyze the body to determine regex patterns for each column the user wants
+3. Build column extraction rules with "source" and "pattern" (regex with one capture group)
+4. Call extract_and_create_sheet with all messageIds + your column rules — the server fetches ALL emails in parallel and applies your patterns
+- For header fields (To, From, Date, etc.), use source: "header:To", "header:From", etc.
+- For body fields, use source: "body" with a regex pattern. The pattern MUST have exactly one capture group.
+- Example: to extract "Section: 123" from body, use pattern: "Section[:\\s]+([A-Za-z0-9]+)"
+- This is a write tool — it creates a real Google Sheet and returns the URL.
 
 TRIAGE PATTERNS:
 - "What needs my attention?" → search unread, summarize by urgency/team
@@ -738,7 +748,7 @@ TRIAGE PATTERNS:
 - "Analyze the attachment" → get_attachment_content, summarize findings
 - "Create a task" → propose create_task with extracted details
 - "Share to Slack" → propose share_to_slack with channel and context
-- "Make a sheet from emails" → get_email_detail for each, extract requested fields, propose create_custom_sheet
+- "Make a sheet from emails" → get_email_detail on ONE sample, analyze body format, propose extract_and_create_sheet with regex patterns
 
 CONTEXT:
 - When messageIds are provided, those emails are the user's focus
@@ -999,17 +1009,29 @@ const AI_TOOLS = [
     },
   },
   {
-    name: 'create_custom_sheet',
-    description: 'Create a Google Sheet with custom columns and data extracted from emails. Use when the user asks for a "sheet", "spreadsheet", or "export" with specific columns. Read all needed emails first, extract the requested data, then call this tool. Write operation — return as proposed action.',
+    name: 'extract_and_create_sheet',
+    description: `Extract data from emails and create a Google Sheet. WORKFLOW: First call get_email_detail on ONE sample email to understand the format. Then analyze the body to determine regex patterns for each column the user wants. Then call this tool with those patterns — it fetches ALL emails server-side in parallel and applies your patterns. Write operation — return as proposed action.`,
     input_schema: {
       type: 'object' as const,
       properties: {
-        title: { type: 'string' as const, description: 'Sheet title (e.g., "Confirmation of Seats Selection - March 2026")' },
-        headers: { type: 'array' as const, items: { type: 'string' as const }, description: 'Column headers (e.g., ["Email", "To", "Section", "Row", "Seat"])' },
-        rows: { type: 'array' as const, items: { type: 'array' as const, items: { type: 'string' as const } }, description: 'Data rows — each row is an array of strings matching the headers' },
-        description: { type: 'string' as const, description: 'Human-readable description of the sheet being created' },
+        title: { type: 'string' as const, description: 'Sheet title' },
+        messageIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Gmail message IDs to process' },
+        columns: {
+          type: 'array' as const,
+          description: 'Column extraction rules',
+          items: {
+            type: 'object' as const,
+            properties: {
+              header: { type: 'string' as const, description: 'Column header name (e.g., "Section", "Row", "Seat")' },
+              source: { type: 'string' as const, description: 'Where to extract from: "body" (email body text), "header:From", "header:To", "header:Subject", "header:Date", "header:X-Forwarded-For", "header:Delivered-To"' },
+              pattern: { type: 'string' as const, description: 'Regex with ONE capture group for the value. E.g., "Section[:\\\\s]+([A-Z0-9]+)" — only used when source is "body"' },
+            },
+            required: ['header', 'source'],
+          },
+        },
+        description: { type: 'string' as const, description: 'Human-readable description of the sheet' },
       },
-      required: ['title', 'headers', 'rows', 'description'],
+      required: ['title', 'messageIds', 'columns', 'description'],
     },
   },
 ];
@@ -1018,7 +1040,7 @@ const WRITE_TOOLS = new Set([
   'create_gmail_filter', 'update_gmail_filter', 'delete_gmail_filter',
   'bulk_mark_read', 'bulk_archive', 'bulk_trash',
   'create_draft', 'create_task', 'share_to_slack', 'correct_classification',
-  'create_custom_sheet',
+  'extract_and_create_sheet',
 ]);
 
 interface AIChatRequestBody {
@@ -1292,7 +1314,7 @@ function getWriteToolLabel(toolName: string): string {
     case 'create_task': return 'Create Task';
     case 'share_to_slack': return 'Share to Slack';
     case 'correct_classification': return 'Correct Classification';
-    case 'create_custom_sheet': return 'Create Google Sheet';
+    case 'extract_and_create_sheet': return 'Create Google Sheet';
     default: return 'Execute Action';
   }
 }
@@ -1649,13 +1671,82 @@ async function executeWriteAction(
       };
     }
 
-    case 'create_custom_sheet': {
+    case 'extract_and_create_sheet': {
       const title = toolInput.title as string;
-      const headers = toolInput.headers as string[];
-      const rows = toolInput.rows as string[][];
-      const result = await createCustomSheet(title, headers, rows);
+      const messageIds = toolInput.messageIds as string[];
+      const columns = toolInput.columns as Array<{ header: string; source: string; pattern?: string }>;
+
+      // Fetch all emails in parallel (concurrency=5)
+      const fetchResults = await Promise.all(
+        messageIds.map(async (id) => {
+          try {
+            const msg = await coreApiGoogle.gmail.getMessage(id, 'full');
+            return { success: true as const, msg };
+          } catch (e) {
+            console.error(`[AI Sheet] Failed to fetch ${id}:`, e);
+            return { success: false as const, id };
+          }
+        })
+      );
+
+      const headers = columns.map(c => c.header);
+      const rows: string[][] = [];
+
+      for (const result of fetchResults) {
+        if (!result.success) continue;
+        const msg = result.msg as any;
+        const msgHeaders = msg.payload?.headers ?? [];
+        const getHeader = (name: string) => {
+          const h = msgHeaders.find((h: any) => h.name?.toLowerCase() === name.toLowerCase());
+          return h?.value || '';
+        };
+
+        // Extract body text
+        let bodyText = '';
+        const extractBody = (part: any): string => {
+          if (!part) return '';
+          if (part.mimeType === 'text/plain' && part.body?.data) {
+            return Buffer.from(part.body.data, 'base64').toString('utf-8');
+          }
+          if (part.parts) {
+            for (const p of part.parts) {
+              const text = extractBody(p);
+              if (text) return text;
+            }
+          }
+          // Fallback to HTML if no plain text
+          if (part.mimeType === 'text/html' && part.body?.data) {
+            const html = Buffer.from(part.body.data, 'base64').toString('utf-8');
+            return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+          }
+          return '';
+        };
+        bodyText = extractBody(msg.payload);
+
+        // Extract each column value
+        const row: string[] = [];
+        for (const col of columns) {
+          if (col.source === 'body' && col.pattern) {
+            try {
+              const match = bodyText.match(new RegExp(col.pattern, 'i'));
+              row.push(match?.[1]?.trim() || '');
+            } catch {
+              row.push('');
+            }
+          } else if (col.source.startsWith('header:')) {
+            const headerName = col.source.slice(7);
+            row.push(getHeader(headerName));
+          } else {
+            row.push('');
+          }
+        }
+        rows.push(row);
+      }
+
+      const sheetResult = await createCustomSheet(title, headers, rows);
       return {
-        message: `Google Sheet created: "${result.title}" with ${rows.length} rows.\n\n${result.spreadsheetUrl}`,
+        message: `Google Sheet created: "${sheetResult.title}" with ${rows.length} rows.\n\n${sheetResult.spreadsheetUrl}`,
+        table: { headers, rows },
       };
     }
 
