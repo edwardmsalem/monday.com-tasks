@@ -729,16 +729,14 @@ EFFICIENCY:
 - When you need details from 3+ emails, use get_emails_bulk instead of calling get_email_detail one at a time.
 - Always produce a final text response. If you extracted data, summarize it.
 
-SHEET CREATION (extract_and_create_sheet):
+SHEET CREATION (create_sheet_from_emails):
 When the user asks for a "sheet" or "spreadsheet" from emails:
 1. Call get_email_detail on ONE sample email to understand the body format
-2. Analyze the body to determine regex patterns for each column the user wants
-3. Build column extraction rules with "source" and "pattern" (regex with one capture group)
-4. Call extract_and_create_sheet with all messageIds + your column rules — the server fetches ALL emails in parallel and applies your patterns
-- For header fields (To, From, Date, etc.), use source: "header:To", "header:From", etc.
-- For body fields, use source: "body" with a regex pattern. The pattern MUST have exactly one capture group.
-- Example: to extract "Section: 123" from body, use pattern: "Section[:\\s]+([A-Za-z0-9]+)"
-- This is a write tool — it creates a real Google Sheet and returns the URL.
+2. Describe the format in plain English in the extractionPrompt — what headers to check, what the body structure looks like, how to group/transform data
+3. Call create_sheet_from_emails with: title, all messageIds, column headers, and the extractionPrompt
+4. The server fetches all emails in parallel, sends all bodies to Claude in ONE batch extraction call, and creates the Google Sheet
+- Be specific in extractionPrompt about the email format you observed (HTML tables, specific fields, grouping logic)
+- Example: "Each email has an HTML table with SECTION, ROW, SEAT#, PLAN columns. The recipient email is in the X-Forwarded-For header. Group consecutive seats in the same section+row into packs with low seat, high seat, and quantity."
 
 TRIAGE PATTERNS:
 - "What needs my attention?" → search unread, summarize by urgency/team
@@ -1009,29 +1007,18 @@ const AI_TOOLS = [
     },
   },
   {
-    name: 'extract_and_create_sheet',
-    description: `Extract data from emails and create a Google Sheet. WORKFLOW: First call get_email_detail on ONE sample email to understand the format. Then analyze the body to determine regex patterns for each column the user wants. Then call this tool with those patterns — it fetches ALL emails server-side in parallel and applies your patterns. Write operation — return as proposed action.`,
+    name: 'create_sheet_from_emails',
+    description: `Create a Google Sheet by extracting data from emails. WORKFLOW: First call get_email_detail on ONE sample email to understand the body format. Then call this tool describing what to extract in plain English. The server fetches all emails in parallel, uses Claude to extract the data in one batch call, and creates the Google Sheet. Write operation — return as proposed action.`,
     input_schema: {
       type: 'object' as const,
       properties: {
-        title: { type: 'string' as const, description: 'Sheet title' },
+        title: { type: 'string' as const, description: 'Sheet title (e.g., "Cardinals Seat Selections 2026")' },
         messageIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Gmail message IDs to process' },
-        columns: {
-          type: 'array' as const,
-          description: 'Column extraction rules',
-          items: {
-            type: 'object' as const,
-            properties: {
-              header: { type: 'string' as const, description: 'Column header name (e.g., "Section", "Row", "Seat")' },
-              source: { type: 'string' as const, description: 'Where to extract from: "body" (email body text), "header:From", "header:To", "header:Subject", "header:Date", "header:X-Forwarded-For", "header:Delivered-To"' },
-              pattern: { type: 'string' as const, description: 'Regex with ONE capture group for the value. E.g., "Section[:\\\\s]+([A-Z0-9]+)" — only used when source is "body"' },
-            },
-            required: ['header', 'source'],
-          },
-        },
-        description: { type: 'string' as const, description: 'Human-readable description of the sheet' },
+        columns: { type: 'array' as const, items: { type: 'string' as const }, description: 'Column headers for the sheet (e.g., ["Email", "Section", "Row", "Low Seat", "High Seat", "QTY"])' },
+        extractionPrompt: { type: 'string' as const, description: 'Plain English instructions for what to extract from each email body and how to group/transform the data. Be specific about the email format you observed in the sample. Example: "Each email has an HTML table with SECTION, ROW, SEAT#, PLAN columns. Extract the recipient email from X-Forwarded-For header. Group consecutive seats in the same section+row into packs. Output one row per pack with low seat, high seat, and quantity."' },
+        description: { type: 'string' as const, description: 'Human-readable description of the sheet being created' },
       },
-      required: ['title', 'messageIds', 'columns', 'description'],
+      required: ['title', 'messageIds', 'columns', 'extractionPrompt', 'description'],
     },
   },
 ];
@@ -1040,7 +1027,7 @@ const WRITE_TOOLS = new Set([
   'create_gmail_filter', 'update_gmail_filter', 'delete_gmail_filter',
   'bulk_mark_read', 'bulk_archive', 'bulk_trash',
   'create_draft', 'create_task', 'share_to_slack', 'correct_classification',
-  'extract_and_create_sheet',
+  'create_sheet_from_emails',
 ]);
 
 interface AIChatRequestBody {
@@ -1055,6 +1042,45 @@ interface AIChatRequestBody {
   };
 }
 
+// In-memory job store for polling-based progress
+interface AIChatJob {
+  status: 'processing' | 'done' | 'error';
+  phase: string;              // Current status text for the client
+  result?: {
+    message: string;
+    table: { headers: string[]; rows: string[][] } | null;
+    actions: Array<{ id: string; label: string; description: string; status: string; toolName: string; toolInput: Record<string, unknown> }> | null;
+  };
+  error?: string;
+  createdAt: number;
+}
+
+const aiChatJobs = new Map<string, AIChatJob>();
+
+// Clean up jobs older than 10 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [id, job] of aiChatJobs) {
+    if (job.createdAt < cutoff) aiChatJobs.delete(id);
+  }
+}, 60_000);
+
+// GET /tasks/ai-chat/status/:jobId — poll for job progress
+router.get('/tasks/ai-chat/status/:jobId', (req: Request, res: Response): void => {
+  if (!verifyApiKey(req, res)) return;
+  const job = aiChatJobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+  res.json({
+    status: job.status,
+    phase: job.phase,
+    result: job.result || null,
+    error: job.error || null,
+  });
+});
+
 router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
@@ -1065,9 +1091,9 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
     return;
   }
 
-  try {
-    // If user confirmed a write action, execute it
-    if (confirmedAction) {
+  // Confirmed write actions run synchronously (they're fast — one API call)
+  if (confirmedAction) {
+    try {
       if (!WRITE_TOOLS.has(confirmedAction.toolName)) {
         res.status(400).json({ error: `Invalid tool: ${confirmedAction.toolName}` });
         return;
@@ -1076,180 +1102,283 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
         res.status(400).json({ error: 'toolInput is required' });
         return;
       }
+
+      // For sheet creation, use job-based polling (it's slow)
+      if (confirmedAction.toolName === 'create_sheet_from_emails') {
+        const jobId = randomUUID();
+        aiChatJobs.set(jobId, { status: 'processing', phase: 'Starting sheet creation...', createdAt: Date.now() });
+        res.json({ jobId });
+
+        // Process in background
+        executeSheetCreation(jobId, confirmedAction.toolInput).catch((error) => {
+          console.error('[AI Chat] Sheet creation failed:', error);
+          const job = aiChatJobs.get(jobId);
+          if (job) {
+            job.status = 'error';
+            job.error = error instanceof Error ? error.message : 'Sheet creation failed';
+            job.phase = 'Failed';
+          }
+        });
+        return;
+      }
+
       const result = await executeWriteAction(confirmedAction.toolName, confirmedAction.toolInput);
       res.json({
         message: result.message,
         table: result.table || null,
         actions: null,
       });
-      return;
+    } catch (error) {
+      console.error('[Triage API] AI chat confirm failed:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Action failed' });
     }
+    return;
+  }
 
-    // Build messages array for Claude
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  // Tool-use loop: runs in background, client polls for progress
+  const jobId = randomUUID();
+  aiChatJobs.set(jobId, { status: 'processing', phase: 'Thinking...', createdAt: Date.now() });
+  res.json({ jobId });
 
-    // Add conversation history (cap to last 20 entries to prevent context overflow)
-    if (conversationHistory) {
-      const entries = conversationHistory.slice(-20);
-      for (const entry of entries) {
-        if (entry.role === 'user' || entry.role === 'assistant') {
-          messages.push({ role: entry.role, content: entry.content });
-        }
-      }
+  // Process in background
+  runToolUseLoop(jobId, prompt, conversationHistory, messageIds, teamName).catch((error) => {
+    console.error('[AI Chat] Tool-use loop failed:', error);
+    const job = aiChatJobs.get(jobId);
+    if (job) {
+      job.status = 'error';
+      job.error = error instanceof Error ? error.message : 'AI chat failed';
+      job.phase = 'Failed';
     }
+  });
+});
 
-    // Add the current prompt with context
-    let userContent = prompt;
-    if (messageIds?.length) {
-      userContent = `[Context: User has selected ${messageIds.length} email(s) with IDs: ${messageIds.join(', ')}]\n\n${prompt}`;
-    }
-    if (teamName) {
-      userContent = `[Context: Current team is "${teamName}"]\n\n${userContent}`;
-    }
-    messages.push({ role: 'user', content: userContent });
+// Background tool-use loop
+async function runToolUseLoop(
+  jobId: string,
+  prompt: string,
+  conversationHistory: Array<{ role: string; content: string }> | undefined,
+  messageIds: string[] | undefined,
+  teamName: string | undefined,
+) {
+  const job = aiChatJobs.get(jobId)!;
 
-    // Check if client wants SSE streaming
-    const wantsSSE = req.headers.accept?.includes('text/event-stream');
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
-    // Helper to send SSE event (only used when streaming)
-    const sendSSE = (event: Record<string, unknown>) => {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-    };
-
-    if (wantsSSE) {
-      // Set SSE headers and flush
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.flushHeaders();
-
-      sendSSE({ type: 'status', text: 'Thinking...' });
-    }
-
-    // Run Claude tool-use loop (max 10 iterations for complex chains)
-    let responseText: string | null = null;
-    let proposedActions: Array<{ id: string; label: string; description: string; status: string; toolName: string; toolInput: Record<string, unknown> }> = [];
-    let responseTable: { headers: string[]; rows: string[][] } | null = null;
-
-    for (let i = 0; i < 100; i++) {
-      if (wantsSSE && i > 0) {
-        sendSSE({ type: 'status', text: 'Thinking...' });
+  if (conversationHistory) {
+    const entries = conversationHistory.slice(-20);
+    for (const entry of entries) {
+      if (entry.role === 'user' || entry.role === 'assistant') {
+        messages.push({ role: entry.role, content: entry.content });
       }
-
-      const claudeResponse = await coreApiClaude.toolUse({
-        model: getCachedConfig().claude.models.default,
-        maxTokens: 4096,
-        systemPrompt: AI_CHAT_SYSTEM_PROMPT,
-        tools: AI_TOOLS,
-        toolChoice: { type: 'auto' },
-        messages,
-      });
-
-      // No tool call — Claude is done, use its text response
-      if (!claudeResponse.toolUse) {
-        responseText = claudeResponse.text;
-        break;
-      }
-
-      const { name: toolName, input: toolInput } = claudeResponse.toolUse as {
-        name: string;
-        input: Record<string, unknown>;
-        id: string;
-      };
-
-      // Write tools → return as proposed action, don't execute
-      if (WRITE_TOOLS.has(toolName)) {
-        const input = toolInput as Record<string, unknown>;
-        const description = (input.description as string) || `Execute ${toolName}`;
-        const previewCount = input.previewCount as number | undefined;
-
-        const label = getWriteToolLabel(toolName);
-
-        const actionId = randomUUID();
-        proposedActions.push({
-          id: actionId,
-          label,
-          description: previewCount
-            ? `${description} (${previewCount} existing emails match)`
-            : description,
-          status: 'proposed',
-          toolName,
-          toolInput,
-        });
-
-        // Use Claude's text if it provided one alongside the tool call, else generate a default
-        responseText = claudeResponse.text || `I'd like to ${description.toLowerCase()}. Please confirm to proceed.`;
-        break;
-      }
-
-      // Read-only tools → emit progress events, execute, then emit result summary
-      if (wantsSSE) {
-        sendSSE({ type: 'tool_start', tool: toolName, text: toolDisplayName(toolName) });
-      }
-
-      const toolResult = await executeReadOnlyTool(toolName, toolInput as Record<string, unknown>);
-
-      if (wantsSSE) {
-        sendSSE({ type: 'tool_done', tool: toolName, summary: toolResultSummary(toolName, toolResult.data) });
-      }
-
-      // Keep the last table from tool results for the client
-      if (toolResult.table) {
-        responseTable = toolResult.table;
-      }
-
-      // Build context for Claude: assistant called a tool, here's the result
-      const assistantText = claudeResponse.text
-        ? `${claudeResponse.text}\n[Called ${toolName}]`
-        : `[Called ${toolName}]`;
-      messages.push({ role: 'assistant', content: assistantText });
-      // Truncate tool result to prevent unbounded payloads in conversation context
-      const toolResultJson = JSON.stringify(toolResult.data);
-      const truncatedResult = toolResultJson.length > 8000
-        ? toolResultJson.slice(0, 8000) + '... (truncated)'
-        : toolResultJson;
-      messages.push({
-        role: 'user',
-        content: `[Tool result for ${toolName}]:\n${truncatedResult}`,
-      });
-    }
-
-    // If no response after loop, provide a context-aware fallback
-    if (!responseText && proposedActions.length === 0) {
-      if (responseTable && responseTable.rows.length > 0) {
-        responseText = `Found ${responseTable.rows.length} result(s). Let me know what you'd like to do with them.`;
-      } else {
-        responseText = 'I wasn\'t able to process that request. Could you rephrase it?';
-      }
-    }
-
-    if (wantsSSE) {
-      sendSSE({
-        type: 'done',
-        message: responseText || '',
-        table: responseTable,
-        actions: proposedActions.length > 0 ? proposedActions : null,
-      });
-      res.end();
-    } else {
-      res.json({
-        message: responseText || '',
-        table: responseTable,
-        actions: proposedActions.length > 0 ? proposedActions : null,
-      });
-    }
-  } catch (error) {
-    console.error('[Triage API] AI chat failed:', error);
-    if (req.headers.accept?.includes('text/event-stream') && res.headersSent) {
-      res.write(`data: ${JSON.stringify({ type: 'error', text: error instanceof Error ? error.message : 'AI chat failed' })}\n\n`);
-      res.end();
-    } else {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : 'AI chat failed',
-      });
     }
   }
-});
+
+  let userContent = prompt;
+  if (messageIds?.length) {
+    userContent = `[Context: User has selected ${messageIds.length} email(s) with IDs: ${messageIds.join(', ')}]\n\n${prompt}`;
+  }
+  if (teamName) {
+    userContent = `[Context: Current team is "${teamName}"]\n\n${userContent}`;
+  }
+  messages.push({ role: 'user', content: userContent });
+
+  let responseText: string | null = null;
+  let proposedActions: Array<{ id: string; label: string; description: string; status: string; toolName: string; toolInput: Record<string, unknown> }> = [];
+  let responseTable: { headers: string[]; rows: string[][] } | null = null;
+
+  for (let i = 0; i < 100; i++) {
+    job.phase = i === 0 ? 'Thinking...' : 'Thinking...';
+
+    const claudeResponse = await coreApiClaude.toolUse({
+      model: getCachedConfig().claude.models.default,
+      maxTokens: 4096,
+      systemPrompt: AI_CHAT_SYSTEM_PROMPT,
+      tools: AI_TOOLS,
+      toolChoice: { type: 'auto' },
+      messages,
+    });
+
+    if (!claudeResponse.toolUse) {
+      responseText = claudeResponse.text;
+      break;
+    }
+
+    const { name: toolName, input: toolInput } = claudeResponse.toolUse as {
+      name: string;
+      input: Record<string, unknown>;
+      id: string;
+    };
+
+    if (WRITE_TOOLS.has(toolName)) {
+      const input = toolInput as Record<string, unknown>;
+      const description = (input.description as string) || `Execute ${toolName}`;
+      const previewCount = input.previewCount as number | undefined;
+      const label = getWriteToolLabel(toolName);
+      const actionId = randomUUID();
+      proposedActions.push({
+        id: actionId, label,
+        description: previewCount ? `${description} (${previewCount} existing emails match)` : description,
+        status: 'proposed', toolName, toolInput,
+      });
+      responseText = claudeResponse.text || `I'd like to ${description.toLowerCase()}. Please confirm to proceed.`;
+      break;
+    }
+
+    // Read-only tool — update status, execute, update again
+    job.phase = toolDisplayName(toolName);
+
+    const toolResult = await executeReadOnlyTool(toolName, toolInput as Record<string, unknown>);
+
+    job.phase = `✓ ${toolResultSummary(toolName, toolResult.data)}`;
+
+    if (toolResult.table) responseTable = toolResult.table;
+
+    const assistantText = claudeResponse.text
+      ? `${claudeResponse.text}\n[Called ${toolName}]`
+      : `[Called ${toolName}]`;
+    messages.push({ role: 'assistant', content: assistantText });
+    const toolResultJson = JSON.stringify(toolResult.data);
+    const truncatedResult = toolResultJson.length > 8000
+      ? toolResultJson.slice(0, 8000) + '... (truncated)'
+      : toolResultJson;
+    messages.push({ role: 'user', content: `[Tool result for ${toolName}]:\n${truncatedResult}` });
+  }
+
+  if (!responseText && proposedActions.length === 0) {
+    if (responseTable && responseTable.rows.length > 0) {
+      responseText = `Found ${responseTable.rows.length} result(s). Let me know what you'd like to do with them.`;
+    } else {
+      responseText = 'I wasn\'t able to process that request. Could you rephrase it?';
+    }
+  }
+
+  job.status = 'done';
+  job.phase = 'Done';
+  job.result = {
+    message: responseText || '',
+    table: responseTable,
+    actions: proposedActions.length > 0 ? proposedActions : null,
+  };
+}
+
+// Background sheet creation with progress updates
+async function executeSheetCreation(jobId: string, toolInput: Record<string, unknown>) {
+  const job = aiChatJobs.get(jobId)!;
+  const title = toolInput.title as string;
+  const messageIds = toolInput.messageIds as string[];
+  const columns = toolInput.columns as string[];
+  const extractionPrompt = toolInput.extractionPrompt as string;
+
+  // Step 1: Fetch all emails in parallel
+  job.phase = `Fetching ${messageIds.length} emails...`;
+  const emailBodies: Array<{ id: string; headers: Record<string, string>; body: string }> = [];
+
+  const fetchResults = await Promise.all(
+    messageIds.map(async (id) => {
+      try {
+        const msg = await coreApiGoogle.gmail.getMessage(id, 'full');
+        return { success: true as const, id, msg };
+      } catch (e) {
+        console.error(`[AI Sheet] Failed to fetch ${id}:`, e);
+        return { success: false as const, id };
+      }
+    })
+  );
+
+  for (const result of fetchResults) {
+    if (!result.success) continue;
+    const msg = result.msg as any;
+    const msgHeaders = msg.payload?.headers ?? [];
+    const headerMap: Record<string, string> = {};
+    for (const h of msgHeaders) {
+      headerMap[h.name?.toLowerCase() || ''] = h.value || '';
+    }
+
+    // Extract body text
+    const extractBody = (part: any): string => {
+      if (!part) return '';
+      if (part.mimeType === 'text/plain' && part.body?.data) {
+        return Buffer.from(part.body.data, 'base64').toString('utf-8');
+      }
+      if (part.parts) {
+        for (const p of part.parts) {
+          const text = extractBody(p);
+          if (text) return text;
+        }
+      }
+      if (part.mimeType === 'text/html' && part.body?.data) {
+        return Buffer.from(part.body.data, 'base64').toString('utf-8');
+      }
+      return '';
+    };
+
+    emailBodies.push({
+      id: result.id,
+      headers: headerMap,
+      body: extractBody(msg.payload).slice(0, 6000),
+    });
+  }
+
+  job.phase = `Extracting data from ${emailBodies.length} emails...`;
+
+  // Step 2: Single Claude call to extract all data
+  const emailSummaries = emailBodies.map((e, i) =>
+    `--- EMAIL ${i + 1} ---\nFrom: ${e.headers['from'] || ''}\nTo: ${e.headers['to'] || ''}\nX-Forwarded-For: ${e.headers['x-forwarded-for'] || ''}\nDelivered-To: ${e.headers['delivered-to'] || ''}\nSubject: ${e.headers['subject'] || ''}\n\nBody:\n${e.body}`
+  ).join('\n\n');
+
+  const extractionSystemPrompt = `You are a data extraction assistant. Extract structured data from email bodies and return ONLY valid JSON — no markdown, no code fences, no explanation.`;
+
+  const extractionUserPrompt = `Extract data from these ${emailBodies.length} emails.
+
+COLUMNS: ${columns.join(', ')}
+
+EXTRACTION INSTRUCTIONS:
+${extractionPrompt}
+
+Return a JSON array of objects. Each object has keys matching the column names exactly. If an email produces multiple rows (e.g., multiple seat packs), output multiple objects for that email.
+
+EMAILS:
+${emailSummaries}`;
+
+  const extractionResponse = await coreApiClaude.toolUse({
+    model: getCachedConfig().claude.models.default,
+    maxTokens: 8192,
+    systemPrompt: extractionSystemPrompt,
+    tools: [],
+    toolChoice: { type: 'auto' },
+    messages: [{ role: 'user', content: extractionUserPrompt }],
+  });
+
+  job.phase = 'Creating Google Sheet...';
+
+  // Parse the JSON response
+  let extractedRows: Record<string, string>[] = [];
+  try {
+    const text = extractionResponse.text || '';
+    // Try to find JSON array in the response (handle markdown code fences)
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      extractedRows = JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    console.error('[AI Sheet] Failed to parse extraction response:', e);
+    throw new Error('Failed to parse extracted data from emails');
+  }
+
+  // Step 3: Create Google Sheet
+  const headers = columns;
+  const rows = extractedRows.map(row => headers.map(h => String(row[h] ?? '')));
+
+  const sheetResult = await createCustomSheet(title, headers, rows);
+
+  job.status = 'done';
+  job.phase = 'Done';
+  job.result = {
+    message: `Google Sheet created with ${rows.length} rows.\n\n${sheetResult.spreadsheetUrl}`,
+    table: rows.length <= 50 ? { headers, rows } : null,
+    actions: null,
+  };
+}
 
 // Map tool names to user-friendly display text for SSE progress
 function toolDisplayName(tool: string): string {
@@ -1314,7 +1443,7 @@ function getWriteToolLabel(toolName: string): string {
     case 'create_task': return 'Create Task';
     case 'share_to_slack': return 'Share to Slack';
     case 'correct_classification': return 'Correct Classification';
-    case 'extract_and_create_sheet': return 'Create Google Sheet';
+    case 'create_sheet_from_emails': return 'Create Google Sheet';
     default: return 'Execute Action';
   }
 }
@@ -1671,84 +1800,7 @@ async function executeWriteAction(
       };
     }
 
-    case 'extract_and_create_sheet': {
-      const title = toolInput.title as string;
-      const messageIds = toolInput.messageIds as string[];
-      const columns = toolInput.columns as Array<{ header: string; source: string; pattern?: string }>;
-
-      // Fetch all emails in parallel (concurrency=5)
-      const fetchResults = await Promise.all(
-        messageIds.map(async (id) => {
-          try {
-            const msg = await coreApiGoogle.gmail.getMessage(id, 'full');
-            return { success: true as const, msg };
-          } catch (e) {
-            console.error(`[AI Sheet] Failed to fetch ${id}:`, e);
-            return { success: false as const, id };
-          }
-        })
-      );
-
-      const headers = columns.map(c => c.header);
-      const rows: string[][] = [];
-
-      for (const result of fetchResults) {
-        if (!result.success) continue;
-        const msg = result.msg as any;
-        const msgHeaders = msg.payload?.headers ?? [];
-        const getHeader = (name: string) => {
-          const h = msgHeaders.find((h: any) => h.name?.toLowerCase() === name.toLowerCase());
-          return h?.value || '';
-        };
-
-        // Extract body text
-        let bodyText = '';
-        const extractBody = (part: any): string => {
-          if (!part) return '';
-          if (part.mimeType === 'text/plain' && part.body?.data) {
-            return Buffer.from(part.body.data, 'base64').toString('utf-8');
-          }
-          if (part.parts) {
-            for (const p of part.parts) {
-              const text = extractBody(p);
-              if (text) return text;
-            }
-          }
-          // Fallback to HTML if no plain text
-          if (part.mimeType === 'text/html' && part.body?.data) {
-            const html = Buffer.from(part.body.data, 'base64').toString('utf-8');
-            return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-          }
-          return '';
-        };
-        bodyText = extractBody(msg.payload);
-
-        // Extract each column value
-        const row: string[] = [];
-        for (const col of columns) {
-          if (col.source === 'body' && col.pattern) {
-            try {
-              const match = bodyText.match(new RegExp(col.pattern, 'i'));
-              row.push(match?.[1]?.trim() || '');
-            } catch {
-              row.push('');
-            }
-          } else if (col.source.startsWith('header:')) {
-            const headerName = col.source.slice(7);
-            row.push(getHeader(headerName));
-          } else {
-            row.push('');
-          }
-        }
-        rows.push(row);
-      }
-
-      const sheetResult = await createCustomSheet(title, headers, rows);
-      return {
-        message: `Google Sheet created: "${sheetResult.title}" with ${rows.length} rows.\n\n${sheetResult.spreadsheetUrl}`,
-        table: { headers, rows },
-      };
-    }
+    // create_sheet_from_emails is handled via job-based polling, not here
 
     default:
       return { message: `Unknown action: ${toolName}` };
