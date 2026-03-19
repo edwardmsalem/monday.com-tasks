@@ -1218,17 +1218,16 @@ async function executeReadOnlyTool(
         headers: ['Subject', 'From', 'Date', 'ID'],
         rows: messages.map((m: any) => [m.subject || '', m.from || '', m.date || '', m.id || '']),
       };
-      // Return compact summary for Claude context (full data is too large for many results)
-      const summary = messages.map((m: any) => ({
-        id: m.id, subject: m.subject, from: m.from, date: m.date,
-      }));
+      // Return compact summary — just id/subject/from/date per message
+      // Claude uses messageIds for bulk ops, doesn't need to read each one
       return {
         data: {
           totalCount: result.totalCount || messages.length,
           count: messages.length,
           messageIds: messages.map((m: any) => m.id),
-          messages: summary.slice(0, 10), // Only first 10 for Claude context
-          ...(messages.length > 10 ? { note: `Showing 10 of ${messages.length} results. All ${messages.length} messageIds are included above.` } : {}),
+          messages: messages.map((m: any) => ({
+            id: m.id, subject: m.subject, from: m.from, date: m.date,
+          })),
         },
         table,
       };
