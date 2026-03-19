@@ -1084,7 +1084,7 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
     let proposedActions: Array<{ id: string; label: string; description: string; status: string; toolName: string; toolInput: Record<string, unknown> }> = [];
     let responseTable: { headers: string[]; rows: string[][] } | null = null;
 
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 100; i++) {
       if (wantsSSE && i > 0) {
         sendSSE({ type: 'status', text: 'Thinking...' });
       }
