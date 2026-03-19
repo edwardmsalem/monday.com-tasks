@@ -725,6 +725,12 @@ RULES:
 - Use tables for lists of 3+ items. Include sender, subject, date.
 - Be concise and business-focused. This is a ticket brokerage — emails are about season tickets, transfers, orders, gameday, and newsletters.
 
+EFFICIENCY:
+- You have up to 30 tool calls. Use them wisely.
+- When you need details from many emails, call get_email_detail on each one — don't skip emails.
+- When the user asks for a "sheet" or "spreadsheet" or "table", return the data as a table in your response. You don't need a special tool for this — just format the columns as requested.
+- Always produce a final text response. If you extracted data, summarize it and include a table.
+
 TRIAGE PATTERNS:
 - "What needs my attention?" → search unread, summarize by urgency/team
 - "Catch me up on [team]" → search by team + recent dates, summarize threads
@@ -733,6 +739,7 @@ TRIAGE PATTERNS:
 - "Analyze the attachment" → get_attachment_content, summarize findings
 - "Create a task" → propose create_task with extracted details
 - "Share to Slack" → propose share_to_slack with channel and context
+- "Make a sheet/table from emails" → get_email_detail for each, extract requested fields, return as table
 
 CONTEXT:
 - When messageIds are provided, those emails are the user's focus
@@ -1054,12 +1061,34 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
     }
     messages.push({ role: 'user', content: userContent });
 
+    // Check if client wants SSE streaming
+    const wantsSSE = req.headers.accept?.includes('text/event-stream');
+
+    // Helper to send SSE event (only used when streaming)
+    const sendSSE = (event: Record<string, unknown>) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    if (wantsSSE) {
+      // Set SSE headers and flush
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+
+      sendSSE({ type: 'status', text: 'Thinking...' });
+    }
+
     // Run Claude tool-use loop (max 10 iterations for complex chains)
     let responseText: string | null = null;
     let proposedActions: Array<{ id: string; label: string; description: string; status: string; toolName: string; toolInput: Record<string, unknown> }> = [];
     let responseTable: { headers: string[]; rows: string[][] } | null = null;
 
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 30; i++) {
+      if (wantsSSE && i > 0) {
+        sendSSE({ type: 'status', text: 'Thinking...' });
+      }
+
       const claudeResponse = await coreApiClaude.toolUse({
         model: getCachedConfig().claude.models.default,
         maxTokens: 4096,
@@ -1106,8 +1135,16 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
         break;
       }
 
-      // Read-only tools → execute immediately and feed result back to Claude
+      // Read-only tools → emit progress events, execute, then emit result summary
+      if (wantsSSE) {
+        sendSSE({ type: 'tool_start', tool: toolName, text: toolDisplayName(toolName) });
+      }
+
       const toolResult = await executeReadOnlyTool(toolName, toolInput as Record<string, unknown>);
+
+      if (wantsSSE) {
+        sendSSE({ type: 'tool_done', tool: toolName, summary: toolResultSummary(toolName, toolResult.data) });
+      }
 
       // Keep the last table from tool results for the client
       if (toolResult.table) {
@@ -1139,18 +1176,78 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
       }
     }
 
-    res.json({
-      message: responseText || '',
-      table: responseTable,
-      actions: proposedActions.length > 0 ? proposedActions : null,
-    });
+    if (wantsSSE) {
+      sendSSE({
+        type: 'done',
+        message: responseText || '',
+        table: responseTable,
+        actions: proposedActions.length > 0 ? proposedActions : null,
+      });
+      res.end();
+    } else {
+      res.json({
+        message: responseText || '',
+        table: responseTable,
+        actions: proposedActions.length > 0 ? proposedActions : null,
+      });
+    }
   } catch (error) {
     console.error('[Triage API] AI chat failed:', error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'AI chat failed',
-    });
+    if (req.headers.accept?.includes('text/event-stream') && res.headersSent) {
+      res.write(`data: ${JSON.stringify({ type: 'error', text: error instanceof Error ? error.message : 'AI chat failed' })}\n\n`);
+      res.end();
+    } else {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'AI chat failed',
+      });
+    }
   }
 });
+
+// Map tool names to user-friendly display text for SSE progress
+function toolDisplayName(tool: string): string {
+  switch (tool) {
+    case 'search_emails': return 'Searching Gmail...';
+    case 'get_email_detail': return 'Reading email...';
+    case 'get_attachment_content': return 'Analyzing attachment...';
+    case 'list_gmail_filters': return 'Loading filters...';
+    case 'preview_filter': return 'Previewing filter matches...';
+    case 'get_inbox_summary': return 'Scanning inbox...';
+    case 'get_classification': return 'Checking classification...';
+    default: return `Running ${tool}...`;
+  }
+}
+
+// Generate a brief summary from a tool result
+function toolResultSummary(tool: string, data: unknown): string {
+  if (!data || typeof data !== 'object') return 'Done';
+  const d = data as Record<string, unknown>;
+
+  switch (tool) {
+    case 'search_emails': {
+      const messages = d.messages as unknown[] | undefined;
+      const count = messages?.length ?? d.totalResults ?? 0;
+      return `Found ${count} email${count === 1 ? '' : 's'}`;
+    }
+    case 'get_email_detail':
+      return `Loaded: ${(d.subject as string)?.slice(0, 50) || 'email'}`;
+    case 'list_gmail_filters': {
+      const filters = d.filters as unknown[] | undefined;
+      const count = filters?.length ?? 0;
+      return `Loaded ${count} filter${count === 1 ? '' : 's'}`;
+    }
+    case 'preview_filter':
+      return `${d.matchCount ?? 0} emails match`;
+    case 'get_inbox_summary':
+      return `Inbox summarized`;
+    case 'get_attachment_content':
+      return 'Attachment analyzed';
+    case 'get_classification':
+      return `Classification: ${d.classification || 'loaded'}`;
+    default:
+      return 'Done';
+  }
+}
 
 // Map tool names to human-readable action labels
 function getWriteToolLabel(toolName: string): string {
