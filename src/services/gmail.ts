@@ -322,14 +322,24 @@ export async function findRelatedRecipients(
       let recipientEmails: string[] = [];
 
       // Try X-Forwarded-For header (Gmail auto-forward includes original recipient here)
-      const xForwardedFor = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'x-forwarded-for');
-      if (xForwardedFor?.value) {
-        // Format: "original@email.com forwarding@inbox.com" - we want the first one
-        const parts = xForwardedFor.value.split(/\s+/);
-        if (parts.length > 0 && parts[0].includes('@')) {
-          recipientEmails.push(parts[0]);
-          console.log(`[Gmail] Found recipient from X-Forwarded-For: ${parts[0]}`);
+      // For multi-hop forwarding (e.g. original → ticketassociates → salemseats),
+      // the outermost X-Forwarded-For contains the intermediate forwarder, not the
+      // original recipient.  Walk ALL X-Forwarded-For headers (outermost first) and
+      // collect every email that isn't our forwarding inbox or an excluded domain.
+      const xffHeaders = headers.filter((h: GmailHeader) => h.name?.toLowerCase() === 'x-forwarded-for' || h.name?.toLowerCase() === 'x-x-forwarded-for');
+      for (const xff of xffHeaders) {
+        if (!xff.value) continue;
+        const parts = xff.value.split(/\s+/);
+        for (const part of parts) {
+          if (!part.includes('@')) continue;
+          const email = part.trim().toLowerCase();
+          if (email === config.google.forwardingEmail?.toLowerCase()) continue;
+          if (shouldExcludeRecipient(email)) continue;
+          recipientEmails.push(email);
+          console.log(`[Gmail] Found recipient from ${xff.name}: ${email}`);
+          break; // take the first valid one from this header
         }
+        if (recipientEmails.length > 0) break;
       }
 
       // Try Delivered-To headers (there can be multiple - find one that's not the forwarding inbox)
