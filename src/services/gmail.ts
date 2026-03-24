@@ -119,6 +119,7 @@ const EXCLUDED_RECIPIENT_DOMAINS = [
   'make.com',
   'salemseats.com',
   'slack.com',
+  'ticketassociates.com',
 ];
 
 /**
