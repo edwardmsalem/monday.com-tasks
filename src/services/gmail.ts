@@ -99,6 +99,8 @@ export function normalizeSubject(subject: string): string {
   return subject
     .replace(/^(fwd?|re|fw):\s*/gi, '') // Remove FWD:, Fwd:, RE:, Re:, FW:, Fw:
     .replace(/^(fwd?|re|fw):\s*/gi, '') // Do it twice for "RE: FWD:" cases
+    .replace(/[|{}()"\\]/g, ' ')         // Remove Gmail search operators that break queries
+    .replace(/\s+/g, ' ')               // Collapse whitespace
     .trim();
 }
 
