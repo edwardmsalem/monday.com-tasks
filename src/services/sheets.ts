@@ -465,6 +465,44 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
 
   }
 
+  // Handle link field: if all recipients share the same link, put it once in row 1's
+  // leftmost blank cell. If links differ, add a "Link" column per recipient.
+  const recipientLinks = recipients.map(r => r.link).filter((l): l is string => !!l && l.length > 0);
+  if (recipientLinks.length > 0) {
+    const allSame = recipientLinks.every(l => l === recipientLinks[0]);
+    if (allSame) {
+      // Put shared link in row 1's first empty cell
+      if (dataRows.length > 0) {
+        const row = dataRows[0];
+        let placed = false;
+        for (let i = 0; i < row.length; i++) {
+          if (!row[i] || String(row[i]).trim() === '') {
+            row[i] = recipientLinks[0];
+            placed = true;
+            console.log(`[Sheets] Placed shared link in row 1, column ${i} (${headerRow[i] || 'extra'})`);
+            break;
+          }
+        }
+        if (!placed) {
+          // No blank cell found — append to row 1
+          row.push(recipientLinks[0]);
+          console.log(`[Sheets] Appended shared link to end of row 1`);
+        }
+      }
+    } else {
+      // Different links per recipient — add a Link column
+      headerRow.push('Link');
+      columnCount = headerRow.length;
+      const emailColIdx = headerRow.indexOf('Email');
+      for (const row of dataRows) {
+        const rowEmail = String(row[emailColIdx]).toLowerCase();
+        const recipient = recipients.find(r => r.email.toLowerCase() === rowEmail);
+        row.push(recipient?.link || '');
+      }
+      console.log(`[Sheets] Added Link column (${recipientLinks.length} unique links)`);
+    }
+  }
+
   // Build "No Appointment" section: accounts from the team sheet that weren't scanned
   // Include only accounts whose status is NOT "Not Active", "Revoked", or "Deposit"
   const excludedStatuses = ['not active', 'revoked', 'deposit'];

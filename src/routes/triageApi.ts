@@ -379,7 +379,7 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId } = req.body as {
+  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks } = req.body as {
     messageId?: string;
     messageIds?: string[];
     teamName?: string;
@@ -388,6 +388,8 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     skipCalendar?: boolean;
     eventName?: string;
     sheetId?: string;
+    extractCodes?: boolean;
+    extractLinks?: boolean;
   };
 
   // Support both single messageId and array messageIds
@@ -462,7 +464,10 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     // 2. Detect content type from primary subject
     const contentType = detectContentType(primarySubject);
-    const extractCodesAndLinks = /password|code|login\s*(link|url)/i.test(instructions ?? '');
+    // Explicit client flags OR'd with legacy instruction-text regex for backward compat
+    const wantsCodes = clientExtractCodes === true || /password|code/i.test(instructions ?? '');
+    const wantsLinks = clientExtractLinks === true || /login\s*(link|url)/i.test(instructions ?? '');
+    const extractCodesAndLinks = wantsCodes || wantsLinks;
 
     // 3. Find related recipients across ALL subjects, dedup by email+time
     const recipientMap = new Map<string, import('../services/gmail.js').RecipientWithAppointment>();
@@ -565,7 +570,8 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       appointmentDate: r.appointmentDate,
       appointmentTime: r.appointmentTime,
       rawDateTime: r.rawDateTime ?? null,
-      code: r.code,
+      code: wantsCodes ? r.code : null,
+      link: wantsLinks ? (r.link ?? null) : null,
       custom: r.custom,
     }));
 
