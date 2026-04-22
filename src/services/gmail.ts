@@ -344,6 +344,23 @@ export async function findRelatedRecipients(
         if (recipientEmails.length > 0) break;
       }
 
+      // Try Resent-From header (Outlook/Exchange auto-forward — the person who resent
+      // the message is the original recipient). Standard RFC header for resent mail.
+      if (recipientEmails.length === 0) {
+        const resentFromHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'resent-from');
+        if (resentFromHeader?.value) {
+          const resentEmails = extractEmailAddresses(resentFromHeader.value);
+          for (const raw of resentEmails) {
+            const email = raw.toLowerCase();
+            if (email === config.google.forwardingEmail?.toLowerCase()) continue;
+            if (shouldExcludeRecipient(email)) continue;
+            recipientEmails.push(email);
+            console.log(`[Gmail] Found recipient from Resent-From: ${email}`);
+            break;
+          }
+        }
+      }
+
       // Try Delivered-To headers (there can be multiple - find one that's not the forwarding inbox)
       if (recipientEmails.length === 0) {
         const deliveredToHeaders = headers.filter((h: GmailHeader) => h.name?.toLowerCase() === 'delivered-to');
