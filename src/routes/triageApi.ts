@@ -408,6 +408,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     // 1. Fetch subjects and metadata for all messages
     const sportPrefixes = ['NBA', 'MLB', 'NFL', 'NHL', 'WNBA', 'MLS', 'NCAA'];
     let teamName = clientTeamName;
+    let sportFromLabel: import('../services/sheets.js').Sport | undefined;
     const subjects: string[] = [];
     let allLabels: any[] | null = null;
 
@@ -416,8 +417,9 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       const subject = getHeader(msg.payload?.headers ?? [], 'subject') ?? '';
       subjects.push(subject);
 
-      // Resolve team from first message's labels if not provided by client
-      if (!teamName && msg.labelIds?.length) {
+      // Resolve sport prefix from labels (always check, even when client provides teamName —
+      // we need the sport to route NCAA teams correctly since TEAM_SPORT_MAP lacks them).
+      if (!sportFromLabel && msg.labelIds?.length) {
         try {
           if (!allLabels) allLabels = await coreApiGoogle.gmail.listLabels();
           const labelMap = new Map(allLabels!.map((l: any) => [l.id, l.name]));
@@ -428,8 +430,12 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
               if (slashIdx > 0) {
                 const prefix = labelName.substring(0, slashIdx);
                 if (sportPrefixes.includes(prefix)) {
-                  teamName = labelName.substring(slashIdx + 1);
-                  console.log(`[Triage Scan] Resolved team from label: "${teamName}"`);
+                  sportFromLabel = prefix.toLowerCase() as import('../services/sheets.js').Sport;
+                  if (!teamName) {
+                    teamName = labelName.substring(slashIdx + 1);
+                    console.log(`[Triage Scan] Resolved team from label: "${teamName}"`);
+                  }
+                  console.log(`[Triage Scan] Resolved sport from label: "${sportFromLabel}"`);
                   break;
                 }
               }
@@ -513,7 +519,8 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
         const lookupResult = await batchLookupAccountsForScan(
           teamForLookup,
           enrichedRecipients.map(r => r.email),
-          clientSheetId
+          clientSheetId,
+          sportFromLabel
         );
         accountInfo = lookupResult.matched;
         allAccounts = lookupResult.allAccounts;

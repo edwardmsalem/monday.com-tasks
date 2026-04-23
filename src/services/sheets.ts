@@ -859,6 +859,112 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'columbus crew': 'mls', 'crew': 'mls',
   'chicago fire': 'mls', 'fire': 'mls',
   'st louis city': 'mls', 'stl city': 'mls',
+
+  // NCAA D1 (FBS football + major basketball)
+  // Full "school mascot" entries ensure exact-match precedence over pro team collisions
+  // (e.g. "auburn tigers" → ncaa, not "tigers" → mlb Detroit Tigers).
+
+  // SEC
+  'alabama crimson tide': 'ncaa', 'alabama': 'ncaa', 'crimson tide': 'ncaa',
+  'arkansas razorbacks': 'ncaa', 'arkansas': 'ncaa', 'razorbacks': 'ncaa',
+  'auburn tigers': 'ncaa', 'auburn': 'ncaa',
+  'florida gators': 'ncaa', 'gators': 'ncaa',
+  'georgia bulldogs': 'ncaa', 'uga': 'ncaa',
+  'kentucky wildcats': 'ncaa', 'kentucky': 'ncaa',
+  'lsu tigers': 'ncaa', 'lsu': 'ncaa',
+  'mississippi state bulldogs': 'ncaa', 'mississippi state': 'ncaa',
+  'ole miss rebels': 'ncaa', 'ole miss': 'ncaa',
+  'missouri tigers': 'ncaa', 'mizzou': 'ncaa',
+  'oklahoma sooners': 'ncaa', 'oklahoma': 'ncaa', 'sooners': 'ncaa',
+  'south carolina gamecocks': 'ncaa', 'gamecocks': 'ncaa',
+  'tennessee volunteers': 'ncaa', 'tennessee': 'ncaa', 'vols': 'ncaa',
+  'texas longhorns': 'ncaa', 'longhorns': 'ncaa',
+  'texas a&m aggies': 'ncaa', 'texas a&m': 'ncaa', 'aggies': 'ncaa',
+  'vanderbilt commodores': 'ncaa', 'vanderbilt': 'ncaa', 'commodores': 'ncaa',
+
+  // Big Ten
+  'illinois fighting illini': 'ncaa', 'fighting illini': 'ncaa', 'illinois': 'ncaa',
+  'indiana hoosiers': 'ncaa', 'hoosiers': 'ncaa',
+  'iowa hawkeyes': 'ncaa', 'hawkeyes': 'ncaa',
+  'maryland terrapins': 'ncaa', 'terrapins': 'ncaa', 'terps': 'ncaa',
+  'michigan wolverines': 'ncaa', 'wolverines': 'ncaa',
+  'michigan state spartans': 'ncaa', 'michigan state': 'ncaa', 'spartans': 'ncaa',
+  'minnesota golden gophers': 'ncaa', 'golden gophers': 'ncaa', 'gophers': 'ncaa',
+  'nebraska cornhuskers': 'ncaa', 'nebraska': 'ncaa', 'cornhuskers': 'ncaa', 'huskers': 'ncaa',
+  'northwestern wildcats': 'ncaa', 'northwestern': 'ncaa',
+  'ohio state buckeyes': 'ncaa', 'ohio state': 'ncaa', 'buckeyes': 'ncaa',
+  'oregon ducks': 'ncaa',  // "ducks" alone already maps to NHL (Anaheim Ducks)
+  'penn state nittany lions': 'ncaa', 'penn state': 'ncaa', 'nittany lions': 'ncaa',
+  'purdue boilermakers': 'ncaa', 'purdue': 'ncaa', 'boilermakers': 'ncaa',
+  'rutgers scarlet knights': 'ncaa', 'rutgers': 'ncaa', 'scarlet knights': 'ncaa',
+  'ucla bruins': 'ncaa', 'ucla': 'ncaa',  // "bruins" alone maps to NHL (Boston Bruins)
+  'usc trojans': 'ncaa', 'usc': 'ncaa', 'trojans': 'ncaa',
+  'washington huskies': 'ncaa',  // "huskies" ambiguous with UConn
+  'wisconsin badgers': 'ncaa', 'wisconsin': 'ncaa', 'badgers': 'ncaa',
+
+  // ACC
+  'boston college eagles': 'ncaa', 'boston college': 'ncaa',  // "eagles" alone maps NFL (Philadelphia)
+  'cal golden bears': 'ncaa', 'california golden bears': 'ncaa', 'cal bears': 'ncaa',
+  'clemson tigers': 'ncaa', 'clemson': 'ncaa',
+  'duke blue devils': 'ncaa', 'duke': 'ncaa', 'blue devils': 'ncaa',
+  'florida state seminoles': 'ncaa', 'florida state': 'ncaa', 'seminoles': 'ncaa', 'fsu': 'ncaa',
+  'georgia tech yellow jackets': 'ncaa', 'georgia tech': 'ncaa', 'yellow jackets': 'ncaa',
+  'louisville cardinals': 'ncaa', 'louisville': 'ncaa',  // "cardinals" ambiguous
+  'miami hurricanes': 'ncaa',  // "hurricanes" alone maps NHL (Carolina)
+  'nc state wolfpack': 'ncaa', 'nc state': 'ncaa', 'wolfpack': 'ncaa',
+  'north carolina tar heels': 'ncaa', 'tar heels': 'ncaa', 'unc': 'ncaa',
+  'notre dame fighting irish': 'ncaa', 'notre dame': 'ncaa', 'fighting irish': 'ncaa',
+  'pittsburgh panthers': 'ncaa', 'pitt': 'ncaa',  // "panthers" ambiguous
+  'smu mustangs': 'ncaa', 'smu': 'ncaa', 'mustangs': 'ncaa',
+  'stanford cardinal': 'ncaa', 'stanford': 'ncaa',  // note: singular "Cardinal"
+  'syracuse orange': 'ncaa', 'syracuse': 'ncaa',
+  'virginia cavaliers': 'ncaa', 'virginia': 'ncaa', 'uva': 'ncaa',  // "cavaliers" maps NBA (Cleveland)
+  'virginia tech hokies': 'ncaa', 'virginia tech': 'ncaa', 'hokies': 'ncaa',
+  'wake forest demon deacons': 'ncaa', 'wake forest': 'ncaa', 'demon deacons': 'ncaa',
+
+  // Big 12
+  'arizona wildcats': 'ncaa',  // "wildcats" alone ambiguous
+  'arizona state sun devils': 'ncaa', 'arizona state': 'ncaa', 'sun devils': 'ncaa',
+  'baylor bears': 'ncaa', 'baylor': 'ncaa',  // "bears" alone maps NFL (Chicago)
+  'byu cougars': 'ncaa', 'byu': 'ncaa', 'brigham young': 'ncaa',
+  'cincinnati bearcats': 'ncaa', 'bearcats': 'ncaa',
+  'colorado buffaloes': 'ncaa', 'buffaloes': 'ncaa', 'buffs': 'ncaa',
+  'houston cougars': 'ncaa',  // "cougars" ambiguous (BYU, Washington State)
+  'iowa state cyclones': 'ncaa', 'iowa state': 'ncaa', 'cyclones': 'ncaa',
+  'kansas jayhawks': 'ncaa', 'jayhawks': 'ncaa', 'ku': 'ncaa',
+  'kansas state wildcats': 'ncaa', 'kansas state': 'ncaa', 'k-state': 'ncaa',
+  'oklahoma state cowboys': 'ncaa', 'oklahoma state': 'ncaa', 'ok state': 'ncaa',  // "cowboys" maps NFL (Dallas)
+  'tcu horned frogs': 'ncaa', 'tcu': 'ncaa', 'horned frogs': 'ncaa',
+  'texas tech red raiders': 'ncaa', 'texas tech': 'ncaa', 'red raiders': 'ncaa',
+  'ucf knights': 'ncaa', 'ucf': 'ncaa',
+  'utah utes': 'ncaa', 'utah': 'ncaa', 'utes': 'ncaa',
+  'west virginia mountaineers': 'ncaa', 'west virginia': 'ncaa', 'mountaineers': 'ncaa', 'wvu': 'ncaa',
+
+  // Other notable FBS
+  'boise state broncos': 'ncaa', 'boise state': 'ncaa',  // "broncos" maps NFL (Denver)
+  'memphis tigers': 'ncaa', 'memphis': 'ncaa',
+  'tulane green wave': 'ncaa', 'tulane': 'ncaa', 'green wave': 'ncaa',
+  'navy midshipmen': 'ncaa', 'navy': 'ncaa', 'midshipmen': 'ncaa',
+  'army black knights': 'ncaa', 'army': 'ncaa', 'black knights': 'ncaa',
+  'air force falcons': 'ncaa', 'air force': 'ncaa',  // "falcons" maps NFL (Atlanta)
+  'washington state cougars': 'ncaa', 'washington state': 'ncaa', 'wsu': 'ncaa',
+  'oregon state beavers': 'ncaa', 'oregon state': 'ncaa', 'beavers': 'ncaa',
+  'fresno state bulldogs': 'ncaa', 'fresno state': 'ncaa',
+  'san diego state aztecs': 'ncaa', 'san diego state': 'ncaa', 'aztecs': 'ncaa', 'sdsu': 'ncaa',
+
+  // Basketball-focused (Big East, A-10, WCC, etc.)
+  'gonzaga bulldogs': 'ncaa', 'gonzaga': 'ncaa', 'zags': 'ncaa',
+  'marquette golden eagles': 'ncaa', 'marquette': 'ncaa',  // "golden eagles" used elsewhere
+  'creighton bluejays': 'ncaa', 'creighton': 'ncaa', 'bluejays': 'ncaa',
+  'st johns red storm': 'ncaa', "st john's": 'ncaa', 'red storm': 'ncaa',
+  'xavier musketeers': 'ncaa', 'xavier': 'ncaa', 'musketeers': 'ncaa',
+  'villanova wildcats': 'ncaa', 'villanova': 'ncaa',
+  'georgetown hoyas': 'ncaa', 'georgetown': 'ncaa', 'hoyas': 'ncaa',
+  'uconn huskies': 'ncaa', 'uconn': 'ncaa', 'connecticut huskies': 'ncaa',
+  'providence friars': 'ncaa', 'providence': 'ncaa', 'friars': 'ncaa',
+  'seton hall pirates': 'ncaa', 'seton hall': 'ncaa',  // "pirates" maps MLB (Pittsburgh)
+  'butler bulldogs': 'ncaa', 'butler': 'ncaa',
+  'dayton flyers': 'ncaa', 'dayton': 'ncaa',  // bare "flyers" reserved for NHL (Philadelphia)
 };
 
 /**
@@ -1253,17 +1359,18 @@ export interface ScanAccountLookupResult {
 export async function batchLookupAccountsForScan(
   teamName: string,
   emails: string[],
-  spreadsheetIdOverride?: string
+  spreadsheetIdOverride?: string,
+  sportOverride?: Sport
 ): Promise<ScanAccountLookupResult> {
   const matched = new Map<string, ScanAccountInfo>();
   const allAccounts = new Map<string, ScanAccountInfo>();
 
-  console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)${spreadsheetIdOverride ? `, sheetId override: ${spreadsheetIdOverride.substring(0, 10)}...` : ''}...`);
+  console.log(`[Sheets] Batch account lookup for "${teamName}" (${emails.length} emails)${spreadsheetIdOverride ? `, sheetId override: ${spreadsheetIdOverride.substring(0, 10)}...` : ''}${sportOverride ? `, sport override: ${sportOverride}` : ''}...`);
 
   // Fetch all accounts for this team (one API call)
   let teamResult: AccountLookupResult;
   try {
-    teamResult = await lookupTeamAccounts(teamName, undefined, spreadsheetIdOverride);
+    teamResult = await lookupTeamAccounts(teamName, sportOverride, spreadsheetIdOverride);
   } catch (error) {
     console.error(`[Sheets] Failed to lookup team accounts for "${teamName}":`, error instanceof Error ? error.message : error);
     return { matched, allAccounts };
