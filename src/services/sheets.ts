@@ -965,6 +965,13 @@ const TEAM_SPORT_MAP: Record<string, Sport> = {
   'seton hall pirates': 'ncaa', 'seton hall': 'ncaa',  // "pirates" maps MLB (Pittsburgh)
   'butler bulldogs': 'ncaa', 'butler': 'ncaa',
   'dayton flyers': 'ncaa', 'dayton': 'ncaa',  // bare "flyers" reserved for NHL (Philadelphia)
+
+  // Additional schools with labels in forwarding@salemseats.com
+  'appalachian state mountaineers': 'ncaa', 'appalachian state': 'ncaa', 'app state': 'ncaa',
+  'omaha mavericks': 'ncaa', 'omaha': 'ncaa',  // "mavericks" maps NBA (Dallas)
+  'south florida bulls': 'ncaa', 'south florida': 'ncaa', 'usf': 'ncaa',  // "bulls" maps NBA (Chicago)
+  'unlv rebels': 'ncaa', 'unlv': 'ncaa',
+  'utsa roadrunners': 'ncaa', 'utsa': 'ncaa', 'roadrunners': 'ncaa',
 };
 
 /**
