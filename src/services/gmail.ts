@@ -323,6 +323,15 @@ export async function findRelatedRecipients(
       // Then try Delivered-To headers, body extraction, and finally To header
       let recipientEmails: string[] = [];
 
+      // Debug: log relevant headers we rely on for recipient extraction
+      const debugHeaders = headers
+        .filter((h: GmailHeader) => {
+          const n = h.name?.toLowerCase() ?? '';
+          return n === 'x-forwarded-for' || n === 'x-x-forwarded-for' || n === 'resent-from' || n === 'delivered-to' || n === 'return-path' || n === 'to';
+        })
+        .map((h: GmailHeader) => `${h.name}=${h.value}`);
+      console.log(`[Gmail] Recipient-extract headers for message ${msgData.id}: ${JSON.stringify(debugHeaders)}`);
+
       // Try X-Forwarded-For header (Gmail auto-forward includes original recipient here)
       // For multi-hop forwarding (e.g. original → ticketassociates → salemseats),
       // the outermost X-Forwarded-For contains the intermediate forwarder, not the
