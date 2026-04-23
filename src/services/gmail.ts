@@ -396,6 +396,26 @@ export async function findRelatedRecipients(
         }
       }
 
+      // Last-resort fallback: parse the Return-Path SRS encoding.
+      // Gmail auto-forwards encode the forwarder as: user+caf_=final=domain.com@user_domain.com
+      // Outlook Exchange encodes as: user+SRS=xxxx=xxxx=orig_domain=localpart@forwarder_domain.com
+      // Stripping everything between "+" and "@" yields the original recipient's base email.
+      if (recipientEmails.length === 0) {
+        const returnPathHeader = headers.find((h: GmailHeader) => h.name?.toLowerCase() === 'return-path');
+        const raw = returnPathHeader?.value?.replace(/[<>]/g, '').trim().toLowerCase() ?? '';
+        if (raw.includes('+') && raw.includes('@')) {
+          const plusIdx = raw.indexOf('+');
+          const atIdx = raw.lastIndexOf('@');
+          if (plusIdx < atIdx) {
+            const base = raw.substring(0, plusIdx) + raw.substring(atIdx);
+            if (base !== config.google.forwardingEmail?.toLowerCase() && !shouldExcludeRecipient(base)) {
+              recipientEmails.push(base);
+              console.log(`[Gmail] Found recipient from Return-Path SRS: ${base}`);
+            }
+          }
+        }
+      }
+
       if (recipientEmails.length === 0) {
         console.log(`[Gmail] No recipients found for message`);
         continue;
