@@ -696,32 +696,73 @@ export async function enrichRecipientsWithAppointments(
 }
 
 /**
- * Extract plain text body from Gmail message payload
+ * Extract plain text body from Gmail message payload.
+ *
+ * Marketing emails often include a minimal text/plain alternative that's just
+ * tracking URLs ("click here: https://..."), while the actual content lives in
+ * text/html. We walk the whole tree, collect both, and pick whichever has more
+ * non-URL textual content.
  */
 function extractEmailBody(payload: any): string {
   if (!payload) return '';
 
-  // Check for plain text part
-  if (payload.mimeType === 'text/plain' && payload.body?.data) {
-    return Buffer.from(payload.body.data, 'base64').toString('utf-8');
-  }
+  const plain: string[] = [];
+  const html: string[] = [];
+  collectBodies(payload, plain, html);
 
-  // Check for HTML part (fallback)
-  if (payload.mimeType === 'text/html' && payload.body?.data) {
-    const html = Buffer.from(payload.body.data, 'base64').toString('utf-8');
-    // Strip HTML tags for plain text
-    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-  }
+  const plainText = plain.join('\n').trim();
+  const htmlText = html.length > 0 ? stripHtml(html.join('\n')) : '';
 
-  // Recursively check parts (for multipart messages)
-  if (payload.parts) {
-    for (const part of payload.parts) {
-      const text = extractEmailBody(part);
-      if (text) return text;
+  // If only one part has content, use it
+  if (!htmlText) return plainText;
+  if (!plainText) return htmlText;
+
+  // Score each by non-URL content. Marketing text/plain is mostly tracking
+  // links; the HTML body has the real content.
+  const plainScore = nonUrlCharCount(plainText);
+  const htmlScore = nonUrlCharCount(htmlText);
+  return htmlScore > plainScore ? htmlText : plainText;
+}
+
+function collectBodies(payload: any, plain: string[], html: string[]): void {
+  if (!payload) return;
+  const data = payload.body?.data;
+  if (data) {
+    if (payload.mimeType === 'text/plain') {
+      plain.push(Buffer.from(data, 'base64').toString('utf-8'));
+    } else if (payload.mimeType === 'text/html') {
+      html.push(Buffer.from(data, 'base64').toString('utf-8'));
     }
   }
+  if (Array.isArray(payload.parts)) {
+    for (const part of payload.parts) collectBodies(part, plain, html);
+  }
+}
 
-  return '';
+function stripHtml(html: string): string {
+  return html
+    // Drop <script>/<style> blocks entirely (their contents are noise)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    // Drop HTML comments
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    // Strip remaining tags
+    .replace(/<[^>]*>/g, ' ')
+    // Decode common entities
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Length of text after stripping http(s) URLs. Used to detect URL-only bodies. */
+function nonUrlCharCount(text: string): number {
+  return text.replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim().length;
 }
 
 /**
