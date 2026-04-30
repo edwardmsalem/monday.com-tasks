@@ -859,11 +859,16 @@ async function replaceClaimButton(args: {
   });
 
   try {
-    await slackClient.chat.update({
+    // The button message was posted via user token (so it appears authored
+    // by the human, not the bot). chat.update only allows the original
+    // author to edit, so route through core-api which has the user token.
+    const { slack: coreApiSlack } = await import('../services/coreApi.js');
+    await coreApiSlack.updateMessage({
       channel: args.channelId,
       ts: args.messageTs,
       text: (args.payload as any).message?.text ?? 'Claim email task',
       blocks: newBlocks,
+      asUser: true,
     });
   } catch (err) {
     console.error('[claim_email_task] chat.update failed:', err);
