@@ -662,6 +662,10 @@ async function handleViewSubmission(payload: InteractivityPayload): Promise<void
       await handleRescheduleSubmission(payload);
       break;
 
+    case 'claim_email_task_view':
+      await handleClaimEmailTaskSubmission(payload);
+      break;
+
     default:
       console.log(`[Interactivity] Unknown view submission: ${callbackId}`);
   }
@@ -760,41 +764,19 @@ async function handleClaimEmailTask(
   const state = parts[0];
 
   if (state === 'pending') {
+    // First claim — open a modal so the clicker can pick a due date before
+    // we create the Monday item. Modal submission completes the creation
+    // (see handleClaimEmailTaskSubmission).
     const gmailMessageId = parts[1] || '';
     const subject = parts.slice(2).join('|') || 'Email';
 
-    console.log(`[claim_email_task] First claim by ${clicker.name} — creating item for "${subject}"`);
-
-    const item = await monday.createItem({
-      name: subject,
-      dueDate: null,
-      ownerIds: [clicker.mondayId],
-      taskType: 'Triage',
-      source: 'Slack',
-      urgency: 'Medium',
-    });
-
-    const slackPermalink = await getMessagePermalink(channelId, messageTs);
-    const updateLines = [
-      `✍️ Claimed via Slack by <@${userId}>`,
-      gmailMessageId ? `📧 Gmail message: ${gmailMessageId}` : null,
-      slackPermalink ? `💬 Slack thread: ${slackPermalink}` : null,
-    ].filter(Boolean) as string[];
-    await monday.createUpdate(item.id, updateLines.join('\n\n'));
-
-    await replaceClaimButton({
+    await openClaimDateModal({
+      triggerId: payload.trigger_id,
+      gmailMessageId,
+      subject,
       channelId,
       messageTs,
-      payload,
-      mondayItemId: item.id,
-      ownerCount: 1,
     });
-
-    await slack.postToThread(
-      messageTs,
-      `✅ Task created by <@${userId}> — <https://salemseats.monday.com/boards/${configCompat.monday.boardId}/pulses/${item.id}|view in Monday>`,
-      channelId
-    );
     return;
   }
 
@@ -804,6 +786,7 @@ async function handleClaimEmailTask(
       console.error('[claim_email_task] claimed state missing itemId');
       return;
     }
+    const dueDate = parts[3] || null; // optional — present only after first-click date pick
 
     const result = await monday.addOwner(mondayItemId, clicker.mondayId);
 
@@ -819,13 +802,262 @@ async function handleClaimEmailTask(
       payload,
       mondayItemId,
       ownerCount: result.ownerCount,
+      dueDate,
     });
 
-    await slack.postToThread(messageTs, `➕ <@${userId}> joined as owner (${result.ownerCount} total).`, channelId);
+    // Schedule a 9am-day-of reminder DM for this new owner so each claimer
+    // gets their own ping (date locked from the first claim).
+    if (dueDate) {
+      await scheduleClaimReminderDM(userId, mondayItemId, dueDate);
+    }
+
+    const dueLine = dueDate ? ` (due ${dueDate})` : '';
+    await slack.postToThread(messageTs, `➕ <@${userId}> joined as owner${dueLine} — ${result.ownerCount} total.`, channelId);
     return;
   }
 
   console.error(`[claim_email_task] Unknown state: ${state}`);
+}
+
+/**
+ * Open a Slack modal that lets the clicker pick a due date before the
+ * Monday item is created. Submission goes to handleClaimEmailTaskSubmission.
+ */
+async function openClaimDateModal(args: {
+  triggerId: string;
+  gmailMessageId: string;
+  subject: string;
+  channelId: string;
+  messageTs: string;
+}): Promise<void> {
+  // Default the date picker to tomorrow (most common case for triage tasks)
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const initialDate = tomorrow.toISOString().split('T')[0];
+
+  try {
+    await slackClient.views.open({
+      trigger_id: args.triggerId,
+      view: {
+        type: 'modal',
+        callback_id: 'claim_email_task_view',
+        private_metadata: JSON.stringify({
+          gmailMessageId: args.gmailMessageId,
+          subject: args.subject,
+          channelId: args.channelId,
+          messageTs: args.messageTs,
+        }),
+        title: { type: 'plain_text', text: 'Claim Task' },
+        submit: { type: 'plain_text', text: 'Create Task' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: `*${args.subject.slice(0, 150)}*` },
+          },
+          {
+            type: 'input',
+            block_id: 'due_date_block',
+            element: {
+              type: 'datepicker',
+              action_id: 'due_date',
+              initial_date: initialDate,
+              placeholder: { type: 'plain_text', text: 'Select due date' },
+            },
+            label: { type: 'plain_text', text: 'Due Date' },
+          },
+          {
+            type: 'context',
+            elements: [
+              {
+                type: 'mrkdwn',
+                text: '🔔 You\'ll get a DM reminder at 9am the day it\'s due.',
+              },
+            ],
+          },
+        ],
+      },
+    });
+  } catch (err) {
+    console.error('[claim_email_task] views.open failed:', err);
+  }
+}
+
+/**
+ * Modal submission: actually create the Monday item with the picked date,
+ * post the confirmation thread reply, swap the channel button to claimed
+ * state, and schedule the 9am reminder DM for the clicker.
+ */
+async function handleClaimEmailTaskSubmission(payload: InteractivityPayload): Promise<void> {
+  const view = payload.view!;
+  const userId = payload.user.id;
+
+  let metadata: { gmailMessageId: string; subject: string; channelId: string; messageTs: string };
+  try {
+    metadata = JSON.parse(view.private_metadata || '{}');
+  } catch {
+    console.error('[claim_email_task_view] bad private_metadata');
+    return;
+  }
+
+  const dueDate = view.state.values.due_date_block?.due_date?.selected_date as string | undefined;
+  if (!dueDate) {
+    console.error('[claim_email_task_view] no date selected');
+    return;
+  }
+
+  const { findUserBySlackId } = await import('../services/userResolver.js');
+  const clicker = await findUserBySlackId(userId);
+  if (!clicker) {
+    await slack.postToThread(metadata.messageTs, `<@${userId}> — couldn't find you in Monday.`, metadata.channelId);
+    return;
+  }
+
+  const item = await monday.createItem({
+    name: metadata.subject,
+    dueDate,
+    ownerIds: [clicker.mondayId],
+    taskType: 'Triage',
+    source: 'Slack',
+    urgency: 'Medium',
+  });
+
+  const slackPermalink = await getMessagePermalink(metadata.channelId, metadata.messageTs);
+  const updateLines = [
+    `✍️ Claimed via Slack by <@${userId}>`,
+    `📅 Due ${dueDate}`,
+    metadata.gmailMessageId ? `📧 Gmail message: ${metadata.gmailMessageId}` : null,
+    slackPermalink ? `💬 Slack thread: ${slackPermalink}` : null,
+  ].filter(Boolean) as string[];
+  await monday.createUpdate(item.id, updateLines.join('\n\n'));
+
+  // Swap the channel button to claimed state. We don't have payload.message
+  // here (modal payloads don't carry it) so use a minimal block-rebuild path.
+  await rebuildClaimedButton({
+    channelId: metadata.channelId,
+    messageTs: metadata.messageTs,
+    mondayItemId: item.id,
+    ownerCount: 1,
+    dueDate,
+  });
+
+  await slack.postToThread(
+    metadata.messageTs,
+    `✅ Task created by <@${userId}> — due ${dueDate} — <https://salemseats.monday.com/boards/${configCompat.monday.boardId}/pulses/${item.id}|view in Monday>`,
+    metadata.channelId
+  );
+
+  await scheduleClaimReminderDM(userId, item.id, dueDate);
+}
+
+/**
+ * Schedule a 9am-ET DM to a Slack user reminding them about their claimed task.
+ * Uses Slack's chat.scheduleMessage. No-op if scheduled time is already past.
+ */
+async function scheduleClaimReminderDM(userSlackId: string, mondayItemId: string, dueDate: string): Promise<void> {
+  // Build 9am ET timestamp for dueDate. ET is UTC-5 (EST) or UTC-4 (EDT) —
+  // close enough to use 13:00 UTC year-round (off by one hour during DST,
+  // acceptable for a "morning of" reminder).
+  const dt = new Date(`${dueDate}T13:00:00Z`);
+  const postAt = Math.floor(dt.getTime() / 1000);
+  const now = Math.floor(Date.now() / 1000);
+  if (postAt <= now) {
+    console.log(`[claim_email_task] reminder time ${dueDate} 9am ET already past, skipping schedule`);
+    return;
+  }
+
+  try {
+    const dm = await slackClient.conversations.open({ users: userSlackId });
+    if (!dm.ok || !dm.channel?.id) {
+      console.error('[claim_email_task] DM open failed:', dm);
+      return;
+    }
+    const monLink = `https://salemseats.monday.com/boards/${configCompat.monday.boardId}/pulses/${mondayItemId}`;
+    await slackClient.chat.scheduleMessage({
+      channel: dm.channel.id,
+      post_at: postAt,
+      text: `🔔 Reminder: your claimed task is due today — <${monLink}|open in Monday>`,
+    });
+    console.log(`[claim_email_task] scheduled reminder for ${userSlackId} at ${dueDate} 9am ET`);
+  } catch (err) {
+    console.error('[claim_email_task] scheduleMessage failed:', err);
+  }
+}
+
+/**
+ * Rebuild the claim button on the original channel message. Used after modal
+ * submission where we don't have access to payload.message.blocks. We refetch
+ * the message via conversations.history and replace its actions block.
+ */
+async function rebuildClaimedButton(args: {
+  channelId: string;
+  messageTs: string;
+  mondayItemId: string;
+  ownerCount: number;
+  dueDate: string;
+}): Promise<void> {
+  const newValue = `claimed|${args.mondayItemId}|${args.ownerCount}|${args.dueDate}`;
+  const label = args.ownerCount === 1 ? `Claim (1 owner)` : `Claim (${args.ownerCount} owners)`;
+
+  // Fetch the current message blocks so we preserve everything except the
+  // actions block.
+  let originalBlocks: any[] = [];
+  let originalText = '';
+  try {
+    const history = await slackClient.conversations.history({
+      channel: args.channelId,
+      latest: args.messageTs,
+      inclusive: true,
+      limit: 1,
+    });
+    const msg = history.messages?.[0];
+    originalBlocks = (msg as any)?.blocks ?? [];
+    originalText = (msg as any)?.text ?? 'Claim email task';
+  } catch (err) {
+    console.error('[claim_email_task] conversations.history failed:', err);
+  }
+
+  const newBlocks = originalBlocks.map((b: any) => {
+    if (b.type !== 'actions') return b;
+    return {
+      ...b,
+      elements: (b.elements ?? []).map((el: any) =>
+        el.action_id === 'claim_email_task'
+          ? { ...el, text: { type: 'plain_text', text: label, emoji: true }, value: newValue }
+          : el
+      ),
+    };
+  });
+
+  // If no blocks (e.g., history fetch failed), fall back to a minimal block set
+  if (newBlocks.length === 0) {
+    newBlocks.push({
+      type: 'actions',
+      block_id: 'claim_email_task_block',
+      elements: [
+        {
+          type: 'button',
+          action_id: 'claim_email_task',
+          text: { type: 'plain_text', text: label, emoji: true },
+          style: 'primary',
+          value: newValue,
+        },
+      ],
+    });
+  }
+
+  try {
+    const { slack: coreApiSlack } = await import('../services/coreApi.js');
+    await coreApiSlack.updateMessage({
+      channel: args.channelId,
+      ts: args.messageTs,
+      text: originalText,
+      blocks: newBlocks,
+      asUser: true,
+    });
+  } catch (err) {
+    console.error('[claim_email_task] update via core-api failed:', err);
+  }
 }
 
 /**
@@ -838,9 +1070,11 @@ async function replaceClaimButton(args: {
   payload: InteractivityPayload;
   mondayItemId: string;
   ownerCount: number;
+  dueDate?: string | null;
 }): Promise<void> {
   const originalBlocks = (args.payload as any).message?.blocks ?? [];
-  const newValue = `claimed|${args.mondayItemId}|${args.ownerCount}`;
+  const dueSuffix = args.dueDate ? `|${args.dueDate}` : '';
+  const newValue = `claimed|${args.mondayItemId}|${args.ownerCount}${dueSuffix}`;
   const buttonLabel = args.ownerCount === 1 ? 'Claim (1 owner)' : `Claim (${args.ownerCount} owners)`;
 
   const newBlocks = originalBlocks.map((block: any) => {
