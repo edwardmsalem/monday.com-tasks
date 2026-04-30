@@ -245,6 +245,84 @@ export async function addSupporter(itemId: string, supporterMondayId: number): P
 }
 
 /**
+ * Add an owner to an item's owner column. Appends to existing owners.
+ * Returns the new owner count after the update (or current count if user
+ * was already an owner — no mutation in that case).
+ */
+export async function addOwner(itemId: string, ownerMondayId: number): Promise<{ added: boolean; ownerCount: number }> {
+  const getQuery = `
+    query GetItem($boardId: ID!, $itemId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(query_params: {ids: [$itemId]}) {
+          items {
+            column_values(ids: ["${config.monday.columns.owner}"]) {
+              id
+              value
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  interface GetItemResponse {
+    boards: Array<{
+      items_page: {
+        items: Array<{
+          column_values: Array<{ id: string; value: string }>;
+        }>;
+      };
+    }>;
+  }
+
+  const getResult = await executeQuery<GetItemResponse>(getQuery, {
+    boardId: configCompat.monday.boardId,
+    itemId,
+  });
+
+  const item = getResult.boards?.[0]?.items_page?.items?.[0];
+  const currentValue = item?.column_values?.[0]?.value;
+
+  let existingOwners: Array<{ id: number; kind: string }> = [];
+  if (currentValue) {
+    try {
+      const parsed = JSON.parse(currentValue);
+      existingOwners = parsed?.personsAndTeams ?? [];
+    } catch {
+      // ignore
+    }
+  }
+
+  if (existingOwners.some(o => o.id === ownerMondayId)) {
+    return { added: false, ownerCount: existingOwners.length };
+  }
+
+  const newOwners = [...existingOwners, { id: ownerMondayId, kind: 'person' }];
+
+  const updateQuery = `
+    mutation UpdateItem($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+      change_multiple_column_values(
+        board_id: $boardId
+        item_id: $itemId
+        column_values: $columnValues
+      ) {
+        id
+      }
+    }
+  `;
+
+  await executeQuery(updateQuery, {
+    boardId: configCompat.monday.boardId,
+    itemId,
+    columnValues: JSON.stringify({
+      [config.monday.columns.owner]: { personsAndTeams: newOwners },
+    }),
+  });
+
+  return { added: true, ownerCount: newOwners.length };
+}
+
+/**
  * Upload a file to an item's file column via core-api
  * Wrapped in circuit breaker to prevent cascading failures (TD-05)
  */

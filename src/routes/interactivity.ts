@@ -163,6 +163,10 @@ async function handleBlockAction(
       await handleIssueCallStuck(value, userId, channelId, threadTs);
       break;
 
+    case 'claim_email_task':
+      await handleClaimEmailTask(payload, action);
+      break;
+
     default:
       console.log(`[Interactivity] Unknown action: ${action_id}`);
   }
@@ -719,6 +723,159 @@ export async function handleInteractivityPayload(payload: InteractivityPayload):
     }
   } else if (payload.type === 'view_submission' && payload.view) {
     await handleViewSubmission(payload);
+  }
+}
+
+// ============================================================================
+// Claim Email Task — multi-owner claim button on Slack-shared emails
+// ============================================================================
+
+/**
+ * Button value formats:
+ *   pending|<gmailMessageId>|<truncatedSubject>   (first click — no Monday item yet)
+ *   claimed|<mondayItemId>|<ownerCount>            (subsequent clicks — item exists)
+ */
+async function handleClaimEmailTask(
+  payload: InteractivityPayload,
+  action: { action_id: string; block_id: string; value: string }
+): Promise<void> {
+  const userId = payload.user.id;
+  const channelId = payload.channel?.id || payload.container?.channel_id;
+  const messageTs = payload.message?.ts || payload.container?.message_ts;
+  const value = action.value;
+
+  if (!channelId || !messageTs) {
+    console.error('[claim_email_task] Missing channel or messageTs');
+    return;
+  }
+
+  const { findUserBySlackId } = await import('../services/userResolver.js');
+  const clicker = await findUserBySlackId(userId);
+  if (!clicker) {
+    await slack.postToThread(messageTs, `<@${userId}> — couldn't find you in Monday. Add yourself as a board member to claim tasks.`, channelId);
+    return;
+  }
+
+  const parts = value.split('|');
+  const state = parts[0];
+
+  if (state === 'pending') {
+    const gmailMessageId = parts[1] || '';
+    const subject = parts.slice(2).join('|') || 'Email';
+
+    console.log(`[claim_email_task] First claim by ${clicker.name} — creating item for "${subject}"`);
+
+    const item = await monday.createItem({
+      name: subject,
+      dueDate: null,
+      ownerIds: [clicker.mondayId],
+      taskType: 'Triage',
+      source: 'Slack',
+      urgency: 'Medium',
+    });
+
+    const slackPermalink = await getMessagePermalink(channelId, messageTs);
+    const updateLines = [
+      `✍️ Claimed via Slack by <@${userId}>`,
+      gmailMessageId ? `📧 Gmail message: ${gmailMessageId}` : null,
+      slackPermalink ? `💬 Slack thread: ${slackPermalink}` : null,
+    ].filter(Boolean) as string[];
+    await monday.createUpdate(item.id, updateLines.join('\n\n'));
+
+    await replaceClaimButton({
+      channelId,
+      messageTs,
+      payload,
+      mondayItemId: item.id,
+      ownerCount: 1,
+    });
+
+    await slack.postToThread(
+      messageTs,
+      `✅ Task created by <@${userId}> — <https://salemseats.monday.com/boards/${configCompat.monday.boardId}/pulses/${item.id}|view in Monday>`,
+      channelId
+    );
+    return;
+  }
+
+  if (state === 'claimed') {
+    const mondayItemId = parts[1];
+    if (!mondayItemId) {
+      console.error('[claim_email_task] claimed state missing itemId');
+      return;
+    }
+
+    const result = await monday.addOwner(mondayItemId, clicker.mondayId);
+
+    if (!result.added) {
+      // Already an owner — ephemeral note via thread
+      await slack.postToThread(messageTs, `<@${userId}> you're already an owner.`, channelId);
+      return;
+    }
+
+    await replaceClaimButton({
+      channelId,
+      messageTs,
+      payload,
+      mondayItemId,
+      ownerCount: result.ownerCount,
+    });
+
+    await slack.postToThread(messageTs, `➕ <@${userId}> joined as owner (${result.ownerCount} total).`, channelId);
+    return;
+  }
+
+  console.error(`[claim_email_task] Unknown state: ${state}`);
+}
+
+/**
+ * Replace the "Claim Task" actions block on the original message with an
+ * updated one carrying the new state in its value.
+ */
+async function replaceClaimButton(args: {
+  channelId: string;
+  messageTs: string;
+  payload: InteractivityPayload;
+  mondayItemId: string;
+  ownerCount: number;
+}): Promise<void> {
+  const originalBlocks = (args.payload as any).message?.blocks ?? [];
+  const newValue = `claimed|${args.mondayItemId}|${args.ownerCount}`;
+  const buttonLabel = args.ownerCount === 1 ? 'Claim (1 owner)' : `Claim (${args.ownerCount} owners)`;
+
+  const newBlocks = originalBlocks.map((block: any) => {
+    if (block.type !== 'actions') return block;
+    return {
+      ...block,
+      elements: (block.elements ?? []).map((el: any) => {
+        if (el.action_id !== 'claim_email_task') return el;
+        return {
+          ...el,
+          text: { type: 'plain_text', text: buttonLabel, emoji: true },
+          value: newValue,
+        };
+      }),
+    };
+  });
+
+  try {
+    await slackClient.chat.update({
+      channel: args.channelId,
+      ts: args.messageTs,
+      text: (args.payload as any).message?.text ?? 'Claim email task',
+      blocks: newBlocks,
+    });
+  } catch (err) {
+    console.error('[claim_email_task] chat.update failed:', err);
+  }
+}
+
+async function getMessagePermalink(channelId: string, messageTs: string): Promise<string | null> {
+  try {
+    const result = await slackClient.chat.getPermalink({ channel: channelId, message_ts: messageTs });
+    return result.permalink ?? null;
+  } catch {
+    return null;
   }
 }
 
