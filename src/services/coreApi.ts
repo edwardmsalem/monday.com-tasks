@@ -166,7 +166,6 @@ export const slack = {
     ts: string;
     text?: string;
     blocks?: unknown[];
-    asUser?: boolean;
   }): Promise<SlackPostMessageResult> {
     return coreApiRequest<SlackPostMessageResult>('/slack/update', {
       body: params as Record<string, unknown>,
