@@ -12,7 +12,7 @@ import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle, claude as coreApiClaude, getCachedConfig } from '../services/coreApi.js';
 import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from '../services/gmail.js';
-import { createScanSheet, createCustomSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection } from '../services/sheets.js';
+import { createScanSheet, createCustomSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection, backfillPlanTypeAndPacks } from '../services/sheets.js';
 import * as calendar from '../services/calendar.js';
 import { detectEventType } from '../services/calendar.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
@@ -668,6 +668,34 @@ router.post('/tasks/scan/backfill', async (req: Request, res: Response): Promise
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Backfill failed',
+    });
+  }
+});
+
+// POST /tasks/scan/backfill-columns
+// Adds Plan Type and Pack Members columns to a pre-existing scan sheet,
+// and re-runs pack detection with the dupe-range fix.
+router.post('/tasks/scan/backfill-columns', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const { sheetUrl, teamName } = req.body as {
+    sheetUrl: string;
+    teamName: string;
+  };
+
+  if (!sheetUrl || !teamName) {
+    res.status(400).json({ success: false, error: 'sheetUrl and teamName are required' });
+    return;
+  }
+
+  try {
+    const result = await backfillPlanTypeAndPacks(sheetUrl, teamName);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('[Triage API] Backfill columns failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Backfill columns failed',
     });
   }
 });

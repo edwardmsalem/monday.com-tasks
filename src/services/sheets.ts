@@ -247,7 +247,7 @@ export interface ScanSheetOptions {
  * Mutates `rows` in place: writes pack label into packCol and "N seats · M
  * accounts: email1, email2, …" into packMembersCol on every row in the pack.
  */
-function assignPacks(
+export function assignPacks(
   rows: (string | number)[][],
   sectionCol: number,
   rowCol: number,
@@ -1699,6 +1699,118 @@ export async function backfillNoAppointmentSection(
 
   console.log(`[Sheets Backfill] Appended ${noAppointmentRows.length} "No Appointment" rows to sheet`);
   return { addedCount: noAppointmentRows.length };
+}
+
+// ============================================================================
+// BACKFILL PLAN TYPE + PACK MEMBERS COLUMNS
+// One-shot upgrade for scan sheets created before these columns existed.
+// Also re-runs the (fixed) pack detection so dupe-range rows that were
+// silently dropped pre-fix get their pack labels populated.
+// ============================================================================
+
+export async function backfillPlanTypeAndPacks(
+  sheetUrl: string,
+  teamName: string
+): Promise<{ planTypeFilled: number; packsAssigned: number }> {
+  const spreadsheetId = extractSpreadsheetId(sheetUrl);
+  if (!spreadsheetId) {
+    throw new Error('Invalid sheet URL — could not extract spreadsheet ID');
+  }
+
+  // 1. Read destination sheet
+  const existingRows = await coreApiGoogle.sheets.getValues(spreadsheetId, 'Recipients!A1:AZ');
+  if (!existingRows || existingRows.length === 0) {
+    throw new Error('Sheet is empty or could not be read');
+  }
+
+  const headerRow = (existingRows[0] as unknown[]).map(String);
+  const dataRows = existingRows.slice(1).map(r => [...(r as (string | number)[])]);
+
+  const findCol = (...names: string[]): number =>
+    headerRow.findIndex(h => names.includes(String(h).toLowerCase().trim()));
+  const emailCol = findCol('email');
+  if (emailCol < 0) throw new Error('Destination sheet missing Email column');
+
+  // 2. Pull source team headers + accounts to build email → planType
+  const lookupResult = await lookupTeamAccounts(teamName);
+  if (!lookupResult.success) {
+    throw new Error(`Team lookup failed for "${teamName}": ${lookupResult.error ?? 'unknown'}`);
+  }
+  const srcEmailIdx = findColumnIndex(lookupResult.headers, 'email', 'e-mail', 'email address');
+  const srcPlanTypeIdx = findColumnIndex(lookupResult.headers, 'plan type', 'plan', 'package', 'plan name', 'plan/pkg');
+  if (srcEmailIdx < 0) throw new Error(`Source team sheet "${lookupResult.sheetName}" has no email column`);
+  if (srcPlanTypeIdx < 0) throw new Error(`Source team sheet "${lookupResult.sheetName}" has no plan/plan type/package column. Headers: ${lookupResult.headers.join(', ')}`);
+
+  const planTypeByEmail = new Map<string, string>();
+  for (const acc of lookupResult.accounts) {
+    const e = String(acc.rowData[srcEmailIdx] || '').toLowerCase().trim();
+    const p = String(acc.rowData[srcPlanTypeIdx] || '').trim();
+    if (e && p) planTypeByEmail.set(e, p);
+  }
+  console.log(`[Backfill PlanType] Source has ${planTypeByEmail.size} email→plan mappings`);
+
+  // 3. Ensure Plan Type and Pack Members columns exist; append if missing.
+  let planTypeCol = findCol('plan type');
+  if (planTypeCol < 0) {
+    planTypeCol = headerRow.length;
+    headerRow.push('Plan Type');
+  }
+  let packMembersCol = findCol('pack members');
+  if (packMembersCol < 0) {
+    packMembersCol = headerRow.length;
+    headerRow.push('Pack Members');
+  }
+
+  // Pad every data row to match the (possibly extended) header row.
+  for (const row of dataRows) {
+    while (row.length < headerRow.length) row.push('');
+  }
+
+  // 4. Fill Plan Type per row
+  let planTypeFilled = 0;
+  for (const row of dataRows) {
+    const e = String(row[emailCol] || '').toLowerCase().trim();
+    if (!e) continue;
+    const p = planTypeByEmail.get(e);
+    if (p && row[planTypeCol] !== p) {
+      row[planTypeCol] = p;
+      planTypeFilled++;
+    }
+  }
+
+  // 5. Re-run pack detection with the fixed dupe-range logic. Skip rows that
+  //    are obviously the "NO APPOINTMENT" section header / separator.
+  const sectionCol = findCol('section');
+  const rowColIdx = findCol('row');
+  const lowCol = findCol('low seat');
+  const highCol = findCol('high seat');
+  let packCol = findCol('pack');
+  // If pack column doesn't exist for some reason, skip pack assignment entirely.
+  let packsAssigned = 0;
+  if (sectionCol >= 0 && rowColIdx >= 0 && lowCol >= 0 && highCol >= 0 && packCol >= 0) {
+    // Clear existing pack labels + members so re-run is clean
+    for (const row of dataRows) {
+      row[packCol] = '';
+      row[packMembersCol] = '';
+    }
+    assignPacks(dataRows, sectionCol, rowColIdx, lowCol, highCol, packCol, emailCol, packMembersCol);
+    packsAssigned = new Set(dataRows.map(r => String(r[packCol] || '')).filter(Boolean)).size;
+  }
+
+  // 6. Write back the entire range. Use a wide column letter to be safe.
+  const totalCols = headerRow.length;
+  const lastCol = String.fromCharCode(64 + Math.min(totalCols, 26));
+  const writeRange = totalCols <= 26
+    ? `Recipients!A1:${lastCol}${dataRows.length + 1}`
+    : `Recipients!A1:A${String.fromCharCode(64 + (totalCols - 26))}${dataRows.length + 1}`;
+
+  await coreApiGoogle.sheets.updateValues(spreadsheetId, {
+    range: writeRange,
+    values: [headerRow, ...dataRows],
+  });
+
+  console.log(`[Backfill PlanType] Wrote ${dataRows.length} rows · planType filled=${planTypeFilled} · packs detected=${packsAssigned}`);
+  return { planTypeFilled, packsAssigned };
 }
 
 // ============================================================================
