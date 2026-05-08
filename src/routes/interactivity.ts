@@ -850,7 +850,7 @@ async function openClaimTaskReviewModal(args: {
         blocks: [
           { type: 'section', text: { type: 'mrkdwn', text: `*${args.subject.slice(0, 150)}*` } },
           { type: 'context', elements: [
-            { type: 'mrkdwn', text: '✦ Claude is reviewing this email…' },
+            { type: 'mrkdwn', text: '✦ Reviewing this email…' },
           ]},
         ],
       },
@@ -876,7 +876,7 @@ async function openClaimTaskReviewModal(args: {
         callback_id: 'claim_email_task_view_error',
         title: { type: 'plain_text', text: 'Create Task' },
         close: { type: 'plain_text', text: 'Close' },
-        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '⚠️ Claude review failed. Try again from the email in Slack.' } }],
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '⚠️ Review failed. Try again from the email in Slack.' } }],
       },
     });
     return;
@@ -931,7 +931,7 @@ async function openClaimTaskReviewModal(args: {
       close: { type: 'plain_text', text: 'Cancel' },
       blocks: [
         { type: 'section', text: { type: 'mrkdwn', text: `*${args.subject.slice(0, 150)}*` } },
-        { type: 'context', elements: [{ type: 'mrkdwn', text: `✦ ${aiSummaryParts || 'Claude couldn\'t determine routing'}` }] },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `✦ ${aiSummaryParts || 'Couldn\'t determine routing'}` }] },
         { type: 'divider' },
         {
           type: 'input',
