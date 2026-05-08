@@ -232,10 +232,20 @@ export interface ScanSheetOptions {
 }
 
 /**
- * Assign pack labels to rows with adjacent seats.
- * Groups rows by normalized section|row, sorts by lowSeat,
- * and marks adjacent chains as "Pack 1", "Pack 2", etc.
- * Mutates rows in place (sets packCol value).
+ * Assign pack labels to rows with adjacent seats AND populate the Pack Members
+ * column with per-pack roll-up (total seats + accounts).
+ *
+ * Bug fix: a single seat range can appear on multiple rows when the same seats
+ * are listed under different plan types (e.g. Half Season + Full Season). The
+ * old algorithm sorted all entries individually, which broke adjacency chains
+ * when two rows shared the exact same (low, high) — the duplicate would land
+ * sorted-side-by-side and `prev.high + 1 === next.low` failed (e.g. 1-2 then
+ * 1-2 again is not adjacent), terminating the chain prematurely. The fix is
+ * to dedupe by (low, high) within each section|row group and label EVERY row
+ * that shares a deduplicated range.
+ *
+ * Mutates `rows` in place: writes pack label into packCol and "N seats · M
+ * accounts: email1, email2, …" into packMembersCol on every row in the pack.
  */
 function assignPacks(
   rows: (string | number)[][],
@@ -243,10 +253,14 @@ function assignPacks(
   rowCol: number,
   lowSeatCol: number,
   highSeatCol: number,
-  packCol: number
+  packCol: number,
+  emailCol: number,
+  packMembersCol: number
 ): void {
-  // Index rows by section|row key
-  const groups = new Map<string, { idx: number; low: number; high: number }[]>();
+  interface RangeEntry { low: number; high: number; idxs: number[] }
+  // section|row → ("low-high" → entry). Dedupes overlapping ranges so dupes
+  // share a single position in the chain instead of breaking it.
+  const groups = new Map<string, Map<string, RangeEntry>>();
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -256,31 +270,66 @@ function assignPacks(
     const high = parseInt(String(row[highSeatCol]), 10);
     if (!section || !rowVal || isNaN(low) || isNaN(high)) continue;
 
-    const key = `${section}|${rowVal}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push({ idx: i, low, high });
+    const groupKey = `${section}|${rowVal}`;
+    if (!groups.has(groupKey)) groups.set(groupKey, new Map());
+    const rangeMap = groups.get(groupKey)!;
+    const rangeKey = `${low}-${high}`;
+    if (!rangeMap.has(rangeKey)) rangeMap.set(rangeKey, { low, high, idxs: [] });
+    rangeMap.get(rangeKey)!.idxs.push(i);
   }
 
   let packNumber = 0;
 
-  for (const entries of groups.values()) {
-    if (entries.length < 2) continue;
+  for (const rangeMap of groups.values()) {
+    if (rangeMap.size < 2) continue; // one unique range can't form a pack
 
-    // Sort by lowSeat ascending
-    entries.sort((a, b) => a.low - b.low);
+    const entries = Array.from(rangeMap.values()).sort((a, b) => a.low - b.low);
 
-    // Find adjacent chains
     let chainStart = 0;
     for (let i = 1; i <= entries.length; i++) {
       const isAdjacent = i < entries.length && entries[i - 1].high + 1 === entries[i].low;
       if (!isAdjacent) {
-        // End of chain — only label if chain has 2+ entries
         const chainLen = i - chainStart;
         if (chainLen >= 2) {
           packNumber++;
           const label = `Pack ${packNumber}`;
+
+          // Collect all rows in this pack (across all instances of each range)
+          const packRowIdxs: number[] = [];
           for (let j = chainStart; j < i; j++) {
-            rows[entries[j].idx][packCol] = label;
+            for (const idx of entries[j].idxs) packRowIdxs.push(idx);
+          }
+
+          // Total seats = sum of UNIQUE range sizes (don't double-count
+          // physical seats just because they appear on multiple plan rows).
+          let totalSeats = 0;
+          for (let j = chainStart; j < i; j++) {
+            totalSeats += entries[j].high - entries[j].low + 1;
+          }
+
+          // Distinct emails in the pack with their seat range each appears under
+          const accountSeats = new Map<string, string[]>(); // email → ["1-2", "3-4"]
+          for (let j = chainStart; j < i; j++) {
+            const seatLabel = entries[j].low === entries[j].high
+              ? `${entries[j].low}`
+              : `${entries[j].low}-${entries[j].high}`;
+            for (const idx of entries[j].idxs) {
+              const email = String(rows[idx][emailCol] || '').toLowerCase().trim();
+              if (!email) continue;
+              if (!accountSeats.has(email)) accountSeats.set(email, []);
+              const list = accountSeats.get(email)!;
+              if (!list.includes(seatLabel)) list.push(seatLabel);
+            }
+          }
+          const accountStrings = Array.from(accountSeats.entries()).map(
+            ([email, seats]) => `${email} (${seats.join(', ')})`
+          );
+          const memberSummary = `${totalSeats} seat${totalSeats === 1 ? '' : 's'} · ${accountSeats.size} account${accountSeats.size === 1 ? '' : 's'}: ${accountStrings.join(', ')}`;
+
+          // Stamp pack label + member summary on every row that's in this pack
+          for (const idx of packRowIdxs) {
+            rows[idx][packCol] = label;
+            if (packMembersCol >= 0) rows[idx][packMembersCol] = memberSummary;
           }
         }
         chainStart = i;
@@ -326,7 +375,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
   if (options.accountInfo && options.accountInfo.size > 0) {
     // Use pre-fetched accountInfo from batchLookupAccountsForScan
     console.log(`[Sheets] Building sheet with accountInfo for "${name}" (${options.accountInfo.size} accounts)`);
-    headerRow = ['Date', 'Time', 'Email', 'Password', 'Name', 'Section', 'Row', 'Low Seat', 'High Seat', 'Qty', 'Pack', 'Season Total', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
+    headerRow = ['Date', 'Time', 'Email', 'Password', 'Name', 'Plan Type', 'Section', 'Row', 'Low Seat', 'High Seat', 'Qty', 'Pack', 'Pack Members', 'Season Total', 'Last 4', 'Exp', 'CVV', 'Billing Address', 'Status', 'Notes'];
     columnCount = headerRow.length;
 
     const rowsWithTimes: { sortKey: number; row: (string | number)[] }[] = [];
@@ -351,8 +400,8 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           const highSeatStr = loc.highSeat ? String(loc.highSeat) : '';
           rowsWithTimes.push({
             sortKey,
-            row: [dateValue, timeValue, recipient.email, password, account.name,
-              loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal,
+            row: [dateValue, timeValue, recipient.email, password, account.name, account.planType,
+              loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', '', loc.seasonTotal,
               account.last4, account.exp, account.cvv, account.billingAddress,
               '', notes],
           });
@@ -360,16 +409,16 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
       } else if (account) {
         rowsWithTimes.push({
           sortKey,
-          row: [dateValue, timeValue, recipient.email, password, account.name,
-            '', '', '', '', '', '', '',
+          row: [dateValue, timeValue, recipient.email, password, account.name, account.planType,
+            '', '', '', '', '', '', '', '',
             account.last4, account.exp, account.cvv, account.billingAddress,
             '', notes],
         });
       } else {
         rowsWithTimes.push({
           sortKey,
-          row: [dateValue, timeValue, recipient.email, password, '',
-            '', '', '', '', '', '', '',
+          row: [dateValue, timeValue, recipient.email, password, '', '',
+            '', '', '', '', '', '', '', '',
             '', '', '', '',
             '', notes],
         });
@@ -384,7 +433,16 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
 
     // --- Pack detection (second pass) ---
     // Runs after all scanned rows are built; will also run on noAppointment rows later
-    assignPacks(dataRows, headerRow.indexOf('Section'), headerRow.indexOf('Row'), headerRow.indexOf('Low Seat'), headerRow.indexOf('High Seat'), headerRow.indexOf('Pack'));
+    assignPacks(
+      dataRows,
+      headerRow.indexOf('Section'),
+      headerRow.indexOf('Row'),
+      headerRow.indexOf('Low Seat'),
+      headerRow.indexOf('High Seat'),
+      headerRow.indexOf('Pack'),
+      headerRow.indexOf('Email'),
+      headerRow.indexOf('Pack Members')
+    );
   } else {
     // Fallback: no accountInfo available, simple format
     console.log(`[Sheets] No accountInfo for "${name}", using simple format`);
@@ -522,13 +580,13 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
           const lowSeatStr = loc.lowSeat ? String(loc.lowSeat) : '';
           const highSeatStr = loc.highSeat ? String(loc.highSeat) : '';
           const row: (string | number)[] = options.accountInfo && options.accountInfo.size > 0
-            ? ['', '', email, '', account.name, loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
+            ? ['', '', email, '', account.name, account.planType, loc.section, loc.row, lowSeatStr, highSeatStr, loc.qty, '', '', loc.seasonTotal || '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
             : ['', '', email, '', account.status || '', ''];
           noAppointmentRows.push(row);
         }
       } else {
         const row: (string | number)[] = options.accountInfo && options.accountInfo.size > 0
-          ? ['', '', email, '', account.name, '', '', '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
+          ? ['', '', email, '', account.name, account.planType, '', '', '', '', '', '', '', '', account.last4, account.exp, account.cvv, account.billingAddress, account.status || '', '']
           : ['', '', email, '', account.status || '', ''];
         noAppointmentRows.push(row);
       }
@@ -551,7 +609,9 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
         const lowIdx = headerRow.indexOf('Low Seat');
         const highIdx = headerRow.indexOf('High Seat');
         const packIdx = headerRow.indexOf('Pack');
-        assignPacks([...dataRows, ...noAppointmentRows], secIdx, rowIdx, lowIdx, highIdx, packIdx);
+        const emailIdx = headerRow.indexOf('Email');
+        const packMembersIdx = headerRow.indexOf('Pack Members');
+        assignPacks([...dataRows, ...noAppointmentRows], secIdx, rowIdx, lowIdx, highIdx, packIdx, emailIdx, packMembersIdx);
       }
 
       // Add a blank separator row + section header
@@ -1338,6 +1398,7 @@ export interface ParsedSeatLocation {
  */
 export interface ScanAccountInfo {
   name: string;
+  planType: string;     // Plan/Package column from the source team sheet
   seats: string;        // Newline-separated: "Sec 100 Row 5 Seats 1-4\nSec 200 Row 10 Seats 1-2"
   seatLocations: ParsedSeatLocation[];  // Structured data for adjacency detection
   connecting: string;   // Adjacent seat holders: "email@example.com (Sec 100 Row 5 Seats 5-8)"
@@ -1468,6 +1529,7 @@ export async function batchLookupAccountsForScan(
   function buildAccountInfo(email: string, rows: AccountInfo[], allAccountsByEmail: Map<string, { seatLocations: ParsedSeatLocation[] }>): ScanAccountInfo {
     const firstRow = rows[0].rowData;
     const name = getColumnValue(firstRow, headers, 'name', 'account name', 'customer name', 'full name');
+    const planType = getColumnValue(firstRow, headers, 'plan type', 'plan', 'package', 'plan name', 'plan/pkg');
     const last4 = getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4');
     const exp = getColumnValue(firstRow, headers, 'exp', 'expiration', 'exp date', 'expiry');
     const cvv = getColumnValue(firstRow, headers, 'cvc', 'cvv', 'security code', 'cv2');
@@ -1496,6 +1558,7 @@ export async function batchLookupAccountsForScan(
 
     return {
       name,
+      planType,
       seats: seatLocations.map(l => l.display).join('\n'),
       seatLocations,
       connecting: connectingEntries.join('\n'),
