@@ -1053,6 +1053,7 @@ async function rebuildClaimedButton(args: {
       ts: args.messageTs,
       text: originalText,
       blocks: newBlocks,
+      asUser: true,
     });
   } catch (err) {
     console.error('[claim_email_task] update via core-api failed:', err);
@@ -1101,6 +1102,7 @@ async function replaceClaimButton(args: {
       ts: args.messageTs,
       text: (args.payload as any).message?.text ?? 'Claim email task',
       blocks: newBlocks,
+      asUser: true,
     });
   } catch (err) {
     console.error('[claim_email_task] chat.update failed:', err);
