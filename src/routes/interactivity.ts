@@ -764,13 +764,14 @@ async function handleClaimEmailTask(
   const state = parts[0];
 
   if (state === 'pending') {
-    // First claim — open a modal so the clicker can pick a due date before
-    // we create the Monday item. Modal submission completes the creation
-    // (see handleClaimEmailTaskSubmission).
+    // First claim — open the AI-reviewed task creation modal (mirrors the
+    // Triage app's Create Task review flow). Submission creates the Monday
+    // item with editable name/dueDate/urgency/notes plus AI-suggested
+    // owner/type/team applied silently.
     const gmailMessageId = parts[1] || '';
     const subject = parts.slice(2).join('|') || 'Email';
 
-    await openClaimDateModal({
+    await openClaimTaskReviewModal({
       triggerId: payload.trigger_id,
       gmailMessageId,
       subject,
@@ -820,67 +821,168 @@ async function handleClaimEmailTask(
 }
 
 /**
- * Open a Slack modal that lets the clicker pick a due date before the
- * Monday item is created. Submission goes to handleClaimEmailTaskSubmission.
+ * Open a Slack modal that mirrors the Triage app's Create Task review flow.
+ * Step 1: instantly open a "Claude is reviewing…" placeholder modal (the
+ *         trigger_id expires in 3s, so we can't wait for AI before opening).
+ * Step 2: run the same /tasks/review pipeline the Triage app uses, which
+ *         calls Claude on the email body.
+ * Step 3: views.update the modal with the AI-suggested fields (task name,
+ *         due date, urgency, notes editable; owner / type / team displayed
+ *         and applied silently on submit).
  */
-async function openClaimDateModal(args: {
+async function openClaimTaskReviewModal(args: {
   triggerId: string;
   gmailMessageId: string;
   subject: string;
   channelId: string;
   messageTs: string;
 }): Promise<void> {
-  // Default the date picker to tomorrow (most common case for triage tasks)
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const initialDate = tomorrow.toISOString().split('T')[0];
-
+  // Step 1 — placeholder modal opens immediately so the trigger_id is consumed.
+  let viewId: string | undefined;
   try {
-    await slackClient.views.open({
+    const opened = await slackClient.views.open({
       trigger_id: args.triggerId,
       view: {
         type: 'modal',
-        callback_id: 'claim_email_task_view',
-        private_metadata: JSON.stringify({
-          gmailMessageId: args.gmailMessageId,
-          subject: args.subject,
-          channelId: args.channelId,
-          messageTs: args.messageTs,
-        }),
-        title: { type: 'plain_text', text: 'Claim Task' },
-        submit: { type: 'plain_text', text: 'Create Task' },
+        callback_id: 'claim_email_task_view_loading',
+        title: { type: 'plain_text', text: 'Create Task' },
         close: { type: 'plain_text', text: 'Cancel' },
         blocks: [
-          {
-            type: 'section',
-            text: { type: 'mrkdwn', text: `*${args.subject.slice(0, 150)}*` },
-          },
-          {
-            type: 'input',
-            block_id: 'due_date_block',
-            element: {
-              type: 'datepicker',
-              action_id: 'due_date',
-              initial_date: initialDate,
-              placeholder: { type: 'plain_text', text: 'Select due date' },
-            },
-            label: { type: 'plain_text', text: 'Due Date' },
-          },
-          {
-            type: 'context',
-            elements: [
-              {
-                type: 'mrkdwn',
-                text: '🔔 You\'ll get a DM reminder at 9am the day it\'s due.',
-              },
-            ],
-          },
+          { type: 'section', text: { type: 'mrkdwn', text: `*${args.subject.slice(0, 150)}*` } },
+          { type: 'context', elements: [
+            { type: 'mrkdwn', text: '✦ Claude is reviewing this email…' },
+          ]},
         ],
       },
     });
+    viewId = opened.view?.id;
   } catch (err) {
-    console.error('[claim_email_task] views.open failed:', err);
+    console.error('[claim_email_task] views.open (loading) failed:', err);
+    return;
   }
+  if (!viewId) return;
+
+  // Step 2 — run the review pipeline (Claude analysis + owner/type resolution).
+  let review: import('./triageApi.js').TaskReviewResult;
+  try {
+    const { reviewTaskForEmail } = await import('./triageApi.js');
+    review = await reviewTaskForEmail(args.gmailMessageId, '');
+  } catch (err) {
+    console.error('[claim_email_task] review failed:', err);
+    await slackClient.views.update({
+      view_id: viewId,
+      view: {
+        type: 'modal',
+        callback_id: 'claim_email_task_view_error',
+        title: { type: 'plain_text', text: 'Create Task' },
+        close: { type: 'plain_text', text: 'Close' },
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '⚠️ Claude review failed. Try again from the email in Slack.' } }],
+      },
+    });
+    return;
+  }
+
+  // Step 3 — render the editable modal with AI-suggested fields.
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const initialDate = review.dueDate ?? tomorrow.toISOString().split('T')[0];
+
+  const urgencyOptions = [
+    { text: { type: 'plain_text' as const, text: '🔴 High' }, value: 'High' },
+    { text: { type: 'plain_text' as const, text: '🟡 Medium' }, value: 'Medium' },
+    { text: { type: 'plain_text' as const, text: '🟢 Low' }, value: 'Low' },
+  ];
+  const urgencyInitial = urgencyOptions.find(o => o.value === review.urgency) ?? urgencyOptions[1];
+
+  // Surface AI's non-editable picks in a context line up top so the clicker
+  // sees the routing decisions Claude made.
+  const aiSummaryParts = [
+    review.owner ? `👤 ${review.owner.name}` : '⚠️ no owner',
+    `📋 ${review.taskType}`,
+    review.team ? `🏷️ ${review.team}` : null,
+    review.supporters && review.supporters.length > 0
+      ? `🤝 ${review.supporters.map(s => s.name).join(', ')}`
+      : null,
+  ].filter(Boolean).join(' · ');
+
+  // Stash the non-editable AI choices in private_metadata so the submission
+  // handler has them — Slack modals don't expose them via state.
+  const meta = JSON.stringify({
+    gmailMessageId: args.gmailMessageId,
+    subject: args.subject,
+    channelId: args.channelId,
+    messageTs: args.messageTs,
+    aiOwnerMondayId: review.owner?.mondayId ?? null,
+    aiOwnerName: review.owner?.name ?? null,
+    aiSupporterIds: review.supporters?.map(s => s.mondayId) ?? [],
+    aiTaskType: review.taskType,
+    aiTeam: review.team,
+    aiTaskName: review.taskName,
+  });
+
+  await slackClient.views.update({
+    view_id: viewId,
+    view: {
+      type: 'modal',
+      callback_id: 'claim_email_task_view',
+      private_metadata: meta,
+      title: { type: 'plain_text', text: 'Create Task' },
+      submit: { type: 'plain_text', text: 'Create Task' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: `*${args.subject.slice(0, 150)}*` } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `✦ ${aiSummaryParts || 'Claude couldn\'t determine routing'}` }] },
+        { type: 'divider' },
+        {
+          type: 'input',
+          block_id: 'task_name_block',
+          element: {
+            type: 'plain_text_input',
+            action_id: 'val',
+            initial_value: review.taskName,
+          },
+          label: { type: 'plain_text', text: 'Task Name' },
+        },
+        {
+          type: 'input',
+          block_id: 'due_date_block',
+          element: {
+            type: 'datepicker',
+            action_id: 'val',
+            initial_date: initialDate,
+          },
+          label: { type: 'plain_text', text: 'Due Date' },
+          optional: true,
+        },
+        {
+          type: 'input',
+          block_id: 'urgency_block',
+          element: {
+            type: 'static_select',
+            action_id: 'val',
+            initial_option: urgencyInitial,
+            options: urgencyOptions,
+          },
+          label: { type: 'plain_text', text: 'Urgency' },
+        },
+        {
+          type: 'input',
+          block_id: 'notes_block',
+          element: {
+            type: 'plain_text_input',
+            action_id: 'val',
+            multiline: true,
+            initial_value: review.cleanedNotes || '',
+          },
+          label: { type: 'plain_text', text: 'Notes' },
+          optional: true,
+        },
+        { type: 'context', elements: [
+          { type: 'mrkdwn', text: '🔔 You\'ll get a DM reminder at 9am the day it\'s due.' },
+        ]},
+      ],
+    },
+  });
 }
 
 /**
@@ -892,62 +994,89 @@ async function handleClaimEmailTaskSubmission(payload: InteractivityPayload): Pr
   const view = payload.view!;
   const userId = payload.user.id;
 
-  let metadata: { gmailMessageId: string; subject: string; channelId: string; messageTs: string };
+  interface ModalMeta {
+    gmailMessageId: string;
+    subject: string;
+    channelId: string;
+    messageTs: string;
+    aiOwnerMondayId: string | null;
+    aiOwnerName: string | null;
+    aiSupporterIds: string[];
+    aiTaskType: string;
+    aiTeam: string | null;
+    aiTaskName: string;
+  }
+  let meta: ModalMeta;
   try {
-    metadata = JSON.parse(view.private_metadata || '{}');
+    meta = JSON.parse(view.private_metadata || '{}') as ModalMeta;
   } catch {
     console.error('[claim_email_task_view] bad private_metadata');
     return;
   }
 
-  const dueDate = view.state.values.due_date_block?.due_date?.selected_date as string | undefined;
-  if (!dueDate) {
-    console.error('[claim_email_task_view] no date selected');
-    return;
-  }
+  // Read editable values from the rich modal.
+  const taskName =
+    (view.state.values.task_name_block?.val?.value as string | undefined) ?? meta.aiTaskName;
+  const dueDate = view.state.values.due_date_block?.val?.selected_date as string | undefined;
+  const urgency =
+    ((view.state.values.urgency_block?.val?.selected_option?.value as string | undefined) ?? 'Medium') as 'High' | 'Medium' | 'Low';
+  const notes = (view.state.values.notes_block?.val?.value as string | undefined) ?? '';
 
   const { findUserBySlackId } = await import('../services/userResolver.js');
   const clicker = await findUserBySlackId(userId);
   if (!clicker) {
-    await slack.postToThread(metadata.messageTs, `<@${userId}> — couldn't find you in Monday.`, metadata.channelId);
+    await slack.postToThread(meta.messageTs, `<@${userId}> — couldn't find you in Monday.`, meta.channelId);
     return;
   }
 
+  // Owner: AI-resolved owner if present, otherwise fall back to the clicker.
+  // Always also include the clicker so they get the reminder DM and own the item.
+  const ownerIds: number[] = [];
+  if (meta.aiOwnerMondayId) ownerIds.push(parseInt(meta.aiOwnerMondayId, 10));
+  if (!ownerIds.includes(clicker.mondayId)) ownerIds.push(clicker.mondayId);
+
   const item = await monday.createItem({
-    name: metadata.subject,
-    dueDate,
-    ownerIds: [clicker.mondayId],
-    taskType: 'Triage',
+    name: taskName,
+    dueDate: dueDate ?? null,
+    ownerIds,
+    supportIds: meta.aiSupporterIds,
+    taskType: meta.aiTaskType,
     source: 'Slack',
-    urgency: 'Medium',
+    team: meta.aiTeam ?? undefined,
+    urgency,
   });
 
-  const slackPermalink = await getMessagePermalink(metadata.channelId, metadata.messageTs);
+  const slackPermalink = await getMessagePermalink(meta.channelId, meta.messageTs);
   const updateLines = [
-    `✍️ Claimed via Slack by <@${userId}>`,
-    `📅 Due ${dueDate}`,
-    metadata.gmailMessageId ? `📧 Gmail message: ${metadata.gmailMessageId}` : null,
+    `✍️ Created via Slack by <@${userId}>`,
+    dueDate ? `📅 Due ${dueDate}` : `⚡ ASAP (no due date)`,
+    `🚨 Urgency: ${urgency}`,
+    notes ? `📝 ${notes}` : null,
+    meta.gmailMessageId ? `📧 Gmail message: ${meta.gmailMessageId}` : null,
     slackPermalink ? `💬 Slack thread: ${slackPermalink}` : null,
   ].filter(Boolean) as string[];
   await monday.createUpdate(item.id, updateLines.join('\n\n'));
 
-  // Swap the channel button to claimed state. We don't have payload.message
-  // here (modal payloads don't carry it) so use a minimal block-rebuild path.
+  // Update the channel button to "claimed" state for any subsequent clickers.
   await rebuildClaimedButton({
-    channelId: metadata.channelId,
-    messageTs: metadata.messageTs,
+    channelId: meta.channelId,
+    messageTs: meta.messageTs,
     mondayItemId: item.id,
-    ownerCount: 1,
-    dueDate,
+    ownerCount: ownerIds.length,
+    dueDate: dueDate ?? '',
   });
 
+  const monLink = `https://salemseats.monday.com/boards/${configCompat.monday.boardId}/pulses/${item.id}`;
+  const ownerLabel = meta.aiOwnerName ? `${meta.aiOwnerName}` : `<@${userId}>`;
   await slack.postToThread(
-    metadata.messageTs,
-    `✅ Task created by <@${userId}> — due ${dueDate} — <https://salemseats.monday.com/boards/${configCompat.monday.boardId}/pulses/${item.id}|view in Monday>`,
-    metadata.channelId
+    meta.messageTs,
+    `✅ Task created — owner: ${ownerLabel}${dueDate ? ` · due ${dueDate}` : ''} — <${monLink}|view in Monday>`,
+    meta.channelId
   );
 
-  await scheduleClaimReminderDM(userId, item.id, dueDate);
+  if (dueDate) {
+    await scheduleClaimReminderDM(userId, item.id, dueDate);
+  }
 }
 
 /**

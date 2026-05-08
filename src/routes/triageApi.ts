@@ -95,6 +95,88 @@ interface ReviewRequestBody {
   notes: string;
 }
 
+export interface TaskReviewResult {
+  taskName: string;
+  owner: { mondayId: string; name: string } | null;
+  dueDate: string | null;
+  taskType: string;
+  taskTypeConfident: boolean;
+  urgency: 'High' | 'Medium' | 'Low';
+  team: string | null;
+  supporters: Array<{ mondayId: string; name: string }> | null;
+  cleanedNotes: string;
+  missingFields: Array<{ field: string; question: string; suggestions: string[] }> | null;
+}
+
+/** Extracted from /tasks/review so the same Claude review logic can be invoked
+ *  in-process from other routes (e.g. the Slack claim-button handler). */
+export async function reviewTaskForEmail(messageId: string, notes: string): Promise<TaskReviewResult> {
+  const msg = await coreApiGoogle.gmail.getMessage(messageId, 'full');
+  const headers = msg.payload?.headers ?? [];
+  const subject = getHeader(headers, 'subject') ?? '(no subject)';
+  const fromEmail = getHeader(headers, 'from');
+  const toEmail = getHeader(headers, 'to');
+  const bodyText = extractEmailBody(msg.payload);
+
+  const analysisBody = notes
+    ? `Instructions from user: ${notes}\n\n${bodyText}`
+    : bodyText;
+
+  const analysis: AnalysisResult = await analyzeEmailSafe(
+    subject,
+    analysisBody,
+    subject,
+    fromEmail,
+    toEmail,
+    bodyText
+  );
+
+  const ownerUser = await findUserByName(analysis.owner);
+  const taskType = getTaskTypeDisplayName(analysis.taskType);
+
+  let dueDate: string | null = parseDate(analysis.dueDate);
+  const asapDetected = isAsapDate(analysis.dueDate);
+  if (asapDetected) dueDate = null;
+
+  const urgency = asapDetected ? 'High' : mapPriorityToUrgency(analysis.priority);
+  const taskName = normalizeSubject(subject);
+
+  const supporters: Array<{ mondayId: string; name: string }> = [];
+  for (const supporterName of analysis.supporters) {
+    const supporterUser = await findUserByName(supporterName);
+    if (supporterUser) {
+      supporters.push({
+        mondayId: supporterUser.mondayId.toString(),
+        name: supporterUser.name,
+      });
+    }
+  }
+
+  const missingFields: Array<{ field: string; question: string; suggestions: string[] }> = [];
+  if (!ownerUser) {
+    missingFields.push({
+      field: 'owner',
+      question: `Could not resolve owner "${analysis.owner}". Who should this be assigned to?`,
+      suggestions: [],
+    });
+  }
+
+  return {
+    taskName,
+    owner: ownerUser
+      ? { mondayId: ownerUser.mondayId.toString(), name: ownerUser.name }
+      : null,
+    dueDate,
+    taskType,
+    taskTypeConfident: analysis.confidence >= 0.7,
+    urgency,
+    team: analysis.team ?? null,
+    supporters: supporters.length > 0 ? supporters : null,
+    cleanedNotes: analysis.notes || notes || '',
+    missingFields: missingFields.length > 0 ? missingFields : null,
+  };
+}
+
 router.post('/tasks/review', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
@@ -106,86 +188,8 @@ router.post('/tasks/review', async (req: Request, res: Response): Promise<void> 
   }
 
   try {
-    // Fetch the email from Gmail via core-api
-    const msg = await coreApiGoogle.gmail.getMessage(messageId, 'full');
-    const headers = msg.payload?.headers ?? [];
-
-    const subject = getHeader(headers, 'subject') ?? '(no subject)';
-    const fromEmail = getHeader(headers, 'from');
-    const toEmail = getHeader(headers, 'to');
-    const bodyText = extractEmailBody(msg.payload);
-
-    // Combine user notes with body for AI analysis
-    const analysisBody = notes
-      ? `Instructions from user: ${notes}\n\n${bodyText}`
-      : bodyText;
-
-    // Run Claude AI analysis
-    const analysis: AnalysisResult = await analyzeEmailSafe(
-      subject,
-      analysisBody,
-      subject,
-      fromEmail,
-      toEmail,
-      bodyText
-    );
-
-    // Resolve owner
-    const ownerUser = await findUserByName(analysis.owner);
-
-    // Resolve task type
-    const taskType = getTaskTypeDisplayName(analysis.taskType);
-
-    // Parse due date
-    let dueDate: string | null = parseDate(analysis.dueDate);
-    const asapDetected = isAsapDate(analysis.dueDate);
-    if (asapDetected) {
-      dueDate = null;
-    }
-
-    // Map priority to urgency
-    const urgency = asapDetected ? 'High' : mapPriorityToUrgency(analysis.priority);
-
-    // Build task name (no [Team] prefix — team shown as separate field in triage app)
-    const taskName = normalizeSubject(subject);
-
-    // Resolve supporters
-    const supporters: Array<{ mondayId: string; name: string }> = [];
-    for (const supporterName of analysis.supporters) {
-      const supporterUser = await findUserByName(supporterName);
-      if (supporterUser) {
-        supporters.push({
-          mondayId: supporterUser.mondayId.toString(),
-          name: supporterUser.name,
-        });
-      }
-    }
-
-    // Detect missing fields
-    const missingFields: Array<{ field: string; question: string; suggestions: string[] }> = [];
-    if (!ownerUser) {
-      missingFields.push({
-        field: 'owner',
-        question: `Could not resolve owner "${analysis.owner}". Who should this be assigned to?`,
-        suggestions: [],
-      });
-    }
-
-    res.json({
-      taskName,
-      owner: ownerUser
-        ? { mondayId: ownerUser.mondayId.toString(), name: ownerUser.name }
-        : null,
-      dueDate,
-      taskType,
-      taskTypeConfident: analysis.confidence >= 0.7,
-      urgency,
-      team: analysis.team ?? null,
-      supporters: supporters.length > 0 ? supporters : null,
-      cleanedNotes: analysis.notes || notes || '',
-      typoFixes: null,
-      missingFields: missingFields.length > 0 ? missingFields : null,
-    });
+    const result = await reviewTaskForEmail(messageId, notes ?? '');
+    res.json({ ...result, typoFixes: null });
   } catch (error) {
     console.error('[Triage API] Review failed:', error);
     res.status(500).json({
