@@ -1529,7 +1529,7 @@ export async function batchLookupAccountsForScan(
   function buildAccountInfo(email: string, rows: AccountInfo[], allAccountsByEmail: Map<string, { seatLocations: ParsedSeatLocation[] }>): ScanAccountInfo {
     const firstRow = rows[0].rowData;
     const name = getColumnValue(firstRow, headers, 'name', 'account name', 'customer name', 'full name');
-    const planType = getColumnValue(firstRow, headers, 'plan type', 'plan', 'package', 'plan name', 'plan/pkg');
+    const planType = getColumnValue(firstRow, headers, 'option', 'plan type', 'plan', 'package', 'plan name', 'plan/pkg');
     const last4 = getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4');
     const exp = getColumnValue(firstRow, headers, 'exp', 'expiration', 'exp date', 'expiry');
     const cvv = getColumnValue(firstRow, headers, 'cvc', 'cvv', 'security code', 'cv2');
@@ -1737,7 +1737,7 @@ export async function backfillPlanTypeAndPacks(
     throw new Error(`Team lookup failed for "${teamName}": ${lookupResult.error ?? 'unknown'}`);
   }
   const srcEmailIdx = findColumnIndex(lookupResult.headers, 'email', 'e-mail', 'email address');
-  const srcPlanTypeIdx = findColumnIndex(lookupResult.headers, 'plan type', 'plan', 'package', 'plan name', 'plan/pkg');
+  const srcPlanTypeIdx = findColumnIndex(lookupResult.headers, 'option', 'plan type', 'plan', 'package', 'plan name', 'plan/pkg');
   if (srcEmailIdx < 0) throw new Error(`Source team sheet "${lookupResult.sheetName}" has no email column`);
   if (srcPlanTypeIdx < 0) throw new Error(`Source team sheet "${lookupResult.sheetName}" has no plan/plan type/package column. Headers: ${lookupResult.headers.join(', ')}`);
 
