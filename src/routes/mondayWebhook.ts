@@ -14,6 +14,7 @@ import { config } from '../config/environment.js';
 import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import * as sync from '../services/sync.js';
+import { handleAssociateLink, ASSOCIATE_LINK_TRIGGER } from '../services/associateLink.js';
 import { getDmCooldown, setDmCooldown, DM_COOLDOWN_TTL } from '../services/pendingState.js';
 
 const router = Router();
@@ -291,6 +292,19 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
         const newPersonIds = parsePersonIds(event.value);
         const oldPersonIds = parsePersonIds(event.previousValue);
         await notifyNewSupporters(event.pulseId, newPersonIds, oldPersonIds);
+      }
+
+      // Handle "Associate" link change on the Master Numbers board.
+      // Stamps the number onto the associate and reflects the link state.
+      // Replaces Bod's Sim-Directory associate automation. (Different board
+      // than this service's own, matched on boardId + columnId.)
+      if (
+        (event.type === 'change_column_value' || event.type === 'update_column_value') &&
+        event.boardId === ASSOCIATE_LINK_TRIGGER.boardId &&
+        event.columnId === ASSOCIATE_LINK_TRIGGER.columnId
+      ) {
+        console.log(`[AssociateLink] Trigger on item ${event.pulseId}`);
+        await handleAssociateLink(event);
       }
 
       // Handle item updates (comments)
