@@ -298,8 +298,10 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
       // Stamps the number onto the associate and reflects the link state.
       // Replaces Bod's Sim-Directory associate automation. (Different board
       // than this service's own, matched on boardId + columnId.)
+      // Match on board + column only. Any column-change event carries columnId,
+      // and Monday's delivered type string varies by subscription, so keying on
+      // the column avoids a silent miss. handleAssociateLink no-ops if unchanged.
       if (
-        (event.type === 'change_column_value' || event.type === 'update_column_value') &&
         event.boardId === ASSOCIATE_LINK_TRIGGER.boardId &&
         event.columnId === ASSOCIATE_LINK_TRIGGER.columnId
       ) {
