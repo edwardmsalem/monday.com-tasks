@@ -1434,8 +1434,9 @@ app.post('/admin/migrate/thread-buttons', express.json(), async (_req: Request, 
 app.all('/admin/backfill-associates', express.json(), async (req: Request, res: Response): Promise<void> => {
   try {
     const execute = req.query.confirm === 'BACKFILL_NOW';
+    const reveal = req.query.reveal === 'BACKFILL_NOW';
     const { runAssociateBackfill } = await import('./services/backfillAssociates.js');
-    const result = await runAssociateBackfill({ execute });
+    const result = await runAssociateBackfill({ execute, reveal });
     res.json(result);
   } catch (error) {
     console.error('[Backfill] Failed:', error);

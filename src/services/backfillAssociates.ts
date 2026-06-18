@@ -63,7 +63,7 @@ async function pageAll(boardId: string, colIds: string[]): Promise<PageItem[]> {
   return out;
 }
 
-export async function runAssociateBackfill(opts: { execute: boolean }): Promise<Record<string, unknown>> {
+export async function runAssociateBackfill(opts: { execute: boolean; reveal?: boolean }): Promise<Record<string, unknown>> {
   const associates = await pageAll(ASSOCIATES_BOARD_ID, [ASSOCIATE_SS_MOBILE_COL]);
   const masters = await pageAll(MASTER_NUMBERS_BOARD_ID, [MASTER_PHONE_COL, MASTER_ASSOCIATE_LINK_COL]);
 
@@ -79,7 +79,7 @@ export async function runAssociateBackfill(opts: { execute: boolean }): Promise<
 
   const matched: Array<{ associateId: string; associateName: string; masterId: string; phone: string }> = [];
   const collisions: Array<{ associate: string; phone: string; masterCount: number }> = [];
-  const notFound: Array<{ associate: string; phone: string }> = [];
+  const notFound: Array<{ associate: string; associateId: string; phone: string }> = [];
   const alreadyLinkedToOther: Array<{ associate: string; phone: string; masterId: string }> = [];
   let withSsMobile = 0;
   let alreadyCorrect = 0;
@@ -91,11 +91,11 @@ export async function runAssociateBackfill(opts: { execute: boolean }): Promise<
 
     const rows = masterByPhone.get(ss);
     if (!rows || rows.length === 0) {
-      notFound.push({ associate: a.name, phone: mask(ss) });
+      notFound.push({ associate: a.name, associateId: a.id, phone: ss });
       continue;
     }
     if (rows.length > 1) {
-      collisions.push({ associate: a.name, phone: mask(ss), masterCount: rows.length });
+      collisions.push({ associate: a.name, phone: ss, masterCount: rows.length });
       continue;
     }
     const m = rows[0];
@@ -140,7 +140,7 @@ export async function runAssociateBackfill(opts: { execute: boolean }): Promise<
     }
   }
 
-  return {
+  const result: Record<string, unknown> = {
     mode: opts.execute ? 'execute' : 'dry-run',
     associatesTotal: associates.length,
     associatesWithSsMobile: withSsMobile,
@@ -153,10 +153,18 @@ export async function runAssociateBackfill(opts: { execute: boolean }): Promise<
     writeErrors: writeErrors.length,
     samples: {
       matched: matched.slice(0, 5).map(m => ({ associate: m.associateName, phone: mask(m.phone) })),
-      notFound: notFound.slice(0, 5),
-      collisions: collisions.slice(0, 5),
+      notFound: notFound.slice(0, 5).map(n => ({ associate: n.associate, phone: mask(n.phone) })),
+      collisions: collisions.slice(0, 5).map(c => ({ associate: c.associate, phone: mask(c.phone), masterCount: c.masterCount })),
       alreadyLinkedToOther: alreadyLinkedToOther.slice(0, 5),
       writeErrors: writeErrors.slice(0, 5),
     },
   };
+
+  // Full unmasked lists for export, gated behind the reveal token.
+  if (opts.reveal) {
+    result.notFoundList = notFound.map(n => ({ associate: n.associate, associateId: n.associateId, mdn: n.phone }));
+    result.collisionsList = collisions;
+  }
+
+  return result;
 }
