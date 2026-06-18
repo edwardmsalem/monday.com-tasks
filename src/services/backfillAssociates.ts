@@ -19,6 +19,7 @@ const ASSOCIATES_BOARD_ID = '7511353761';
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
 const MASTER_NUMBERS_BOARD_ID = '18414675114';
 const MASTER_PHONE_COL = 'phone_mm3pv28f';
+const MASTER_ICCID_COL = 'text_mm3ns0j';
 const MASTER_ASSOCIATE_LINK_COL = 'board_relation_mm4dm77t';
 
 interface PageItem {
@@ -65,7 +66,7 @@ async function pageAll(boardId: string, colIds: string[]): Promise<PageItem[]> {
 
 export async function runAssociateBackfill(opts: { execute: boolean; reveal?: boolean }): Promise<Record<string, unknown>> {
   const associates = await pageAll(ASSOCIATES_BOARD_ID, [ASSOCIATE_SS_MOBILE_COL]);
-  const masters = await pageAll(MASTER_NUMBERS_BOARD_ID, [MASTER_PHONE_COL, MASTER_ASSOCIATE_LINK_COL]);
+  const masters = await pageAll(MASTER_NUMBERS_BOARD_ID, [MASTER_PHONE_COL, MASTER_ICCID_COL, MASTER_ASSOCIATE_LINK_COL]);
 
   // Index Master rows by last-10-digit phone.
   const masterByPhone = new Map<string, PageItem[]>();
@@ -164,6 +165,13 @@ export async function runAssociateBackfill(opts: { execute: boolean; reveal?: bo
   if (opts.reveal) {
     result.notFoundList = notFound.map(n => ({ associate: n.associate, associateId: n.associateId, mdn: n.phone }));
     result.collisionsList = collisions;
+    // Normalized ICCIDs across all Master rows (digits only; drops trailing F).
+    const iccids: string[] = [];
+    for (const m of masters) {
+      const ic = String(colText(m, MASTER_ICCID_COL) ?? '').replace(/\D/g, '');
+      if (ic) iccids.push(ic);
+    }
+    result.masterIccids = iccids;
   }
 
   return result;
