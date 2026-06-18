@@ -25,9 +25,11 @@ const MASTER_ASSOCIATE_LINK_COL = 'board_relation_mm4dm77t'; // "Associate" conn
 const MASTER_PHONE_COL = 'phone_mm3pv28f';
 const MASTER_ASSOCIATE_STATUS_COL = 'color_mm3pwvz4'; // labels: Active ... Not Linked
 const MASTER_ASSOCIATE_ID_COL = 'text_mm3p3w1z';
+const MASTER_TM_EMAIL_COL = 'email_mm3ndwda'; // "Bound TM Account" email assigned to the SIM
 
-// Associates board column the number gets stamped onto
+// Associates board columns
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
+const ASSOCIATE_SS_EMAIL_COL = 'ss_email';
 
 export const ASSOCIATE_LINK_TRIGGER = {
   boardId: Number(MASTER_NUMBERS_BOARD_ID),
@@ -115,13 +117,25 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
 
   // LINK
   if (newId) {
+    // Stamp the SIM's number onto the associate.
     await setColumnValues(ASSOCIATES_BOARD_ID, newId, {
       [ASSOCIATE_SS_MOBILE_COL]: { phone: phoneDigits, countryShortName: 'US' },
     });
-    await setColumnValues(MASTER_NUMBERS_BOARD_ID, masterItemId, {
+
+    // Reflect link state on the SIM row, and assign the associate's SS email to
+    // the SIM (fill if blank or already matching; never clobber a different one).
+    const masterEmail = (await readColumnText(masterItemId, MASTER_TM_EMAIL_COL)).trim();
+    const assocEmail = (await readColumnText(newId, ASSOCIATE_SS_EMAIL_COL)).trim();
+    const masterVals: Record<string, unknown> = {
       [MASTER_ASSOCIATE_STATUS_COL]: { label: 'Active' },
       [MASTER_ASSOCIATE_ID_COL]: newId,
-    });
+    };
+    if (assocEmail && (!masterEmail || masterEmail.toLowerCase() === assocEmail.toLowerCase())) {
+      masterVals[MASTER_TM_EMAIL_COL] = { email: assocEmail, text: assocEmail };
+    } else if (assocEmail && masterEmail) {
+      console.warn(`[AssociateLink] email conflict on ${masterItemId}: SIM has ${masterEmail}, associate SS email ${assocEmail} — left SIM email unchanged`);
+    }
+    await setColumnValues(MASTER_NUMBERS_BOARD_ID, masterItemId, masterVals);
     console.log(`[AssociateLink] Linked item ${masterItemId} -> associate ${newId}, stamped ${phoneDigits}`);
     return;
   }

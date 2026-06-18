@@ -1436,12 +1436,27 @@ app.all('/admin/backfill-associates', express.json(), async (req: Request, res: 
     const execute = req.query.confirm === 'BACKFILL_NOW';
     const reveal = req.query.reveal === 'BACKFILL_NOW';
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
-    const { runAssociateBackfill } = await import('./services/backfillAssociates.js');
-    const result = await runAssociateBackfill({ execute, reveal, limit });
-    res.json(result);
+    const { computeBackfillPlan, executeBackfillWrites } = await import('./services/backfillAssociates.js');
+
+    const plan = await computeBackfillPlan({ reveal });
+
+    if (!execute) {
+      res.json({ mode: 'dry-run', ...plan.summary });
+      return;
+    }
+    if (limit && limit > 0) {
+      const result = await executeBackfillWrites(plan.matched, { limit });
+      res.json({ mode: 'execute-sample', ...plan.summary, ...result });
+      return;
+    }
+    // Full run: respond now, write in the background so we don't hit the HTTP timeout.
+    res.json({ mode: 'execute-started', readyToLink: plan.matched.length, ...plan.summary });
+    void executeBackfillWrites(plan.matched)
+      .then(r => console.log(`[Backfill] background run done: written=${r.written}, errors=${r.writeErrors}`))
+      .catch(e => console.error('[Backfill] background run failed:', e));
   } catch (error) {
     console.error('[Backfill] Failed:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+    if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
 
