@@ -165,13 +165,15 @@ export async function runAssociateBackfill(opts: { execute: boolean; reveal?: bo
   if (opts.reveal) {
     result.notFoundList = notFound.map(n => ({ associate: n.associate, associateId: n.associateId, mdn: n.phone }));
     result.collisionsList = collisions;
-    // Normalized ICCIDs across all Master rows (digits only; drops trailing F).
-    const iccids: string[] = [];
+    // Master rows that carry an ICCID, paired with their phone, for SIM-level
+    // joins (digits only; drops the trailing F on ICCIDs).
+    const rows: Array<{ id: string; phone: string; iccid: string }> = [];
     for (const m of masters) {
-      const ic = String(colText(m, MASTER_ICCID_COL) ?? '').replace(/\D/g, '');
-      if (ic) iccids.push(ic);
+      const iccid = String(colText(m, MASTER_ICCID_COL) ?? '').replace(/\D/g, '');
+      if (!iccid) continue;
+      rows.push({ id: m.id, phone: String(colText(m, MASTER_PHONE_COL) ?? '').replace(/\D/g, ''), iccid });
     }
-    result.masterIccids = iccids;
+    result.masterRows = rows;
   }
 
   return result;
