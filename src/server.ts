@@ -1435,8 +1435,9 @@ app.all('/admin/backfill-associates', express.json(), async (req: Request, res: 
   try {
     const execute = req.query.confirm === 'BACKFILL_NOW';
     const reveal = req.query.reveal === 'BACKFILL_NOW';
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
     const { runAssociateBackfill } = await import('./services/backfillAssociates.js');
-    const result = await runAssociateBackfill({ execute, reveal });
+    const result = await runAssociateBackfill({ execute, reveal, limit });
     res.json(result);
   } catch (error) {
     console.error('[Backfill] Failed:', error);

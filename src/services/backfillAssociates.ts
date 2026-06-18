@@ -64,7 +64,7 @@ async function pageAll(boardId: string, colIds: string[]): Promise<PageItem[]> {
   return out;
 }
 
-export async function runAssociateBackfill(opts: { execute: boolean; reveal?: boolean }): Promise<Record<string, unknown>> {
+export async function runAssociateBackfill(opts: { execute: boolean; reveal?: boolean; limit?: number }): Promise<Record<string, unknown>> {
   const associates = await pageAll(ASSOCIATES_BOARD_ID, [ASSOCIATE_SS_MOBILE_COL]);
   const masters = await pageAll(MASTER_NUMBERS_BOARD_ID, [MASTER_PHONE_COL, MASTER_ICCID_COL, MASTER_ASSOCIATE_LINK_COL]);
 
@@ -121,9 +121,11 @@ export async function runAssociateBackfill(opts: { execute: boolean; reveal?: bo
   }
 
   let written = 0;
+  const writtenList: Array<{ associate: string; associateId: string; masterId: string; phone: string }> = [];
   const writeErrors: Array<{ masterId: string; error: string }> = [];
   if (opts.execute) {
-    for (const item of matched) {
+    const toWrite = opts.limit && opts.limit > 0 ? matched.slice(0, opts.limit) : matched;
+    for (const item of toWrite) {
       try {
         await coreApiMonday.query(
           `mutation ($b: ID!, $i: ID!, $v: JSON!) { change_multiple_column_values(board_id: $b, item_id: $i, column_values: $v) { id } }`,
@@ -134,6 +136,7 @@ export async function runAssociateBackfill(opts: { execute: boolean; reveal?: bo
           }
         );
         written++;
+        writtenList.push({ associate: item.associateName, associateId: item.associateId, masterId: item.masterId, phone: mask(item.phone) });
         await sleep(250); // throttle for the complexity budget
       } catch (e) {
         writeErrors.push({ masterId: item.masterId, error: e instanceof Error ? e.message : 'unknown' });
@@ -151,6 +154,7 @@ export async function runAssociateBackfill(opts: { execute: boolean; reveal?: bo
     collisions: collisions.length,
     alreadyLinkedToOther: alreadyLinkedToOther.length,
     written,
+    writtenList,
     writeErrors: writeErrors.length,
     samples: {
       matched: matched.slice(0, 5).map(m => ({ associate: m.associateName, phone: mask(m.phone) })),
