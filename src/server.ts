@@ -1424,6 +1424,26 @@ app.post('/admin/migrate/thread-buttons', express.json(), async (_req: Request, 
 });
 
 /**
+ * One-off backfill: link existing numbers to their associates.
+ * Dry run by default (read-only, returns counts). Pass ?confirm=BACKFILL_NOW
+ * to perform the throttled writes. Drives from the Associates board's SS Mobile.
+ *
+ * Usage: GET /admin/backfill-associates            (dry run)
+ *        POST /admin/backfill-associates?confirm=BACKFILL_NOW   (execute)
+ */
+app.all('/admin/backfill-associates', express.json(), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const execute = req.query.confirm === 'BACKFILL_NOW';
+    const { runAssociateBackfill } = await import('./services/backfillAssociates.js');
+    const result = await runAssociateBackfill({ execute });
+    res.json(result);
+  } catch (error) {
+    console.error('[Backfill] Failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+/**
  * Migration endpoint: Add buttons to existing issue call messages
  * Safe to re-run (skips messages that already have buttons)
  * Also auto-marks status based on reactions (✅=Done, 🔴=Stuck, 🟡=Working)
