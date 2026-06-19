@@ -1461,6 +1461,31 @@ app.all('/admin/backfill-associates', express.json(), async (req: Request, res: 
 });
 
 /**
+ * One-off: mark "Call Forwards?" = No on all SIMs in bank-isolated banks
+ * (50024, 50032). Dry run by default; ?confirm=MARK_NO to write (background).
+ * ?reveal=1 lists the bad-bank SIMs already in season-ticket use (cleanup).
+ */
+app.all('/admin/mark-call-forwards-no', express.json(), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const execute = req.query.confirm === 'MARK_NO';
+    const reveal = req.query.reveal === '1';
+    const { computeCallFwdPlan, executeCallFwdNo } = await import('./services/markCallForwards.js');
+    const plan = await computeCallFwdPlan(reveal);
+    if (!execute) {
+      res.json({ mode: 'dry-run', ...plan.summary });
+      return;
+    }
+    res.json({ mode: 'execute-started', toSet: plan.toSet.length, ...plan.summary });
+    void executeCallFwdNo(plan.toSet)
+      .then(r => console.log(`[CallFwd] done: written=${r.written}, errors=${r.writeErrors}`))
+      .catch(e => console.error('[CallFwd] failed:', e));
+  } catch (error) {
+    console.error('[CallFwd] Failed:', error);
+    if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+/**
  * Migration endpoint: Add buttons to existing issue call messages
  * Safe to re-run (skips messages that already have buttons)
  * Also auto-marks status based on reactions (✅=Done, 🔴=Stuck, 🟡=Working)
