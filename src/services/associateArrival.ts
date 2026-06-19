@@ -64,7 +64,7 @@ async function readItem(itemId: string): Promise<{ boardId: string; ssDigits: st
 
 async function findMasterByPhone(digits: string): Promise<{ id: string; linkedId: string | null } | null | 'ambiguous'> {
   const query = `
-    query ($b: ID!, $vals: [String!]) {
+    query ($b: ID!, $vals: [String]!) {
       items_page_by_column_values(limit: 5, board_id: $b, columns: [{column_id: "${MASTER_PHONE_COL}", column_values: $vals}]) {
         items { id column_values(ids: ["${MASTER_ASSOCIATE_LINK_COL}"]) { ... on BoardRelationValue { linked_item_ids } } }
       }
