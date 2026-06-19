@@ -125,11 +125,13 @@ async def _find_pending() -> list[dict]:
     return [it for it in items if not _col(it, LEAD_SS_MOBILE_COL)]
 
 
-async def _stamp_done(lead_id: str, mdn_digits: str) -> None:
-    cv = {
-        LEAD_SS_MOBILE_COL: {"phone": mdn_digits, "countryShortName": "US"},
-        LEAD_STATUS_COL: {"label": DONE_LABEL},
-    }
+async def _stamp_number(lead_id: str, mdn_digits: str) -> None:
+    # Only stamp the SS number. We do NOT set "Setup Complete": the operator
+    # sets that after the (still-manual) SS email, and that is what triggers the
+    # native Monday move to Associates. Leaving status alone keeps the human in
+    # control of the changeover. The poller will not re-process this lead because
+    # _find_pending filters out leads that already have an ss_mobile.
+    cv = {LEAD_SS_MOBILE_COL: {"phone": mdn_digits, "countryShortName": "US"}}
     mut = (
         "mutation{change_multiple_column_values(board_id:%s, item_id:%s, "
         "column_values:%s, create_labels_if_missing:true){id}}"
@@ -169,8 +171,8 @@ async def _run_one(lead: dict) -> None:
         return
 
     digits = "".join(c for c in str(res["new_mdn"]) if c.isdigit())
-    await _stamp_done(lead_id, digits)
-    _log(f"lead {lead_id}: SS number {digits} (SIM {res.get('sim_iccid')}) stamped + '{DONE_LABEL}'")
+    await _stamp_number(lead_id, digits)
+    _log(f"lead {lead_id}: SS number {digits} (SIM {res.get('sim_iccid')}) stamped (status left for operator)")
 
 
 async def main() -> None:

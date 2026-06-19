@@ -38,7 +38,6 @@ const LEAD_SS_MOBILE_COL = 'ss_mobile';
 
 // Status labels on lead_status
 const TRIGGER_LABEL = 'Request Setup';
-const DONE_LABEL = 'Setup Complete';
 
 // farm-b
 const FARM_B_API_URL = process.env.FARM_B_API_URL ?? '';
@@ -213,13 +212,13 @@ export async function handleSsNumberRequest(event: SsNumberEvent): Promise<void>
     return;
   }
 
-  // Stamp the SS number onto the lead. (farm-b writeback already put the MDN on
-  // Master Numbers by ICCID; the SIM<->person link is finalized later when the
-  // lead becomes an associate and is linked on Master Numbers.)
+  // Stamp the SS number onto the lead only. We do NOT set "Setup Complete":
+  // the operator sets that after the (still-manual) SS email, and that is what
+  // triggers the native Monday move to Associates. The SIM<->person link is then
+  // (re)established on Master Numbers by the relink sweep after the move.
   const digits = result.new_mdn.replace(/\D/g, '');
   await setColumnValues(LEADS_BOARD_ID, leadId, {
     [LEAD_SS_MOBILE_COL]: { phone: digits, countryShortName: 'US' },
-    [LEAD_STATUS_COL]: { label: DONE_LABEL },
   });
-  console.log(`[SsNumber] item ${leadId}: SS number ${digits} (SIM ${result.sim_iccid}) -> stamped + marked "${DONE_LABEL}"`);
+  console.log(`[SsNumber] item ${leadId}: SS number ${digits} (SIM ${result.sim_iccid}) -> stamped (status left for operator)`);
 }

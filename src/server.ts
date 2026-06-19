@@ -1807,6 +1807,10 @@ async function start() {
     // Start digest scheduler (Phase 4 - Digest Notification System)
     digestScheduler.startDigestScheduler();
     console.log('Digest scheduler started (morning digests, escalations, EOD)');
+
+    // Start associate relink sweep: keeps the SIM<->person link on Master Numbers
+    // intact across the native-Monday lead->associate move (reuses the backfill).
+    void import('./services/associateRelinkScheduler.js').then(m => m.startAssociateRelinkScheduler());
   });
 }
 
