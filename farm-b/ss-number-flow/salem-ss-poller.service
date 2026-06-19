@@ -1,0 +1,14 @@
+[Unit]
+Description=SS-number poller (season-ticket: Leads "Request Setup" -> allocate SIM + Unavo swap)
+After=network-online.target farm_b-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=salem
+Group=salem
+WorkingDirectory=/opt/salem
+EnvironmentFile=/opt/salem/.env
+ExecStart=/opt/salem/venv/bin/python -m tm_deterministic.bin.ss_poller
+# the swap can take minutes; the poller's flock prevents overlap
+TimeoutStartSec=900

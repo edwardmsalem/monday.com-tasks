@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the SS-number poller every 2 minutes (off until enabled)
+
+[Timer]
+OnBootSec=2min
+# fire 2 min after the previous run FINISHES (no overlap with a long swap)
+OnUnitInactiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

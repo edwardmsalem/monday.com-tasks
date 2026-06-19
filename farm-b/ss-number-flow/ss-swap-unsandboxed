@@ -1,0 +1,40 @@
+#!/bin/bash
+# Launch a season-ticket SS-number Unavo swap OUTSIDE the farm_b-api systemd
+# sandbox. DUPLICATE of /usr/local/bin/aao-run-unsandboxed, pointed at the new
+# ss_swap entry instead of run_az, and passing identity args instead of --email.
+#
+# The farm_b-api service runs with PrivateTmp=yes + ProtectHome=yes, which
+# crashes the HEADED Unavo-swap browser (no real HOME/tmp). A transient
+# systemd unit (systemd-run WITHOUT --scope) runs in a fresh mount namespace
+# with no inherited sandbox -- the same unsandboxed condition aao_batch uses.
+#
+# Invoked by the API service:
+#   sudo -n /usr/local/bin/ss-swap-unsandboxed <iccid> <first> <last> <addr1> <city> <ST> <zip>
+# Deploy to: /usr/local/bin/ss-swap-unsandboxed  (root; chmod 755)
+set -euo pipefail
+
+ICCID="${1:-}"; FIRST="${2:-}"; LAST="${3:-}"; ADDR1="${4:-}"; CITY="${5:-}"; ST="${6:-}"; ZIP="${7:-}"
+
+if [[ -z "$ICCID" || -z "$FIRST" || -z "$ADDR1" || -z "$CITY" || -z "$ST" || -z "$ZIP" ]]; then
+  echo "ss-swap-unsandboxed: missing required arg (iccid first last addr1 city ST zip)" >&2
+  exit 2
+fi
+if [[ ! "$ST" =~ ^[A-Za-z]{2}$ ]]; then
+  echo "ss-swap-unsandboxed: state must be 2-letter code" >&2
+  exit 2
+fi
+
+exec systemd-run --pipe --wait --collect --quiet \
+  --uid=salem --gid=salem \
+  --setenv=DISPLAY=:99 \
+  --setenv=HOME=/home/salem \
+  --setenv=PLAYWRIGHT_BROWSERS_PATH=/opt/salem/.ms-playwright \
+  --working-directory=/opt/salem \
+  /opt/salem/venv/bin/python -m tm_deterministic.bin.ss_swap \
+    --iccid "$ICCID" \
+    --first-name "$FIRST" \
+    --last-name "$LAST" \
+    --address1 "$ADDR1" \
+    --city "$CITY" \
+    --state "$ST" \
+    --zip "$ZIP"
