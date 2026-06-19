@@ -66,7 +66,10 @@ async def sim_ss_number_swap(req: SsNumberSwapRequest) -> dict:
     # sim_claim_eligible defaults to preferring bank 50028 (AAO-clean, has call
     # forwarding). We still verify the claimed row is not a no-call-forward bank
     # and is not explicitly Call Forwards=No, and release it if so.
-    claim = await sim_claim_eligible(prefer_bank_id=req.prefer_bank_id)
+    # pass ALL params explicitly: sim_claim_eligible is a FastAPI handler whose
+    # unpassed Body() defaults would otherwise leak in as Body objects (crashes
+    # `if tm_email:` with 'Body' object has no attribute 'strip').
+    claim = await sim_claim_eligible(prefer_bank_id=req.prefer_bank_id, tm_email=None, service="ss-number", notes=None)
     if not claim.get("ok"):
         return {"ok": False, "reason": "no_eligible_sim", "claim": claim}
 
@@ -82,7 +85,7 @@ async def sim_ss_number_swap(req: SsNumberSwapRequest) -> dict:
         cf = (_sim_column_map(row).get(SS_CALL_FWD_COL) or "").strip().lower()
     if bank_id in SS_BAD_BANKS or cf == "no":
         # release is keyed on phone; no bound email was set, so force=False is fine
-        await sim_release(phone=str(claim.get("sim_phone") or ""))
+        await sim_release(phone=str(claim.get("sim_phone") or ""), force=False)
         return {"ok": False, "reason": "claimed_sim_no_call_forwarding",
                 "sim_item_id": sim_item_id, "bank_id": bank_id}
 
@@ -112,7 +115,7 @@ async def sim_ss_number_swap(req: SsNumberSwapRequest) -> dict:
     # On failure, release the SIM back to the pool (it was claimed in-use).
     if not ok:
         try:
-            await sim_release(phone=str(claim.get("sim_phone") or ""))
+            await sim_release(phone=str(claim.get("sim_phone") or ""), force=False)
         except Exception as _e:
             pass
         return {"ok": False, "result": "HALT", "reason": result.get("reason"),
