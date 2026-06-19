@@ -1486,6 +1486,30 @@ app.all('/admin/mark-call-forwards-no', express.json(), async (req: Request, res
 });
 
 /**
+ * One-off: clear junk Use Case values ("unassigned" / "empty") on Master Numbers.
+ * Usage: GET  /admin/clear-usecase-junk                  (dry run)
+ *        POST /admin/clear-usecase-junk?confirm=CLEAR    (execute, background)
+ */
+app.all('/admin/clear-usecase-junk', express.json(), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const execute = req.query.confirm === 'CLEAR';
+    const { computeClearPlan, executeClear } = await import('./services/clearUseCaseJunk.js');
+    const plan = await computeClearPlan();
+    if (!execute) {
+      res.json({ mode: 'dry-run', count: plan.count, byLabel: plan.byLabel });
+      return;
+    }
+    res.json({ mode: 'execute-started', count: plan.count, byLabel: plan.byLabel });
+    void executeClear(plan.ids)
+      .then(r => console.log(`[ClearUseCase] done: cleared=${r.cleared}, errors=${r.errors}`))
+      .catch(e => console.error('[ClearUseCase] failed:', e));
+  } catch (error) {
+    console.error('[ClearUseCase] Failed:', error);
+    if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+/**
  * Migration endpoint: Add buttons to existing issue call messages
  * Safe to re-run (skips messages that already have buttons)
  * Also auto-marks status based on reactions (✅=Done, 🔴=Stuck, 🟡=Working)
