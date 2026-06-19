@@ -12,17 +12,19 @@
  * already linked correctly are skipped, so steady-state writes only the few
  * associates that newly arrived since the last tick.
  *
- * Self-healing by design: however the move happens (manual or recipe) and even
- * after downtime, the next sweep links anyone still unlinked. No second column,
- * no dependency on webhook delivery.
+ * This is a BACKSTOP only. The primary relink is event-driven (associateArrival,
+ * fired when an item lands on the Associates board) — cheap, per-item, no scan.
+ * This sweep does a full two-board scan, so it is OFF by default; enable it as a
+ * periodic safety net (e.g. daily) only if you want belt-and-suspenders coverage
+ * for missed webhooks. The /admin/backfill-associates route is the manual catch-up.
  *
- * Gated by RELINK_SWEEP_ENABLED (default on). Interval via RELINK_INTERVAL_MS
- * (default 15 min).
+ * Gated by RELINK_SWEEP_ENABLED (default OFF). Interval via RELINK_INTERVAL_MS
+ * (default 15 min when enabled).
  */
 
 import { computeBackfillPlan, executeBackfillWrites } from './backfillAssociates.js';
 
-const ENABLED = (process.env.RELINK_SWEEP_ENABLED ?? 'true') === 'true';
+const ENABLED = (process.env.RELINK_SWEEP_ENABLED ?? 'false') === 'true';
 const INTERVAL_MS = Number(process.env.RELINK_INTERVAL_MS ?? 15 * 60 * 1000);
 
 let interval: NodeJS.Timeout | null = null;

@@ -16,6 +16,7 @@ import * as slack from '../services/slack.js';
 import * as sync from '../services/sync.js';
 import { handleAssociateLink, ASSOCIATE_LINK_TRIGGER } from '../services/associateLink.js';
 import { handleSsNumberRequest, SS_NUMBER_TRIGGER } from '../services/ssNumberRequest.js';
+import { handleAssociateArrival, ASSOCIATE_ARRIVAL_TRIGGER } from '../services/associateArrival.js';
 import { getDmCooldown, setDmCooldown, DM_COOLDOWN_TTL } from '../services/pendingState.js';
 
 const router = Router();
@@ -319,6 +320,17 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
       ) {
         console.log(`[SsNumber] Trigger on lead ${event.pulseId}`);
         await handleSsNumberRequest(event);
+      }
+
+      // Handle a lead arriving on the Associates board (the "Setup Complete" move).
+      // Relinks that one associate's SIM on Master Numbers (match by SS phone).
+      // create_pulse fires when an item is moved into the board.
+      if (
+        event.type === 'create_pulse' &&
+        event.boardId === ASSOCIATE_ARRIVAL_TRIGGER.boardId
+      ) {
+        console.log(`[AssocArrival] New associate ${event.pulseId}`);
+        await handleAssociateArrival(event);
       }
 
       // Handle item updates (comments)
