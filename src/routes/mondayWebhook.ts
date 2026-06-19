@@ -15,6 +15,7 @@ import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import * as sync from '../services/sync.js';
 import { handleAssociateLink, ASSOCIATE_LINK_TRIGGER } from '../services/associateLink.js';
+import { handleSsNumberRequest, SS_NUMBER_TRIGGER } from '../services/ssNumberRequest.js';
 import { getDmCooldown, setDmCooldown, DM_COOLDOWN_TTL } from '../services/pendingState.js';
 
 const router = Router();
@@ -307,6 +308,17 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
       ) {
         console.log(`[AssociateLink] Trigger on item ${event.pulseId}`);
         await handleAssociateLink(event);
+      }
+
+      // Handle "Status" change to "Request Setup" on the Leads board -> create
+      // an SS number (allocate a SIM + run the Unavo swap on farm-b). Gated by
+      // SS_NUMBER_FLOW_ENABLED; dry-run otherwise. Matched on board + column.
+      if (
+        event.boardId === SS_NUMBER_TRIGGER.boardId &&
+        event.columnId === SS_NUMBER_TRIGGER.columnId
+      ) {
+        console.log(`[SsNumber] Trigger on lead ${event.pulseId}`);
+        await handleSsNumberRequest(event);
       }
 
       // Handle item updates (comments)
