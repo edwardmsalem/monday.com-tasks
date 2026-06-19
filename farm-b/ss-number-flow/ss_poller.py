@@ -174,7 +174,9 @@ async def _run_one(lead: dict) -> None:
         return
 
     _log(f"lead {lead_id} ({lead.get('name')}): requesting SS number, zip={identity['zip']}")
-    async with httpx.AsyncClient(timeout=600) as client:
+    # the swap's final SIM re-registration step can run ~8-10 min; wait it out so
+    # we don't give up before the number is recorded (flock prevents overlap).
+    async with httpx.AsyncClient(timeout=1200) as client:
         r = await client.post(f"{FARMB_API}{SWAP_PATH}", json={**identity, "dry_run": False})
     if r.status_code == 409:
         _log("endpoint busy (409) -> will retry next run")
