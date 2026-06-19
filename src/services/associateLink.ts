@@ -56,6 +56,12 @@ function firstLinkedId(value: unknown): string | null {
   return id ? String(id) : null;
 }
 
+async function readItemBoard(itemId: string): Promise<string> {
+  const query = `query ($ids: [ID!]) { items(ids: $ids) { board { id } } }`;
+  const result = (await coreApiMonday.query(query, { ids: [itemId] })) as { items?: Array<{ board?: { id: string } }> };
+  return result.items?.[0]?.board?.id ?? '';
+}
+
 async function readColumnText(itemId: string, columnId: string): Promise<string> {
   const query = `
     query ReadColumn($ids: [ID!], $cols: [String!]) {
@@ -117,8 +123,11 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
 
   // LINK
   if (newId) {
-    // Stamp the SIM's number onto the associate.
-    await setColumnValues(ASSOCIATES_BOARD_ID, newId, {
+    // The "Associate" column accepts items on the Leads OR Associates board (the
+    // link is set at the lead stage and rides the move to Associates). Stamp the
+    // SIM's number onto whichever board the linked person currently lives on.
+    const personBoard = (await readItemBoard(newId)) || ASSOCIATES_BOARD_ID;
+    await setColumnValues(personBoard, newId, {
       [ASSOCIATE_SS_MOBILE_COL]: { phone: phoneDigits, countryShortName: 'US' },
     });
 
@@ -145,7 +154,8 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
     if (phoneDigits) {
       const prevMobile = (await readColumnText(prevId, ASSOCIATE_SS_MOBILE_COL)).replace(/\D/g, '');
       if (prevMobile && prevMobile === phoneDigits) {
-        await setColumnValues(ASSOCIATES_BOARD_ID, prevId, {
+        const prevBoard = (await readItemBoard(prevId)) || ASSOCIATES_BOARD_ID;
+        await setColumnValues(prevBoard, prevId, {
           [ASSOCIATE_SS_MOBILE_COL]: { phone: '', countryShortName: '' },
         });
       }

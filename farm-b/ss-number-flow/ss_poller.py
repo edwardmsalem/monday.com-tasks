@@ -74,6 +74,9 @@ def _resolve_state(item: dict) -> str:
         return raw.upper()
     return _STATE_ABBR.get(raw.lower(), "")
 
+MASTER_NUMBERS_BOARD_ID = "18414675114"
+MASTER_ASSOCIATE_LINK_COL = "board_relation_mm4dm77t"  # accepts Leads + Associates
+
 FARMB_API = "http://127.0.0.1:18792"
 SWAP_PATH = "/api/sim/ss-number-swap"
 LOCK_PATH = "/tmp/ss_poller.lock"
@@ -140,6 +143,20 @@ async def _stamp_number(lead_id: str, mdn_digits: str) -> None:
     await _monday(mut)
 
 
+async def _link_master_to_lead(sim_item_id: str, lead_id: str) -> None:
+    # Set the SIM's "Associate" link on Master Numbers to the LEAD now. Because
+    # that column accepts both Leads and Associates and the item keeps its id
+    # through the move, the link follows the person to the Associates board
+    # automatically (Bod's mechanism) -- no relink needed.
+    cv = {MASTER_ASSOCIATE_LINK_COL: {"item_ids": [int(lead_id)]}}
+    mut = (
+        "mutation{change_multiple_column_values(board_id:%s, item_id:%s, "
+        "column_values:%s){id}}"
+        % (MASTER_NUMBERS_BOARD_ID, sim_item_id, json.dumps(json.dumps(cv)))
+    )
+    await _monday(mut)
+
+
 async def _run_one(lead: dict) -> None:
     lead_id = str(lead.get("id"))
     first, last = _split_name(lead.get("name") or "")
@@ -172,7 +189,10 @@ async def _run_one(lead: dict) -> None:
 
     digits = "".join(c for c in str(res["new_mdn"]) if c.isdigit())
     await _stamp_number(lead_id, digits)
-    _log(f"lead {lead_id}: SS number {digits} (SIM {res.get('sim_iccid')}) stamped (status left for operator)")
+    sim_item_id = res.get("sim_item_id")
+    if sim_item_id:
+        await _link_master_to_lead(str(sim_item_id), lead_id)
+    _log(f"lead {lead_id}: SS number {digits} (SIM {res.get('sim_iccid')}) stamped + Master SIM {sim_item_id} linked to lead (persists through move)")
 
 
 async def main() -> None:
