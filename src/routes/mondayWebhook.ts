@@ -16,7 +16,7 @@ import * as slack from '../services/slack.js';
 import * as sync from '../services/sync.js';
 import { handleAssociateLink, ASSOCIATE_LINK_TRIGGER } from '../services/associateLink.js';
 import { handleSsNumberRequest, SS_NUMBER_TRIGGER } from '../services/ssNumberRequest.js';
-import { handleAssociateArrival, ASSOCIATE_ARRIVAL_TRIGGER } from '../services/associateArrival.js';
+import { handleSetupCompleteRelink, SETUP_COMPLETE_TRIGGER } from '../services/associateArrival.js';
 import { getDmCooldown, setDmCooldown, DM_COOLDOWN_TTL } from '../services/pendingState.js';
 
 const router = Router();
@@ -322,15 +322,16 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
         await handleSsNumberRequest(event);
       }
 
-      // Handle a lead arriving on the Associates board (the "Setup Complete" move).
-      // Relinks that one associate's SIM on Master Numbers (match by SS phone).
-      // create_pulse fires when an item is moved into the board.
+      // Handle a lead's Status -> "Setup Complete" (the changeover that triggers
+      // the native move to Associates). Relinks that one person's SIM on Master
+      // Numbers once they land on the Associates board. Monday has no move-to-board
+      // webhook, so this status change is the reliable hook.
       if (
-        event.type === 'create_pulse' &&
-        event.boardId === ASSOCIATE_ARRIVAL_TRIGGER.boardId
+        event.boardId === SETUP_COMPLETE_TRIGGER.boardId &&
+        event.columnId === SETUP_COMPLETE_TRIGGER.columnId
       ) {
-        console.log(`[AssocArrival] New associate ${event.pulseId}`);
-        await handleAssociateArrival(event);
+        console.log(`[Relink] Status change on lead ${event.pulseId}`);
+        await handleSetupCompleteRelink(event);
       }
 
       // Handle item updates (comments)
