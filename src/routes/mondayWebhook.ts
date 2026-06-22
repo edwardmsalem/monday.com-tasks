@@ -16,6 +16,7 @@ import * as slack from '../services/slack.js';
 import * as sync from '../services/sync.js';
 import { handleAssociateLink, ASSOCIATE_LINK_TRIGGER } from '../services/associateLink.js';
 import { handleSsNumberRequest, SS_NUMBER_TRIGGER } from '../services/ssNumberRequest.js';
+import { handleEndorsedMove, ENDORSED_MOVE_TRIGGER } from '../services/endorsedMove.js';
 import { getDmCooldown, setDmCooldown, DM_COOLDOWN_TTL } from '../services/pendingState.js';
 
 const router = Router();
@@ -319,6 +320,17 @@ router.post('/webhook/monday', express.json(), async (req: Request, res: Respons
       ) {
         console.log(`[SsNumber] Trigger on lead ${event.pulseId}`);
         await handleSsNumberRequest(event);
+      }
+
+      // Handle "Stage" change to "Endorsed" on the Leads board -> move the lead to
+      // Associates (+ set Stage "Assigning Closer" so the AI closer-assigner fires).
+      // Replaces the native move recipe that can't fire off an automation's change.
+      if (
+        event.boardId === ENDORSED_MOVE_TRIGGER.boardId &&
+        event.columnId === ENDORSED_MOVE_TRIGGER.columnId
+      ) {
+        console.log(`[EndorsedMove] Stage change on lead ${event.pulseId}`);
+        await handleEndorsedMove(event);
       }
 
 
