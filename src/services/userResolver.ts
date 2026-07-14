@@ -39,22 +39,39 @@ async function loadUsers(): Promise<UnifiedUser[]> {
 
   console.log(`Found ${mondayUsers.length} Monday users, ${slackUsers.length} Slack users`);
 
-  // Build a map of Slack users by email for quick lookup
+  // Build Slack lookup maps. Email is the primary key, but the email link
+  // silently fails for some people even when their Monday and Slack emails are
+  // identical — Slack's users.list often doesn't return a member's email
+  // (scope / profile visibility / guest accounts), so slackByEmail never gets an
+  // entry for them and their slackId comes back null. That drops closer mentions
+  // to plain "assigned to <Name>" text instead of pinging them (Edward,
+  // 2026-07-14: Charlie Owens — charlie@ticketassociates.com in both systems —
+  // wasn't getting @-mentioned). Real-name / username are name-based fallbacks.
+  // This runs inside the cached directory build, so it costs no extra API calls.
   const slackByEmail = new Map<string, SlackUser>();
+  const slackByRealName = new Map<string, SlackUser>();
+  const slackByUsername = new Map<string, SlackUser>();
   for (const user of slackUsers) {
-    if (user.email) {
-      slackByEmail.set(user.email.toLowerCase(), user);
-    }
+    if (user.email) slackByEmail.set(user.email.toLowerCase(), user);
+    if (user.realName) slackByRealName.set(user.realName.toLowerCase().trim(), user);
+    if (user.name) slackByUsername.set(user.name.toLowerCase().trim(), user);
   }
 
-  // Merge users - Monday is primary, match Slack by email
+  // Merge users - Monday is primary; link Slack by email, then by name.
   const unifiedUsers: UnifiedUser[] = [];
 
   for (const mondayUser of mondayUsers) {
     if (!mondayUser.email) continue;
 
     const email = mondayUser.email.toLowerCase();
-    const slackUser = slackByEmail.get(email);
+    const mondayName = mondayUser.name.toLowerCase().trim();
+    let slackUser = slackByEmail.get(email);
+    if (!slackUser) {
+      slackUser = slackByRealName.get(mondayName) ?? slackByUsername.get(mondayName);
+      if (slackUser) {
+        console.log(`Slack linked by name (no email match): "${mondayUser.name}" → @${slackUser.name}`);
+      }
+    }
 
     unifiedUsers.push({
       name: mondayUser.name,

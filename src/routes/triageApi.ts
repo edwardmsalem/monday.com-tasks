@@ -737,14 +737,19 @@ router.post('/tasks/closer-lookup', async (req: Request, res: Response): Promise
   }
 
   try {
-    const closer = await monday.findCloserByEmail(email);
+    const details = await monday.findCloserDetailsByEmail(email);
 
-    if (!closer) {
+    if (!details || (!details.name && details.mondayUserId == null)) {
       res.json({ closer: null, closerSlackId: null, ruzzellSlackId: null });
       return;
     }
 
-    const closerUser = await findUserByName(closer);
+    // Resolve by Monday person ID first — unambiguous, immune to name typos and
+    // duplicate first names. Fall back to name matching only if the ID misses.
+    let closerUser = details.mondayUserId != null ? await findUserByMondayId(details.mondayUserId) : null;
+    if (!closerUser && details.name) {
+      closerUser = await findUserByName(details.name);
+    }
 
     if (closerUser?.slackId) {
       // Closer is in Slack — return their Slack ID
@@ -753,7 +758,7 @@ router.post('/tasks/closer-lookup', async (req: Request, res: Response): Promise
       // Closer not in Slack — also resolve Ruzzell so client can @mention him
       const ruzzellUser = await findUserByName('Ruzzell');
       res.json({
-        closer: closerUser?.name ?? closer,
+        closer: closerUser?.name ?? details.name,
         closerSlackId: null,
         ruzzellSlackId: ruzzellUser?.slackId ?? null,
       });

@@ -2007,3 +2007,74 @@ export async function findCloserByEmail(email: string): Promise<string | null> {
     return null;
   }
 }
+
+export interface CloserDetails {
+  name: string | null;         // display name (People-column text)
+  mondayUserId: number | null; // Monday person id (unambiguous — prefer this)
+}
+
+/**
+ * Like findCloserByEmail, but also returns the closer's Monday person ID from the
+ * `lead_closer` People column. The ID is unambiguous: resolving it straight to
+ * Slack avoids name-matching entirely (no "Gray/Grey" typos, no picking the wrong
+ * "Nolan"). The text name is kept only as a display fallback. (Edward, 2026-07-14)
+ */
+export async function findCloserDetailsByEmail(email: string): Promise<CloserDetails | null> {
+  const query = `
+    query FindCloserByEmail($boardId: ID!, $columnId: String!, $value: String!) {
+      items_page_by_column_values(
+        board_id: $boardId
+        columns: [{ column_id: $columnId, column_values: [$value] }]
+        limit: 1
+      ) {
+        items {
+          id
+          name
+          column_values(ids: ["${ASSOCIATES_CLOSER_COL}"]) { id text value }
+        }
+      }
+    }
+  `;
+
+  try {
+    const result = await executeQuery<{
+      items_page_by_column_values: {
+        items: Array<{
+          id: string;
+          name: string;
+          column_values: Array<{ id: string; text: string | null; value: string | null }>;
+        }>;
+      };
+    }>(query, {
+      boardId: ASSOCIATES_BOARD_ID,
+      columnId: ASSOCIATES_SS_EMAIL_COL,
+      value: email,
+    });
+
+    const item = result.items_page_by_column_values.items[0];
+    if (!item) {
+      console.log(`[Associates] No item found for SS email: ${email}`);
+      return null;
+    }
+
+    const closerCol = item.column_values.find(c => c.id === ASSOCIATES_CLOSER_COL);
+    const name = closerCol?.text?.trim() || null;
+
+    let mondayUserId: number | null = null;
+    if (closerCol?.value) {
+      try {
+        const parsed = JSON.parse(closerCol.value) as { personsAndTeams?: Array<{ id: number | string; kind?: string }> };
+        const person = parsed.personsAndTeams?.find(p => p.kind === 'person') ?? parsed.personsAndTeams?.[0];
+        if (person?.id != null) mondayUserId = Number(person.id);
+      } catch {
+        // value wasn't the expected People JSON — fall back to the text name
+      }
+    }
+
+    console.log(`[Associates] Closer "${name}" (mondayId=${mondayUserId ?? 'none'}) for ${email} (item ${item.id})`);
+    return { name, mondayUserId };
+  } catch (error) {
+    console.error(`[Associates] Closer details lookup failed for ${email}:`, error);
+    return null;
+  }
+}
