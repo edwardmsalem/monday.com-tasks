@@ -1188,11 +1188,17 @@ async function findSheetByName(
   // Try word-by-word matching (e.g., "astros" matches "Houston Astros")
   // Require minimum 4 chars and whole-word match to avoid false positives
   // like "seat" matching "Seattle"
-  const searchWords = normalized.split(/\s+/).filter(w => w.length >= 4);
+  // Word matching must ignore CITY/GENERIC words. Matching on any >=4 char word
+  // let "New York Liberty" match the "New York Knicks" tab purely on "york"
+  // (Eddie, 2026-09-04) — and would equally give Rangers->Yankees,
+  // Clippers->Lakers, Jets->Giants. Only the distinctive words may match.
+  const GENERIC = new Set(['new','york','los','angeles','san','saint','st','city','state',
+    'university','of','the','north','south','east','west','bay','united','fc','sc','club']);
+  const searchWords = normalized.split(/\s+/).filter(w => w.length >= 4 && !GENERIC.has(w));
   for (const sheet of sheetList) {
     const title = sheet.title || '';
-    const titleWords = title.toLowerCase().split(/\s+/);
-    if (searchWords.some(word => titleWords.includes(word))) {
+    const titleWords = title.toLowerCase().split(/\s+/).filter(w => !GENERIC.has(w));
+    if (searchWords.length && searchWords.some(word => titleWords.includes(word))) {
       console.log(`[Sheets] findSheetByName: WORD MATCH found: "${title}" (contains word from "${normalized}")`);
       return { sheetName: title, sheetId: sheet.sheetId || 0 };
     }

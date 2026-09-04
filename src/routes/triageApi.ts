@@ -12,7 +12,7 @@ import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle, claude as coreApiClaude, getCachedConfig } from '../services/coreApi.js';
 import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from '../services/gmail.js';
-import { createScanSheet, createCustomSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection, backfillPlanTypeAndPacks } from '../services/sheets.js';
+import { createScanSheet, createCustomSheet, detectContentType, batchLookupAccountsForScan, backfillNoAppointmentSection, backfillPlanTypeAndPacks, getSportFromTeam } from '../services/sheets.js';
 import * as calendar from '../services/calendar.js';
 import { detectEventType } from '../services/calendar.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
@@ -542,11 +542,20 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     let allAccounts: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
     if (!skipSheet) {
       try {
+        // An explicitly chosen team WINS over the sport inferred from the
+        // email's Gmail label. The label reflects who mailed us, not who the
+        // scan is for: a New York Liberty scan run on a Knicks-labelled email
+        // was forced to sport=nba, opened the NBA workbook, and matched the
+        // Knicks tab (Eddie, 2026-09-04). Only fall back to the label's sport
+        // when the caller did not name a team.
+        const effectiveSport = clientTeamName
+          ? (getSportFromTeam(clientTeamName) ?? sportFromLabel)
+          : sportFromLabel;
         const lookupResult = await batchLookupAccountsForScan(
           teamForLookup,
           enrichedRecipients.map(r => r.email),
           clientSheetId,
-          sportFromLabel
+          effectiveSport
         );
         accountInfo = lookupResult.matched;
         allAccounts = lookupResult.allAccounts;
