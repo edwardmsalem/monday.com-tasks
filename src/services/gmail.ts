@@ -228,14 +228,14 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
  */
 export async function findRelatedRecipients(
   subject: string,
-  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean; instructions?: string } = false
+  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean; instructions?: string; includeMessageIds?: string[] } = false
 ): Promise<RecipientWithAppointment[]> {
   // Support both old boolean signature and new options object
   const options = typeof extractCodesAndLinksOrOptions === 'boolean'
-    ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false, instructions: undefined as string | undefined }
-    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, instructions: undefined as string | undefined, ...extractCodesAndLinksOrOptions };
+    ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false, instructions: undefined as string | undefined, includeMessageIds: [] as string[] }
+    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, instructions: undefined as string | undefined, includeMessageIds: [] as string[], ...extractCodesAndLinksOrOptions };
 
-  const { extractCodesAndLinks, skipAppointmentExtraction, instructions } = options;
+  const { extractCodesAndLinks, skipAppointmentExtraction, instructions, includeMessageIds } = options;
   const normalizedSubject = normalizeSubject(subject);
 
   console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}, skipAppointmentExtraction: ${skipAppointmentExtraction}`);
@@ -260,6 +260,19 @@ export async function findRelatedRecipients(
     // core-api's listMessages returns the array directly, not wrapped in { messages: [...] }
     const messages = (Array.isArray(searchResponse) ? searchResponse : []) as GmailMessageFull[];
     console.log(`Found ${messages.length} related emails`);
+
+    // The subject search is DISCOVERY of related mail, not the source of truth.
+    // It only looks back 14 days and takes a single page, so emails the user
+    // explicitly selected could be missing from it entirely — 7 of 50
+    // recipients silently vanished from a scan sheet that way
+    // (Eddie, 2026-09-15). Anything selected is always scanned, whatever its
+    // age and whether or not the search happened to return it.
+    const searchIds = new Set(messages.map(m => m.id).filter(Boolean) as string[]);
+    const forced = (includeMessageIds ?? []).filter(id => id && !searchIds.has(id));
+    if (forced.length > 0) {
+      console.log(`[Gmail] Adding ${forced.length} explicitly selected message(s) the subject search missed`);
+      for (const id of forced) messages.push({ id } as GmailMessageFull);
+    }
 
     if (messages.length === 0) {
       return [];

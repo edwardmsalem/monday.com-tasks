@@ -508,6 +508,9 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
       const scanned = await findRelatedRecipients(subject, {
         extractCodesAndLinks,
         instructions,
+        // Guarantee every message the user actually selected is scanned, even
+        // if it falls outside the subject search's 14-day window.
+        includeMessageIds: allMessageIds,
       });
       const enriched = await enrichRecipientsWithAppointments(subject, scanned, instructions);
 
