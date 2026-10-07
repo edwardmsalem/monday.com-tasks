@@ -38,7 +38,7 @@ async function safeShareSheet(spreadsheetId: string): Promise<boolean> {
  * Convert ISO datetime string to Google Sheets date serial number
  * Google Sheets uses days since Dec 30, 1899
  */
-function isoToSheetDate(isoDateTime: string | null | undefined): number | string {
+export function isoToSheetDate(isoDateTime: string | null | undefined): number | string {
   if (!isoDateTime) return '';
   try {
     const date = new Date(isoDateTime);
@@ -56,7 +56,7 @@ function isoToSheetDate(isoDateTime: string | null | undefined): number | string
  * Convert ISO datetime string to Google Sheets time serial number
  * Time is represented as fraction of a day (0.5 = noon)
  */
-function isoToSheetTime(isoDateTime: string | null | undefined): number | string {
+export function isoToSheetTime(isoDateTime: string | null | undefined): number | string {
   if (!isoDateTime) return '';
   try {
     const date = new Date(isoDateTime);
