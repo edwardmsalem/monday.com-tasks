@@ -9,7 +9,7 @@
 
 import { config } from '../config/environment.js';
 import { gmailCircuit, claudeCircuit } from './circuitBreaker.js';
-import { google as coreApiGoogle, claude as coreApiClaude } from './coreApi.js';
+import { google as coreApiGoogle, claude as coreApiClaude, getCachedConfig } from './coreApi.js';
 
 // ============================================================================
 // Gmail API Types (from core-api responses)
@@ -1000,7 +1000,12 @@ If no appointment is mentioned, return null for all fields.`;
       coreApiClaude.analyze({
         content: `Extract the appointment date/time from this email:\n\n${emailContent}`,
         systemPrompt,
-        maxTokens: instructions ? 512 : 256,
+        // Haiku 5.5 (Eddie, 2026-10-07). On 40 real relocation emails it read the
+        // same date, time and time zone as Sonnet 4.6 on 39, at a fraction of the
+        // cost. The 5.5 models think before answering, so the old 256-token
+        // allowance came back blank: give them room.
+        model: getCachedConfig().claude.models.fast,
+        maxTokens: instructions ? 2560 : 2048,
       })
     );
 
