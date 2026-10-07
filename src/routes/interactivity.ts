@@ -167,6 +167,13 @@ async function handleBlockAction(
       await handleClaimEmailTask(payload, action);
       break;
 
+    case 'reloc_approve':
+    case 'reloc_ignore': {
+      const { handleRelocationAction } = await import('../services/relocationScanner.js');
+      await handleRelocationAction(action_id, value, userId);
+      break;
+    }
+
     default:
       console.log(`[Interactivity] Unknown action: ${action_id}`);
   }

@@ -1811,6 +1811,12 @@ async function start() {
     // Start associate relink sweep: keeps the SIM<->person link on Master Numbers
     // intact across the native-Monday lead->associate move (reuses the backfill).
     void import('./services/associateRelinkScheduler.js').then(m => m.startAssociateRelinkScheduler());
+
+    // Relocation scanner: finds relocation / seat-selection appointment emails
+    // and asks Eddie by Slack DM before building the sheet and calendar.
+    if (process.env['RELOCATION_SCANNER_ENABLED'] === 'true') {
+      void import('./services/relocationScanner.js').then(m => m.startRelocationScanner());
+    }
   });
 }
 
