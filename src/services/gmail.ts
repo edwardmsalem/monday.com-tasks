@@ -447,7 +447,7 @@ export async function findRelatedRecipients(
     }
 
     // Extract appointments with Claude unless skipped (3 concurrent to avoid API limits)
-    let appointmentResults: Array<{ success: true; value: { appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; additionalAppointment: string | null; custom: Record<string, string | null> | null } } | { success: false; error: Error }> = [];
+    let appointmentResults: Array<{ success: true; value: { appointmentDate: string | null; appointmentTime: string | null; rawDateTime: string | null; additionalAppointment: string | null; custom: Record<string, string | null> | null; presaleCode: string | null } } | { success: false; error: Error }> = [];
 
     if (messagesToProcess.length > 0 && !skipAppointmentExtraction) {
       const appointmentStartTime = Date.now();
@@ -472,10 +472,14 @@ export async function findRelatedRecipients(
         const appointmentResult = appointmentResults[idx];
         const appointmentInfo = appointmentResult?.success
           ? appointmentResult.value
-          : { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
+          : { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null, presaleCode: null };
 
         // Extract code and link if requested (presale content)
-        const code = extractCodesAndLinks ? extractCodeFromBody(msg.bodyText) : null;
+        // The AI read (already done for the time) finds codes in any layout; the
+        // fixed patterns only catch "code: ABC123" and missed a code sitting on
+        // its own line under "your unique offer code (located directly below)"
+        // on every Brewers World Series presale email (Eddie, 2026-10-13).
+        const code = extractCodesAndLinks ? (appointmentInfo.presaleCode || extractCodeFromBody(msg.bodyText)) : null;
         const link = extractCodesAndLinks ? extractLinkFromBody(msg.bodyText, msg.bodyHtml ?? undefined) : null;
 
         for (const email of msg.toEmails) {
@@ -663,7 +667,7 @@ export async function enrichRecipientsWithAppointments(
       async (recipient) => {
         const emailData = emailToBody.get(recipient.email);
         if (!emailData) {
-          return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
+          return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null, presaleCode: null };
         }
         return extractAppointmentTime(emailData.bodyText, normalizedSubject, emailData.fromEmail, instructions);
       },
@@ -943,10 +947,11 @@ async function extractAppointmentTime(emailBody: string, subject?: string, fromE
   rawDateTime: string | null;
   additionalAppointment: string | null;
   custom: Record<string, string | null> | null;
+  presaleCode: string | null;
 }> {
   if (!emailBody || emailBody.length < 20) {
     console.log(`[Gmail] Skipping appointment extraction: body too short (${emailBody?.length || 0} chars)`);
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null, presaleCode: null };
   }
 
   // Debug: Log what we're about to analyze
@@ -992,6 +997,7 @@ Return ONLY a JSON object with:
 - detectedTeam: The team name detected, or null if none found
 - originalTimezone: The timezone stated in the email (e.g., "PT", "CT", "MT", "ET"), or if not stated, infer from the detected team's home city. Return null if unknown.
 - additionalAppointments: Array of other appointments if the email has more than one, each as a string like "Tue Dec 21 3:00 PM CT". Null if only one or no appointment.
+- presaleCode: The presale, offer, access or unlock code (or password) this email gives the recipient to enter, copied EXACTLY as written, including when it sits on its own line under a sentence like "enter your unique offer code (located directly below)". Null if the email gives no such code. Never a discount code for food or merchandise, and never invent one.
 ${instructions ? `\nAdditionally, extract ONLY what is described here: "${instructions}"\n\nReturn these in a "custom" object. Rules:\n- ONLY include keys for what was explicitly requested. Nothing else.\n- If the request says "password", return {"custom": {"password": "..."}}. Do NOT also return email, loginUrl, loginLink, or any other field.\n- One key per requested field. No duplicates. No related fields. No extras.\n- If a requested field is not found in the email, set its value to null.\n` : ''}
 If no appointment is mentioned, return null for all fields.`;
 
@@ -1070,24 +1076,30 @@ If no appointment is mentioned, return null for all fields.`;
           console.log(`[Gmail] Additional appointments: ${additionalAppointment}`);
         }
 
+        // Codes have no spaces; anything else is the model describing, not copying.
+        const presaleCode = typeof parsed.presaleCode === 'string' && /^\S{3,40}$/.test(parsed.presaleCode.trim())
+          ? parsed.presaleCode.trim()
+          : null;
+
         return {
           appointmentDate,
           appointmentTime,
           rawDateTime,
           additionalAppointment,
           custom: parsed.custom || null,
+          presaleCode,
         };
       } catch (parseError) {
         console.warn('[Gmail] Failed to parse Claude response as JSON:', parseError);
-        return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
+        return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null, presaleCode: null };
       }
     }
 
     console.warn('[Gmail] No JSON found in Claude response. Raw response:', text.slice(0, 200));
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null, presaleCode: null };
   } catch (error) {
     console.error('Error extracting appointment time:', error);
-    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null };
+    return { appointmentDate: null, appointmentTime: null, rawDateTime: null, additionalAppointment: null, custom: null, presaleCode: null };
   }
 }
 
