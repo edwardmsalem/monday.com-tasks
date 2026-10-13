@@ -190,7 +190,10 @@ export function extractCodeFromBody(text: string): string | null {
   for (const pattern of CODE_PATTERNS) {
     pattern.lastIndex = 0;
     const match = pattern.exec(text);
-    if (match && match[1]) {
+    // The patterns are case-insensitive, so "code provided below" used to come
+    // back as the code "PROVIDED" (Brewers, 2026-10-13). A real code is written
+    // in capitals or contains a digit.
+    if (match && match[1] && (match[1] === match[1].toUpperCase() || /\d/.test(match[1]))) {
       const code = match[1].toUpperCase().trim();
       if (code.length >= 4 &&
           !['HTTP', 'HTTPS', 'HTML', 'TEXT', 'CODE', 'NULL', 'TRUE', 'FALSE'].includes(code)) {
