@@ -8,6 +8,7 @@
  */
 
 import express, { Router, type Request, type Response } from 'express';
+import { isLunaScanKey, lunaScanAllowed } from '../middleware/lunaScanKey.js';
 import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle, claude as coreApiClaude, getCachedConfig } from '../services/coreApi.js';
@@ -47,6 +48,11 @@ function verifyApiKey(req: Request, res: Response): boolean {
   }
 
   const token = authHeader.slice(7);
+  // Luna's scan-only key is valid on POST /tasks/scan only (lunaScanGuard
+  // already refused everything else with it).
+  if (isLunaScanKey(req) && lunaScanAllowed(req.method, req.path)) {
+    return true;
+  }
   if (token !== expectedKey) {
     res.status(401).json({ error: 'Invalid API key' });
     return false;
@@ -405,7 +411,7 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks } = req.body as {
+  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks, onlyRecipients } = req.body as {
     messageId?: string;
     messageIds?: string[];
     teamName?: string;
@@ -416,6 +422,8 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     sheetId?: string;
     extractCodes?: boolean;
     extractLinks?: boolean;
+    /** Leave the team's other accounts ("NO APPOINTMENT") off the sheet. */
+    onlyRecipients?: boolean;
   };
 
   // Support both single messageId and array messageIds
@@ -561,8 +569,10 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
           effectiveSport
         );
         accountInfo = lookupResult.matched;
-        allAccounts = lookupResult.allAccounts;
-        console.log(`[Triage Scan] Account lookup: ${accountInfo.size} matched, ${allAccounts.size} total`);
+        // onlyRecipients: the sheet lists just the accounts that got the email
+        // (Eddie, 2026-10-16), so the team's other accounts are left off.
+        allAccounts = onlyRecipients ? undefined : lookupResult.allAccounts;
+        console.log(`[Triage Scan] Account lookup: ${accountInfo.size} matched, ${lookupResult.allAccounts.size} total${onlyRecipients ? " (only recipients on sheet)" : ""}`);
       } catch (accountError) {
         console.error('[Triage Scan] Account lookup failed (non-fatal):', accountError);
       }
