@@ -48,6 +48,7 @@ import interactivityRouter from './routes/interactivity.js';
 
 // Import middleware
 import { requestLogger } from './middleware/index.js';
+import { lunaScanGuard } from './middleware/lunaScanKey.js';
 import { formatTaskName } from './utils/taskName.js';
 
 const app = express();
@@ -58,6 +59,9 @@ const app = express();
 
 // Request logging - must be first to capture all requests
 app.use(requestLogger);
+
+// Luna's scan-only key: POST /tasks/scan and nothing else (lunaScanKey.ts).
+app.use(lunaScanGuard);
 
 // ============================================================================
 // Mount Route Modules
