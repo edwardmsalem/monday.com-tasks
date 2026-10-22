@@ -16,6 +16,10 @@ import { google as coreApiGoogle } from './coreApi.js';
 import { isoToSheetDate, isoToSheetTime, type ScanAccountInfo } from './sheets.js';
 import type { RecipientWithAppointment } from './gmail.js';
 
+/** Email text is untrusted: never let it become a formula in the sheet. */
+const safe = (v: string | number): string | number =>
+  typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+
 const colLetter = (i: number): string => {
   let n = i + 1, out = '';
   while (n > 0) { const m = (n - 1) % 26; out = String.fromCharCode(65 + m) + out; n = Math.floor((n - 1) / 26); }
@@ -55,7 +59,7 @@ export async function addRecipientsToScanSheet(
       if (timeCol >= 0 && timeVal !== '') cells.push({ c: timeCol, v: timeVal });
       if (pwCol >= 0 && r.code) cells.push({ c: pwCol, v: r.code });
       for (const { c, v } of cells) {
-        await coreApiGoogle.sheets.updateValues(spreadsheetId, { range: `Recipients!${colLetter(c)}${rowIdx + 1}`, values: [[v]] });
+        await coreApiGoogle.sheets.updateValues(spreadsheetId, { range: `Recipients!${colLetter(c)}${rowIdx + 1}`, values: [[safe(v)]] });
       }
     };
 
@@ -112,7 +116,7 @@ export async function addRecipientsToScanSheet(
     await coreApiGoogle.sheets.batchUpdate(spreadsheetId, [{
       insertDimension: { range: { sheetId: sheetGid, dimension: 'ROWS', startIndex: scannedEnd, endIndex: scannedEnd + 1 }, inheritFromBefore: true },
     }]);
-    await coreApiGoogle.sheets.updateValues(spreadsheetId, { range: `Recipients!A${scannedEnd + 1}`, values: [row] });
+    await coreApiGoogle.sheets.updateValues(spreadsheetId, { range: `Recipients!A${scannedEnd + 1}`, values: [row.map(safe)] });
     changed++;
   }
 
