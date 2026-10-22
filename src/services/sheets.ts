@@ -75,6 +75,8 @@ export interface SheetResult {
   spreadsheetId: string;
   spreadsheetUrl: string;
   title: string;
+  /** Tab id of the "Recipients" tab (scan sheets), for row moves later. */
+  sheetGid?: number;
 }
 
 export type ScanContentType = 'relocation' | 'presale' | 'generic';
@@ -730,6 +732,7 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
     spreadsheetId,
     spreadsheetUrl,
     title,
+    sheetGid: sheetId,
   };
 }
 
