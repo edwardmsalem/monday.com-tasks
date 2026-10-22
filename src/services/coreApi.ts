@@ -568,6 +568,14 @@ export const google = {
       });
     },
 
+    /** Ids only for a search: one Gmail list call, nothing downloaded. */
+    async listMessageIds(params: { maxResults?: number; q: string }): Promise<Array<{ id: string; threadId: string }>> {
+      const searchParams = new URLSearchParams({ q: params.q, idsOnly: 'true', maxResults: String(params.maxResults ?? 100) });
+      return coreApiRequest<Array<{ id: string; threadId: string }>>(`/google/gmail/messages?${searchParams.toString()}`, {
+        method: 'GET',
+      });
+    },
+
     async listMessages(params?: {
       maxResults?: number;
       q?: string;

@@ -24,6 +24,7 @@ import { mapPriorityToUrgency, createLogger, postRunIdToSlack, applyIntentModeWi
 import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import { randomUUID } from 'crypto';
+import { createWatch, listWatches, stopWatch } from '../services/scanWatch.js';
 
 const router = Router();
 router.use(express.json());
@@ -405,13 +406,32 @@ router.post('/tasks/from-email', async (req: Request, res: Response): Promise<vo
 });
 
 // ============================================================================
+// Scan watches: GET /tasks/scan/watches, DELETE /tasks/scan/watches/:id
+// ============================================================================
+
+router.get('/tasks/scan/watches', (req: Request, res: Response): void => {
+  if (!verifyApiKey(req, res)) return;
+  res.json({
+    watches: listWatches().map(w => ({
+      id: w.id, subject: w.subjects[0], teamName: w.teamName ?? null, sheetUrl: w.spreadsheetUrl,
+      expiresAt: w.expiresAt, lastRunAt: w.lastRunAt ?? null, added: w.added,
+    })),
+  });
+});
+
+router.delete('/tasks/scan/watches/:id', (req: Request, res: Response): void => {
+  if (!verifyApiKey(req, res)) return;
+  res.json({ stopped: stopWatch(String(req.params['id'])) });
+});
+
+// ============================================================================
 // POST /tasks/scan
 // ============================================================================
 
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks, onlyRecipients } = req.body as {
+  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks, onlyRecipients, watch, watchDays } = req.body as {
     messageId?: string;
     messageIds?: string[];
     teamName?: string;
@@ -424,6 +444,9 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     extractLinks?: boolean;
     /** Leave the team's other accounts ("NO APPOINTMENT") off the sheet. */
     onlyRecipients?: boolean;
+    /** Keep watching for new emails with this subject and add them to the sheet. */
+    watch?: boolean;
+    watchDays?: number;
   };
 
   // Support both single messageId and array messageIds
@@ -580,8 +603,9 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     // 6. Create scan sheet (unless skipped)
     let sheetUrl: string | null = null;
+    let sheetResult: Awaited<ReturnType<typeof createScanSheet>> | null = null;
     if (!skipSheet) {
-      const sheetResult = await createScanSheet({
+      sheetResult = await createScanSheet({
         title: primarySubject,
         recipients: enrichedRecipients,
         contentType,
@@ -590,6 +614,33 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
         teamName,
       });
       sheetUrl = sheetResult.spreadsheetUrl;
+    }
+
+    // 6b. Scan watcher: keep adding recipients from new emails with this subject.
+    let watchInfo: { id: string; expiresAt: string } | null = null;
+    if (watch && sheetResult && sheetResult.sheetGid !== undefined) {
+      try {
+        const w = await createWatch({
+          subjects,
+          teamName,
+          sport: clientTeamName ? (getSportFromTeam(clientTeamName) ?? sportFromLabel) : sportFromLabel,
+          sheetIdOverride: clientSheetId,
+          spreadsheetId: sheetResult.spreadsheetId,
+          spreadsheetUrl: sheetResult.spreadsheetUrl,
+          sheetGid: sheetResult.sheetGid,
+          instructions,
+          extractCodesAndLinks,
+          wantsCodes,
+          makeCalendar: !skipCalendar,
+          eventName: clientEventName,
+          seenRecipients: Object.fromEntries(enrichedRecipients.map(r => [r.email.toLowerCase(), r.rawDateTime ?? null])),
+          days: watchDays,
+          scannedMessageIds: allMessageIds,
+        });
+        watchInfo = { id: w.id, expiresAt: w.expiresAt };
+      } catch (watchError) {
+        console.error('[Triage Scan] Could not start watcher (non-fatal):', watchError);
+      }
     }
 
     // 7. Create calendar events (unless skipped)
@@ -638,6 +689,8 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     res.json({
       success: true,
       recipientCount: enrichedRecipients.length,
+      watchId: watchInfo?.id ?? null,
+      watchExpiresAt: watchInfo?.expiresAt ?? null,
       sheetUrl,
       calendarEventCount,
       recipients: recipientSummary,

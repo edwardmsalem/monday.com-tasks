@@ -1821,6 +1821,12 @@ async function start() {
     if (process.env['RELOCATION_SCANNER_ENABLED'] === 'true') {
       void import('./services/relocationScanner.js').then(m => m.startRelocationScanner());
     }
+
+    // Scan watcher: keeps "Keep watching" scan sheets up to date as new emails
+    // with the same subject arrive. On unless SCAN_WATCH_ENABLED=false.
+    if (process.env['SCAN_WATCH_ENABLED'] !== 'false') {
+      void import('./services/scanWatch.js').then(m => m.startScanWatcher());
+    }
   });
 }
 

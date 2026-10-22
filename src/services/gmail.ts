@@ -231,14 +231,16 @@ export function extractLinkFromBody(text: string, html?: string): string | null 
  */
 export async function findRelatedRecipients(
   subject: string,
-  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean; instructions?: string; includeMessageIds?: string[] } = false
+  extractCodesAndLinksOrOptions: boolean | { extractCodesAndLinks?: boolean; skipAppointmentExtraction?: boolean; instructions?: string; includeMessageIds?: string[]; onlyMessageIds?: string[] } = false
 ): Promise<RecipientWithAppointment[]> {
   // Support both old boolean signature and new options object
   const options = typeof extractCodesAndLinksOrOptions === 'boolean'
     ? { extractCodesAndLinks: extractCodesAndLinksOrOptions, skipAppointmentExtraction: false, instructions: undefined as string | undefined, includeMessageIds: [] as string[] }
-    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, instructions: undefined as string | undefined, includeMessageIds: [] as string[], ...extractCodesAndLinksOrOptions };
+    : { extractCodesAndLinks: false, skipAppointmentExtraction: false, instructions: undefined as string | undefined, includeMessageIds: [] as string[], onlyMessageIds: undefined as string[] | undefined, ...extractCodesAndLinksOrOptions };
 
   const { extractCodesAndLinks, skipAppointmentExtraction, instructions, includeMessageIds } = options;
+  // Scan watcher: process exactly these new messages, no subject search.
+  const onlyMessageIds = (options as { onlyMessageIds?: string[] }).onlyMessageIds;
   const normalizedSubject = normalizeSubject(subject);
 
   console.log(`[Gmail] Subject "${normalizedSubject}" - extractCodesAndLinks: ${extractCodesAndLinks}, skipAppointmentExtraction: ${skipAppointmentExtraction}`);
@@ -253,12 +255,14 @@ export async function findRelatedRecipients(
 
   try {
     // Search for messages via core-api (wrapped in circuit breaker TD-05)
-    const searchResponse = await gmailCircuit.execute(() =>
-      coreApiGoogle.gmail.listMessages({
-        maxResults: 200,
-        q: query,
-      })
-    );
+    const searchResponse = onlyMessageIds
+      ? onlyMessageIds.map(id => ({ id }))
+      : await gmailCircuit.execute(() =>
+          coreApiGoogle.gmail.listMessages({
+            maxResults: 200,
+            q: query,
+          })
+        );
 
     // core-api's listMessages returns the array directly, not wrapped in { messages: [...] }
     const messages = (Array.isArray(searchResponse) ? searchResponse : []) as GmailMessageFull[];
@@ -542,7 +546,8 @@ export async function findRelatedRecipients(
 export async function enrichRecipientsWithAppointments(
   subject: string,
   recipients: RecipientWithAppointment[],
-  instructions?: string
+  instructions?: string,
+  onlyMessageIds?: string[]
 ): Promise<RecipientWithAppointment[]> {
   if (recipients.length === 0) {
     return recipients;
@@ -560,12 +565,14 @@ export async function enrichRecipientsWithAppointments(
   const query = `subject:"${normalizedSubject}" after:${afterDate}`;
 
   try {
-    const searchResponse = await gmailCircuit.execute(() =>
-      coreApiGoogle.gmail.listMessages({
-        maxResults: 200,
-        q: query,
-      })
-    );
+    const searchResponse = onlyMessageIds
+      ? onlyMessageIds.map(id => ({ id }))
+      : await gmailCircuit.execute(() =>
+          coreApiGoogle.gmail.listMessages({
+            maxResults: 200,
+            q: query,
+          })
+        );
 
     const messages = (Array.isArray(searchResponse) ? searchResponse : []) as GmailMessageFull[];
     if (messages.length === 0) {
