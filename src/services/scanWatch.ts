@@ -26,6 +26,8 @@ const DATA_DIR = process.env['RAILWAY_VOLUME_MOUNT_PATH'] || (process.env['RAILW
 const STATE_FILE = path.join(DATA_DIR, 'scan-watches.json');
 const INTERVAL_MS = 10 * 60 * 1000;
 const MAX_DAYS = 30;
+/** Hard cap on active watches so a runaway client can't pile up Gmail work. */
+const MAX_ACTIVE = 50;
 
 export interface ScanWatch {
   id: string;
@@ -85,7 +87,9 @@ export async function createWatch(input: Omit<ScanWatch, 'id' | 'seenMessageIds'
   days?: number;
   scannedMessageIds: string[];
 }): Promise<ScanWatch> {
-  const days = Math.min(MAX_DAYS, Math.max(1, input.days ?? 7));
+  if (listWatches().length >= MAX_ACTIVE) throw new Error(`already ${MAX_ACTIVE} active scan watches`);
+  const requested = Number(input.days);
+  const days = Number.isFinite(requested) ? Math.min(MAX_DAYS, Math.max(1, Math.round(requested))) : 7;
   // Everything the subject search already finds counts as seen, so the first
   // run only picks up mail that arrives after the scan.
   const seen = new Set(input.scannedMessageIds);

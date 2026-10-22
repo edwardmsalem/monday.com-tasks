@@ -618,7 +618,9 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     // 6b. Scan watcher: keep adding recipients from new emails with this subject.
     let watchInfo: { id: string; expiresAt: string } | null = null;
-    if (watch && sheetResult && sheetResult.sheetGid !== undefined) {
+    // Luna's scan-only key gets one-off scans, not standing watchers (they
+    // would keep running outside its hourly budget).
+    if (watch && sheetResult && sheetResult.sheetGid !== undefined && !isLunaScanKey(req)) {
       try {
         const w = await createWatch({
           subjects,
