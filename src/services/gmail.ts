@@ -543,6 +543,9 @@ export async function findRelatedRecipients(
  * @param recipients - Recipients to enrich (from findRelatedRecipients with skipAppointmentExtraction)
  * @returns Recipients with appointment times filled in
  */
+/** Body text that carries login details (username / password lines). */
+const LOGIN_HINT = /(user\s*name|password)\s*(\([^)]*\))?\s*:/i;
+
 export async function enrichRecipientsWithAppointments(
   subject: string,
   recipients: RecipientWithAppointment[],
@@ -592,6 +595,7 @@ export async function enrichRecipientsWithAppointments(
       5
     );
 
+    const wantsLogin = /user\s*name|password|account number|code/i.test(instructions ?? '');
     // Build email -> body text mapping
     // IMPORTANT: Use same recipient extraction logic as findRelatedRecipients
     // to properly handle X-Forwarded-For headers from Gmail auto-forwarding
@@ -648,7 +652,12 @@ export async function enrichRecipientsWithAppointments(
 
       for (const email of recipientEmails) {
         const normalizedEmail = email.toLowerCase();
-        if (!emailToBody.has(normalizedEmail)) {
+        const existing = emailToBody.get(normalizedEmail);
+        // One body per recipient. Newest wins, except that when the scan asks
+        // for a login or code, an email that has one beats one that doesn't:
+        // teams send the time first and the login later under the same
+        // subject (Cubs relocation 2026-10-23: 18 rows read the notice).
+        if (!existing || (wantsLogin && !LOGIN_HINT.test(existing.bodyText) && LOGIN_HINT.test(bodyText))) {
           emailToBody.set(normalizedEmail, { bodyText, fromEmail });
         }
       }
