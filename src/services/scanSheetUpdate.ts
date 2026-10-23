@@ -10,6 +10,8 @@
  *   scanned section, get Date / Time / Password, and the section count updates;
  * - not on the sheet: a row is inserted at the end of the scanned section,
  *   with account details when the team sheet knows the email.
+ * Extracted fields (Username, Password, Presale Code) go in the column with
+ * the same name when the sheet has one.
  * Only targeted cells and row moves/inserts are written.
  */
 import { google as coreApiGoogle } from './coreApi.js';
@@ -40,6 +42,10 @@ export async function addRecipientsToScanSheet(
     if (!values.length) return changed;
     const header = values[0].map(h => String(h));
     const col = (name: string) => header.indexOf(name);
+    const headerLower = header.map(h => h.toLowerCase());
+    const customCells = Object.entries(r.custom ?? {})
+      .map(([k, v]) => ({ c: headerLower.indexOf(k.toLowerCase()), v }))
+      .filter((x): x is { c: number; v: string } => x.c >= 0 && !!x.v);
     const emailCol = col('Email'), dateCol = col('Date'), timeCol = col('Time'), pwCol = col('Password');
     if (emailCol < 0) return changed;
 
@@ -58,6 +64,7 @@ export async function addRecipientsToScanSheet(
       if (dateCol >= 0 && dateVal !== '') cells.push({ c: dateCol, v: dateVal });
       if (timeCol >= 0 && timeVal !== '') cells.push({ c: timeCol, v: timeVal });
       if (pwCol >= 0 && r.code) cells.push({ c: pwCol, v: r.code });
+      cells.push(...customCells);
       for (const { c, v } of cells) {
         await coreApiGoogle.sheets.updateValues(spreadsheetId, { range: `Recipients!${colLetter(c)}${rowIdx + 1}`, values: [[safe(v)]] });
       }
@@ -112,6 +119,7 @@ export async function addRecipientsToScanSheet(
       }
       set('Last 4', account.last4); set('Exp', account.exp); set('CVV', account.cvv); set('Billing Address', account.billingAddress);
     }
+    for (const { c, v } of customCells) row[c] = v;
     if (r.additionalAppointment) set('Notes', r.additionalAppointment);
     await coreApiGoogle.sheets.batchUpdate(spreadsheetId, [{
       insertDimension: { range: { sheetId: sheetGid, dimension: 'ROWS', startIndex: scannedEnd, endIndex: scannedEnd + 1 }, inheritFromBefore: true },

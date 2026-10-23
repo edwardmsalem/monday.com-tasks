@@ -7,6 +7,7 @@
  * All operations go through core-api (centralized Google API access)
  */
 
+import { dropColumns, SEATING_COLUMNS } from './scanChecklist.js';
 import { config, configCompat } from '../config/environment.js';
 import type { RecipientWithAppointment } from './gmail.js';
 import { google as coreApiGoogle } from './coreApi.js';
@@ -231,6 +232,8 @@ export interface ScanSheetOptions {
   accountInfo?: Map<string, ScanAccountInfo>;  // email → account info for scanned recipients
   allAccounts?: Map<string, ScanAccountInfo>;  // ALL accounts from team sheet (for "no appointment" section)
   teamName?: string;  // resolved team name from client (e.g. "San Jose Sharks")
+  /** False leaves the seat columns off (Section, Row, seats, Pack…). Default true. */
+  includeSeating?: boolean;
 }
 
 /**
@@ -623,6 +626,12 @@ export async function createScanSheet(options: ScanSheetOptions): Promise<SheetR
       dataRows.push(separatorRow, sectionHeaderRow, ...noAppointmentRows);
       console.log(`[Sheets] Added ${noAppointmentRows.length} "No Appointment" rows`);
     }
+  }
+
+  // "Pull current seating info" unticked: leave the seat columns off.
+  if (options.includeSeating === false) {
+    dropColumns(headerRow, dataRows, SEATING_COLUMNS);
+    columnCount = headerRow.length;
   }
 
   // Create the spreadsheet via core-api
