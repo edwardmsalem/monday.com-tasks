@@ -130,6 +130,73 @@ export function formatSlackThreadValue(channelId: string, threadTs: string): str
 }
 
 /**
+ * Local index of Slack thread -> task item, so a Slack reaction or thread reply
+ * is matched without asking Monday (Eddie 2026-10-23, Monday is bulk only: the
+ * old lookup made up to three Monday calls per Slack event in every channel,
+ * about 5,000 calls a day, mostly for messages that were never tasks).
+ *
+ * Built from one paged read of the board's Slack thread column (2 calls for
+ * about 640 items), rebuilt every THREAD_INDEX_TTL_MS. Every link this service
+ * writes (updateSlackThreadId) or clears (clearSlackThreadId) updates the index
+ * at once, so a new task's thread is known immediately. A link written on the
+ * board by hand is seen within one rebuild, or sooner: a miss on a thread newer
+ * than the last rebuild, in a channel that has task threads, rebuilds early (at
+ * most every 2 minutes).
+ */
+const THREAD_INDEX_TTL_MS = 10 * 60 * 1000;
+const THREAD_INDEX_EARLY_REBUILD_MS = 2 * 60 * 1000;
+const threadIndex = new Map<string, string>();
+const threadChannels = new Set<string>();
+let threadIndexBuiltAt = 0;
+let threadIndexBuilding: Promise<void> | null = null;
+
+function indexThread(value: string, itemId: string): void {
+  if (!value) return;
+  threadIndex.set(value, itemId);
+  const colon = value.indexOf(':');
+  if (colon > 0) threadChannels.add(value.slice(0, colon));
+}
+
+function unindexItem(itemId: string): void {
+  for (const [value, id] of threadIndex) if (id === itemId) threadIndex.delete(value);
+}
+
+async function rebuildThreadIndex(): Promise<void> {
+  if (threadIndexBuilding) return threadIndexBuilding;
+  threadIndexBuilding = (async () => {
+    const col = config.monday.columns.slackThreadId;
+    const first = `query ($boardId: ID!) { boards(ids: [$boardId]) { items_page(limit: 500) { cursor items { id column_values(ids: ["${col}"]) { text } } } } }`;
+    const next = `query ($cursor: String!) { next_items_page(cursor: $cursor, limit: 500) { cursor items { id column_values(ids: ["${col}"]) { text } } } }`;
+    type Page = { cursor: string | null; items: Array<{ id: string; column_values: Array<{ text: string | null }> }> };
+    const fresh = new Map<string, string>();
+    let page = (await executeQuery<{ boards: Array<{ items_page: Page }> }>(first, { boardId: configCompat.monday.boardId })).boards[0]?.items_page;
+    while (page) {
+      for (const it of page.items) {
+        const v = (it.column_values[0]?.text || '').trim();
+        if (v) fresh.set(v, it.id);
+      }
+      if (!page.cursor) break;
+      page = (await executeQuery<{ next_items_page: Page }>(next, { cursor: page.cursor })).next_items_page;
+    }
+    threadIndex.clear();
+    threadChannels.clear();
+    for (const [v, id] of fresh) indexThread(v, id);
+    threadIndexBuiltAt = Date.now();
+    console.log(`[THREAD INDEX] rebuilt: ${threadIndex.size} task threads in ${threadChannels.size} channels`);
+  })();
+  try {
+    await threadIndexBuilding;
+  } finally {
+    threadIndexBuilding = null;
+  }
+}
+
+/** For tests and diagnostics. */
+export function threadIndexStats(): { size: number; channels: string[]; builtAt: number } {
+  return { size: threadIndex.size, channels: [...threadChannels], builtAt: threadIndexBuiltAt };
+}
+
+/**
  * Update the Slack thread ID column on an item
  * Stores in format "channelId:threadTs" for proper channel routing
  */
@@ -157,6 +224,8 @@ export async function updateSlackThreadId(itemId: string, threadTs: string, chan
       [config.monday.columns.slackThreadId]: value,
     }),
   });
+  unindexItem(itemId);
+  indexThread(value, itemId);
 }
 
 /**
@@ -415,6 +484,38 @@ export async function getAllUsers(): Promise<MondayUser[]> {
  * Searches for both new format (channelId:threadTs) and legacy format (threadTs only)
  */
 export async function findItemBySlackThread(slackThreadTs: string, channelId?: string): Promise<string | null> {
+  const candidates = [
+    channelId ? formatSlackThreadValue(channelId, slackThreadTs) : '',
+    slackThreadTs,
+    formatSlackThreadValue(configCompat.slack.channelId, slackThreadTs),
+  ].filter(Boolean);
+  try {
+    const age = Date.now() - threadIndexBuiltAt;
+    if (!threadIndexBuiltAt || age > THREAD_INDEX_TTL_MS) await rebuildThreadIndex();
+    for (const c of candidates) {
+      const hit = threadIndex.get(c);
+      if (hit) return hit;
+    }
+    // A thread started after the last rebuild, in a channel that has task threads,
+    // may have been linked on the board by hand: rebuild once (at most every 2 minutes).
+    const threadMs = Number(slackThreadTs) * 1000;
+    const taskChannel = !channelId || threadChannels.has(channelId) || channelId === configCompat.slack.channelId;
+    if (taskChannel && threadMs > threadIndexBuiltAt && Date.now() - threadIndexBuiltAt > THREAD_INDEX_EARLY_REBUILD_MS) {
+      await rebuildThreadIndex();
+      for (const c of candidates) {
+        const hit = threadIndex.get(c);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('[THREAD INDEX] could not build the index, asking Monday directly:', error);
+  }
+  return findItemBySlackThreadLive(slackThreadTs, channelId);
+}
+
+/** The old per-event lookup, kept only as the fallback when the index cannot be built. */
+async function findItemBySlackThreadLive(slackThreadTs: string, channelId?: string): Promise<string | null> {
   const query = `
     query FindItemBySlackThread($boardId: ID!, $columnId: String!, $value: String!) {
       items_page_by_column_values(
@@ -1744,6 +1845,7 @@ export async function clearSlackThreadId(itemId: string): Promise<void> {
       [config.monday.columns.slackThreadId]: '',
     }),
   });
+  unindexItem(itemId);
 }
 
 /**
