@@ -142,10 +142,15 @@ async function runWatch(w: ScanWatch): Promise<ScanWatch> {
     ids.forEach(id => seen.add(id));
   }
 
-  // Only recipients that are new, or whose appointment time changed.
+  // Recipients that are new, whose appointment time changed, or whose new
+  // email carries a login or code. Teams often get the time first and the
+  // login days later under the same subject (Cubs relocation, 2026-10-23),
+  // so a login email for someone already on the sheet must fill their row.
+  const bringsFields = (r: typeof found extends Map<string, infer V> ? V : never) =>
+    !!r.code || Object.values(r.custom ?? {}).some(v => !!v);
   const toAdd = [...found.values()].filter(r => {
     const prev = w.seenRecipients[r.email.toLowerCase()];
-    return prev === undefined || (r.rawDateTime && r.rawDateTime !== prev);
+    return prev === undefined || (r.rawDateTime && r.rawDateTime !== prev) || bringsFields(r);
   });
 
   if (toAdd.length > 0) {
