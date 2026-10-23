@@ -7,6 +7,7 @@
  * Auth: Bearer token matching CORE_API_KEY
  */
 
+import { parseChecklist, checklistInstructions, applyChecklist } from '../services/scanChecklist.js';
 import express, { Router, type Request, type Response } from 'express';
 import { isLunaScanKey, lunaScanAllowed } from '../middleware/lunaScanKey.js';
 import { config } from '../config/environment.js';
@@ -431,7 +432,7 @@ router.delete('/tasks/scan/watches/:id', (req: Request, res: Response): void => 
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks, onlyRecipients, watch, watchDays } = req.body as {
+  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks, onlyRecipients, watch, watchDays, extract: rawChecklist } = req.body as {
     messageId?: string;
     messageIds?: string[];
     teamName?: string;
@@ -447,6 +448,8 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     /** Keep watching for new emails with this subject and add them to the sheet. */
     watch?: boolean;
     watchDays?: number;
+    /** Newer app builds: what to pull, item by item (see scanChecklist.ts). */
+    extract?: unknown;
   };
 
   // Support both single messageId and array messageIds
@@ -527,10 +530,17 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     // 2. Detect content type from primary subject
     const contentType = detectContentType(primarySubject);
-    // Explicit client flags OR'd with legacy instruction-text regex for backward compat
-    const wantsCodes = clientExtractCodes === true || /password|code/i.test(instructions ?? '');
-    const wantsLinks = clientExtractLinks === true || /login\s*(link|url)/i.test(instructions ?? '');
+    // Checklist from newer app builds wins. Older builds: explicit flags OR'd
+    // with the legacy instruction-text regex.
+    const checklist = parseChecklist(rawChecklist);
+    const wantsCodes = checklist
+      ? checklist.presaleCode
+      : clientExtractCodes === true || /password|code/i.test(instructions ?? '');
+    const wantsLinks = checklist
+      ? checklist.links
+      : clientExtractLinks === true || /login\s*(link|url)/i.test(instructions ?? '');
     const extractCodesAndLinks = wantsCodes || wantsLinks;
+    const scanInstructions = checklist ? checklistInstructions(checklist, instructions) : instructions;
 
     // 3. Find related recipients across ALL subjects, dedup by email+time
     const recipientMap = new Map<string, import('../services/gmail.js').RecipientWithAppointment>();
@@ -538,12 +548,13 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
     for (const subject of subjects) {
       const scanned = await findRelatedRecipients(subject, {
         extractCodesAndLinks,
-        instructions,
+        instructions: scanInstructions,
         // Guarantee every message the user actually selected is scanned, even
         // if it falls outside the subject search's 14-day window.
         includeMessageIds: allMessageIds,
       });
-      const enriched = await enrichRecipientsWithAppointments(subject, scanned, instructions);
+      const enriched = await enrichRecipientsWithAppointments(subject, scanned, scanInstructions);
+      if (checklist) applyChecklist(enriched, checklist);
 
       for (const r of enriched) {
         const email = r.email.toLowerCase();
@@ -612,6 +623,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
         accountInfo,
         allAccounts,
         teamName,
+        includeSeating: checklist?.seating ?? true,
       });
       sheetUrl = sheetResult.spreadsheetUrl;
     }
@@ -630,9 +642,10 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
           spreadsheetId: sheetResult.spreadsheetId,
           spreadsheetUrl: sheetResult.spreadsheetUrl,
           sheetGid: sheetResult.sheetGid,
-          instructions,
+          instructions: scanInstructions,
           extractCodesAndLinks,
           wantsCodes,
+          checklist,
           makeCalendar: !skipCalendar,
           eventName: clientEventName,
           seenRecipients: Object.fromEntries(enrichedRecipients.map(r => [r.email.toLowerCase(), r.rawDateTime ?? null])),

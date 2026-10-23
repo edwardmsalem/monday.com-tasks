@@ -20,6 +20,7 @@ import { google as coreApiGoogle } from './coreApi.js';
 import { normalizeSubject, findRelatedRecipients, enrichRecipientsWithAppointments } from './gmail.js';
 import { batchLookupAccountsForScan, type Sport } from './sheets.js';
 import { addRecipientsToScanSheet } from './scanSheetUpdate.js';
+import { applyChecklist, type ScanChecklist } from './scanChecklist.js';
 import * as calendar from './calendar.js';
 
 const DATA_DIR = process.env['RAILWAY_VOLUME_MOUNT_PATH'] || (process.env['RAILWAY_ENVIRONMENT'] ? '/data' : process.cwd());
@@ -41,6 +42,8 @@ export interface ScanWatch {
   instructions?: string;
   extractCodesAndLinks: boolean;
   wantsCodes: boolean;
+  /** What the scan was ticked to pull; absent for watches from older app builds. */
+  checklist?: ScanChecklist;
   makeCalendar: boolean;
   eventName?: string;
   /** Gmail ids already scanned (original scan + earlier runs). */
@@ -134,6 +137,7 @@ async function runWatch(w: ScanWatch): Promise<ScanWatch> {
       onlyMessageIds: ids,
     });
     const enriched = await enrichRecipientsWithAppointments(subject, scanned, w.instructions, ids);
+    if (w.checklist) applyChecklist(enriched, w.checklist);
     for (const r of enriched) found.set(r.email.toLowerCase(), r);
     ids.forEach(id => seen.add(id));
   }
