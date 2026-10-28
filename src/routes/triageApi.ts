@@ -432,12 +432,18 @@ router.delete('/tasks/scan/watches/:id', (req: Request, res: Response): void => 
 router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
 
-  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks, onlyRecipients, watch, watchDays, extract: rawChecklist } = req.body as {
+  const { messageId, messageIds: rawMessageIds, teamName: clientTeamName, instructions, skipSheet, skipAccountLookup, skipCalendar, eventName: clientEventName, sheetId: clientSheetId, extractCodes: clientExtractCodes, extractLinks: clientExtractLinks, onlyRecipients, watch, watchDays, extract: rawChecklist } = req.body as {
     messageId?: string;
     messageIds?: string[];
     teamName?: string;
     instructions?: string;
     skipSheet?: boolean;
+    /** Make the sheet but skip the slow season-ticket account lookup. The
+     *  app's "Look up season ticket accounts" switch used to send skipSheet,
+     *  so turning it off also dropped the sheet and its link (Eddie,
+     *  2026-10-28: "I didn't do calendar or season account info just the
+     *  links" and got no sheet). */
+    skipAccountLookup?: boolean;
     skipCalendar?: boolean;
     eventName?: string;
     sheetId?: string;
@@ -582,10 +588,10 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
 
     const recipientsWithTimes = enrichedRecipients.filter(r => r.rawDateTime);
 
-    // 5. Look up account info (skip if no sheet needed)
+    // 5. Look up account info (skip if no sheet needed, or the caller opted out)
     let accountInfo: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
     let allAccounts: Map<string, import('../services/sheets.js').ScanAccountInfo> | undefined;
-    if (!skipSheet) {
+    if (!skipSheet && !skipAccountLookup) {
       try {
         // An explicitly chosen team WINS over the sport inferred from the
         // email's Gmail label. The label reflects who mailed us, not who the
@@ -623,7 +629,7 @@ router.post('/tasks/scan', async (req: Request, res: Response): Promise<void> =>
         accountInfo,
         allAccounts,
         teamName,
-        includeSeating: checklist?.seating ?? true,
+        includeSeating: skipAccountLookup ? false : (checklist?.seating ?? true),
       });
       sheetUrl = sheetResult.spreadsheetUrl;
     }
