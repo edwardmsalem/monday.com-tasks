@@ -9,7 +9,7 @@
 
 import { parseChecklist, checklistInstructions, applyChecklist } from '../services/scanChecklist.js';
 import express, { Router, type Request, type Response } from 'express';
-import { isLunaScanKey, lunaScanAllowed } from '../middleware/lunaScanKey.js';
+import { isLunaScanKey, lunaScanAllowed, lunaRelocationAllowed } from '../middleware/lunaScanKey.js';
 import { config } from '../config/environment.js';
 import { analyzeEmailSafe, type AnalysisResult } from '../services/claude.js';
 import { google as coreApiGoogle, claude as coreApiClaude, getCachedConfig } from '../services/coreApi.js';
@@ -50,9 +50,9 @@ function verifyApiKey(req: Request, res: Response): boolean {
   }
 
   const token = authHeader.slice(7);
-  // Luna's scan-only key is valid on POST /tasks/scan only (lunaScanGuard
-  // already refused everything else with it).
-  if (isLunaScanKey(req) && lunaScanAllowed(req.method, req.path)) {
+  // Luna's scan-only key is valid on POST /tasks/scan and the relocation card
+  // routes only (lunaScanGuard already refused everything else with it).
+  if (isLunaScanKey(req) && (lunaScanAllowed(req.method, req.path) || lunaRelocationAllowed(req.method, req.path))) {
     return true;
   }
   if (token !== expectedKey) {
@@ -418,6 +418,36 @@ router.get('/tasks/scan/watches', (req: Request, res: Response): void => {
       expiresAt: w.expiresAt, lastRunAt: w.lastRunAt ?? null, added: w.added,
     })),
   });
+});
+
+// ============================================================================
+// Relocation cards for Luna (relocationScanner.ts, RELOCATION_DELIVERY=luna)
+// ============================================================================
+
+router.get('/tasks/relocation/outbox', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+  const { relocationOutbox } = await import('../services/relocationScanner.js');
+  res.json({ ops: relocationOutbox() });
+});
+
+router.post('/tasks/relocation/outbox/ack', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+  const { id, channel, ts } = req.body ?? {};
+  if (typeof id !== 'string' || !id) { res.status(400).json({ error: 'id required' }); return; }
+  const { ackRelocationOp } = await import('../services/relocationScanner.js');
+  res.json({ acked: ackRelocationOp(id, typeof channel === 'string' ? channel : undefined, typeof ts === 'string' ? ts : undefined) });
+});
+
+router.post('/tasks/relocation/action', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+  const { action, key, userId } = req.body ?? {};
+  if ((action !== 'approve' && action !== 'ignore') || typeof key !== 'string' || typeof userId !== 'string') {
+    res.status(400).json({ error: 'action (approve|ignore), key and userId required' });
+    return;
+  }
+  const { startRelocationAction } = await import('../services/relocationScanner.js');
+  const r = startRelocationAction(action, key, userId);
+  res.status(r.ok ? 202 : 409).json(r);
 });
 
 router.delete('/tasks/scan/watches/:id', (req: Request, res: Response): void => {

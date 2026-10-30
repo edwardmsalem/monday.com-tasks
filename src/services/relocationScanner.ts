@@ -22,8 +22,18 @@
  * the emails", "One sheet per team, keep adding", "Slack DM to me".
  *
  * Enabled by RELOCATION_SCANNER_ENABLED=true.
+ *
+ * Where the cards go (Eddie, 2026-10-29: "switch it to Luna posting it in
+ * operations"): RELOCATION_DELIVERY=luna puts every card, update and thread
+ * note in an outbox instead of DMing. Luna reads it (GET
+ * /tasks/relocation/outbox), posts in #operations as herself, acks each post
+ * with its channel and ts, and passes button taps back (POST
+ * /tasks/relocation/action). Unset, cards are DMed to Eddie as before.
+ * Who may approve: RELOCATION_APPROVERS (Slack ids, comma separated), default
+ * Eddie only.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { google as coreApiGoogle, slack as coreApiSlack } from './coreApi.js';
@@ -35,6 +45,8 @@ import { convertHtmlToPdf } from './convertApi.js';
 import { addAppointmentsToScanSheet } from './relocationSheet.js';
 
 const EDDIE_SLACK_ID = process.env['RELOCATION_SCANNER_DM_USER'] || 'U0144K906KA';
+const DELIVERY: 'dm' | 'luna' = process.env['RELOCATION_DELIVERY'] === 'luna' ? 'luna' : 'dm';
+const APPROVERS = (process.env['RELOCATION_APPROVERS'] || EDDIE_SLACK_ID).split(',').map(s => s.trim()).filter(Boolean);
 const INTERVAL_MS = Number(process.env['RELOCATION_SCANNER_INTERVAL_MS']) || 15 * 60 * 1000;
 const LOOKBACK = process.env['RELOCATION_SCANNER_LOOKBACK'] || 'newer_than:2d';
 // A campaign quiet this long is over; the team's next email starts a new one.
@@ -70,10 +82,25 @@ interface Campaign {
   sheetUrl?: string;
 }
 
+/** A Slack post, edit or thread reply waiting for Luna to make it. */
+interface OutboxOp {
+  id: string;
+  op: 'post' | 'update' | 'reply';
+  /** The campaign card this belongs to; update and reply target its post. */
+  campaignKey?: string;
+  text: string;
+  blocks?: unknown[];
+  file?: { filename: string; title: string; base64: string };
+  /** Facts behind the post, for Luna to attach as Slack message metadata. */
+  facts: Record<string, unknown>;
+  createdAt: number;
+}
+
 interface ScannerState {
   seen: Record<string, number>;   // message id -> when judged
   campaigns: Record<string, Campaign>;
   closerAlerts: Record<string, number>; // message id -> when DMed
+  outbox?: OutboxOp[];
 }
 
 let state: ScannerState = loadState();
@@ -90,6 +117,8 @@ function saveState(): void {
   const cutoff = Date.now() - 45 * 24 * 60 * 60 * 1000;
   for (const [id, t] of Object.entries(state.seen)) if (t < cutoff) delete state.seen[id];
   for (const [id, t] of Object.entries(state.closerAlerts)) if (t < cutoff) delete state.closerAlerts[id];
+  const opCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  if (state.outbox) state.outbox = state.outbox.filter(o => o.createdAt >= opCutoff);
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(state));
 }
@@ -157,9 +186,27 @@ async function samplePdf(msg: any): Promise<string | null> {
   }
 }
 
+/** Luna's Slack app routes a tap by the value's namespace prefix to her handler. */
+function buttonValue(action: 'approve' | 'ignore', key: string): string {
+  return DELIVERY === 'luna' ? `luna-reloc:${action}:${key}` : key;
+}
+
+function campaignFacts(c: Campaign): Record<string, unknown> {
+  return { event_type: 'relocation_campaign', campaign_key: c.key, team: c.team, kind: c.kind, status: c.status,
+    emails: c.messageIds.length, new_accounts: c.newAccount, sheet_url: c.sheetUrl ?? null };
+}
+
+function queue(op: Omit<OutboxOp, 'id' | 'createdAt'>): void {
+  const box = state.outbox ??= [];
+  // Only the newest edit of a card matters.
+  if (op.op === 'update') state.outbox = box.filter(o => !(o.op === 'update' && o.campaignKey === op.campaignKey));
+  state.outbox!.push({ ...op, id: crypto.randomUUID(), createdAt: Date.now() });
+  saveState();
+}
+
 function campaignBlocks(c: Campaign): unknown[] {
   const statusLine = c.status === 'pending'
-    ? '_Nothing is created until you approve._'
+    ? `_Nothing is created until ${DELIVERY === 'luna' ? 'it is approved' : 'you approve'}._`
     : c.status === 'ignored' ? '_Ignored. Later emails for this campaign stay quiet._'
     : c.status === 'building' ? '_Approved. Building the sheet and calendar..._'
     : `_Approved.${c.sheetUrl ? ` <${c.sheetUrl}|Tracking sheet>` : ''} Later emails are added automatically._`;
@@ -172,14 +219,20 @@ function campaignBlocks(c: Campaign): unknown[] {
   ];
   if (c.status === 'pending') {
     blocks.push({ type: 'actions', elements: [
-      { type: 'button', text: { type: 'plain_text', text: 'Approve: build sheet + calendar' }, style: 'primary', action_id: 'reloc_approve', value: c.key },
-      { type: 'button', text: { type: 'plain_text', text: 'Ignore' }, action_id: 'reloc_ignore', value: c.key },
+      { type: 'button', text: { type: 'plain_text', text: 'Approve: build sheet + calendar' }, style: 'primary', action_id: 'reloc_approve', value: buttonValue('approve', c.key) },
+      { type: 'button', text: { type: 'plain_text', text: 'Ignore' }, action_id: 'reloc_ignore', value: buttonValue('ignore', c.key) },
     ] });
   }
   return blocks;
 }
 
 async function postCampaignDm(c: Campaign, msg: any): Promise<void> {
+  if (DELIVERY === 'luna') {
+    const pdf = await samplePdf(msg);
+    queue({ op: 'post', campaignKey: c.key, text: `${c.kind} campaign: ${c.team}`, blocks: campaignBlocks(c), facts: campaignFacts(c),
+      file: pdf ? { filename: `${c.team.replace(/[^a-z0-9]+/gi, '-')}-sample.pdf`, title: `${c.team} sample email`, base64: pdf } : undefined });
+    return;
+  }
   const r = await coreApiSlack.sendDm({ user: EDDIE_SLACK_ID, text: `${c.kind} campaign: ${c.team}`, blocks: campaignBlocks(c) });
   c.dm = { channel: r.channel, ts: r.ts };
   const pdf = await samplePdf(msg);
@@ -189,11 +242,19 @@ async function postCampaignDm(c: Campaign, msg: any): Promise<void> {
 }
 
 async function refreshCampaignDm(c: Campaign): Promise<void> {
+  if (DELIVERY === 'luna') {
+    queue({ op: 'update', campaignKey: c.key, text: `${c.kind} campaign: ${c.team}`, blocks: campaignBlocks(c), facts: campaignFacts(c) });
+    return;
+  }
   if (!c.dm) return;
   await coreApiSlack.updateMessage({ channel: c.dm.channel, ts: c.dm.ts, text: `${c.kind} campaign: ${c.team}`, blocks: campaignBlocks(c) });
 }
 
 async function threadNote(c: Campaign, text: string): Promise<void> {
+  if (DELIVERY === 'luna') {
+    queue({ op: 'reply', campaignKey: c.key, text, facts: campaignFacts(c) });
+    return;
+  }
   if (c.dm) await coreApiSlack.postMessage({ channel: c.dm.channel, threadTs: c.dm.ts, text });
   else await coreApiSlack.sendDm({ user: EDDIE_SLACK_ID, text: `${c.team} ${c.kind}: ${text}` });
 }
@@ -202,6 +263,12 @@ async function closerDm(msg: any, team: string, v: RelocationVerdict): Promise<v
   const text = `*In-person ${v.kind.toLowerCase()}, new account: ${team}*\n` +
     `To: ${header(msg, 'to')}\nSubject: _${header(msg, 'subject')}_\n> ${v.evidence.slice(0, 280)}\n` +
     `_In person on a new account, so it goes to the closer, not the calendar. Nothing was created._`;
+  if (DELIVERY === 'luna') {
+    const pdf = await samplePdf(msg);
+    queue({ op: 'post', text, facts: { event_type: 'relocation_closer', team, kind: v.kind, to: header(msg, 'to'), subject: header(msg, 'subject') },
+      file: pdf ? { filename: `${team.replace(/[^a-z0-9]+/gi, '-')}-in-person.pdf`, title: `${team} email`, base64: pdf } : undefined });
+    return;
+  }
   const r = await coreApiSlack.sendDm({ user: EDDIE_SLACK_ID, text });
   const pdf = await samplePdf(msg);
   if (pdf) await coreApiSlack.uploadFile({ channel: r.channel, threadTs: r.ts, filename: `${team.replace(/[^a-z0-9]+/gi, '-')}-in-person.pdf`, fileData: pdf, title: `${team} email` });
@@ -349,7 +416,7 @@ export async function runRelocationScan(): Promise<{ judged: number; hits: numbe
 export async function handleRelocationAction(actionId: string, key: string, userId: string): Promise<void> {
   const c = state.campaigns[key];
   if (!c) return;
-  if (userId !== EDDIE_SLACK_ID) return;
+  if (!APPROVERS.includes(userId)) return;
   if (actionId === 'reloc_ignore') {
     c.status = 'ignored';
     saveState();
@@ -372,8 +439,49 @@ export async function handleRelocationAction(actionId: string, key: string, user
   }
 }
 
+// ---------------------------------------------------------------------------
+// Luna delivery (RELOCATION_DELIVERY=luna)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ops Luna can make now, oldest first. An edit or thread reply carries the
+ * channel and ts of its card and waits until Luna has acked the card's post.
+ */
+export function relocationOutbox(): Array<OutboxOp & { channel?: string; ts?: string }> {
+  const out: Array<OutboxOp & { channel?: string; ts?: string }> = [];
+  for (const o of state.outbox ?? []) {
+    if (o.op === 'post') { out.push(o); continue; }
+    const dm = o.campaignKey ? state.campaigns[o.campaignKey]?.dm : undefined;
+    if (dm) out.push({ ...o, channel: dm.channel, ts: dm.ts });
+  }
+  return out;
+}
+
+/** Luna made the op. For a card's post, remember where it went. */
+export function ackRelocationOp(id: string, channel?: string, ts?: string): boolean {
+  const o = (state.outbox ?? []).find(x => x.id === id);
+  if (!o) return false;
+  if (o.op === 'post' && o.campaignKey && channel && ts) {
+    const c = state.campaigns[o.campaignKey];
+    if (c) c.dm = { channel, ts };
+  }
+  state.outbox = (state.outbox ?? []).filter(x => x.id !== id);
+  saveState();
+  return true;
+}
+
+/** A button tap passed back by Luna. Building can take minutes, so it runs on its own. */
+export function startRelocationAction(action: 'approve' | 'ignore', key: string, userId: string): { ok: boolean; status?: string; reason?: string } {
+  const c = state.campaigns[key];
+  if (!c) return { ok: false, reason: 'No such relocation campaign.' };
+  if (!APPROVERS.includes(userId)) return { ok: false, reason: 'Only the relocation approvers (Eddie) can approve or ignore this.' };
+  if (c.status !== 'pending') return { ok: false, status: c.status, reason: `This campaign is already ${c.status}.` };
+  void handleRelocationAction(`reloc_${action}`, key, userId).catch(e => console.error('[Relocation] action failed:', e));
+  return { ok: true, status: action === 'approve' ? 'building' : 'ignored' };
+}
+
 export function startRelocationScanner(): void {
-  console.log(`[Relocation] scanner enabled: every ${INTERVAL_MS / 60000}min over ${LOOKBACK}, DMs to ${EDDIE_SLACK_ID}, state ${STATE_FILE}`);
+  console.log(`[Relocation] scanner enabled: every ${INTERVAL_MS / 60000}min over ${LOOKBACK}, ${DELIVERY === 'luna' ? 'cards to Luna outbox' : `DMs to ${EDDIE_SLACK_ID}`}, approvers ${APPROVERS.join(',')}, state ${STATE_FILE}`);
   setTimeout(() => { void runRelocationScan(); }, 30_000);
   setInterval(() => { void runRelocationScan(); }, INTERVAL_MS);
 }
