@@ -444,9 +444,9 @@ router.post('/tasks/relocation/action', async (req: Request, res: Response): Pro
   // Taps are relayed by Luna's Slack button handler, which holds its own
   // secret: the scan key alone (which Luna's agent can use) cannot approve.
   const actionKey = process.env['RELOCATION_ACTION_KEY'];
-  const given = String(req.headers['x-relocation-action-key'] ?? '');
-  if (!actionKey || given.length !== actionKey.length
-      || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(actionKey))) {
+  const given = Buffer.from(String(req.headers['x-relocation-action-key'] ?? ''));
+  const expected = Buffer.from(actionKey ?? '');
+  if (!actionKey || given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
     res.status(403).json({ error: 'Relocation action key required' });
     return;
   }
