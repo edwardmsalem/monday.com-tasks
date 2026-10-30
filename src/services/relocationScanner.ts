@@ -186,6 +186,9 @@ async function samplePdf(msg: any): Promise<string | null> {
   }
 }
 
+/** Email text shown in Slack: no links, mentions or <!channel> from a sender. */
+const slackSafe = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 /** Luna's Slack app routes a tap by the value's namespace prefix to her handler. */
 function buttonValue(action: 'approve' | 'ignore', key: string): string {
   return DELIVERY === 'luna' ? `luna-reloc:${action}:${key}` : key;
@@ -212,10 +215,10 @@ function campaignBlocks(c: Campaign): unknown[] {
     : `_Approved.${c.sheetUrl ? ` <${c.sheetUrl}|Tracking sheet>` : ''} Later emails are added automatically._`;
   const blocks: unknown[] = [
     { type: 'section', text: { type: 'mrkdwn', text:
-      `*${c.kind} campaign: ${c.team}*${c.newAccount ? ' (new accounts)' : ''}\n` +
+      `*${c.kind} campaign: ${slackSafe(c.team)}*${c.newAccount ? ' (new accounts)' : ''}\n` +
       `${c.messageIds.length} email${c.messageIds.length === 1 ? '' : 's'} so far · online\n` +
-      `Subject: _${c.sampleSubject}_\n` +
-      `> ${c.sampleEvidence.slice(0, 280)}\n${statusLine}` } },
+      `Subject: _${slackSafe(c.sampleSubject)}_\n` +
+      `> ${slackSafe(c.sampleEvidence.slice(0, 280))}\n${statusLine}` } },
   ];
   if (c.status === 'pending') {
     blocks.push({ type: 'actions', elements: [
@@ -260,8 +263,8 @@ async function threadNote(c: Campaign, text: string): Promise<void> {
 }
 
 async function closerDm(msg: any, team: string, v: RelocationVerdict): Promise<void> {
-  const text = `*In-person ${v.kind.toLowerCase()}, new account: ${team}*\n` +
-    `To: ${header(msg, 'to')}\nSubject: _${header(msg, 'subject')}_\n> ${v.evidence.slice(0, 280)}\n` +
+  const text = `*In-person ${v.kind.toLowerCase()}, new account: ${slackSafe(team)}*\n` +
+    `To: ${slackSafe(header(msg, 'to'))}\nSubject: _${slackSafe(header(msg, 'subject'))}_\n> ${slackSafe(v.evidence.slice(0, 280))}\n` +
     `_In person on a new account, so it goes to the closer, not the calendar. Nothing was created._`;
   if (DELIVERY === 'luna') {
     const pdf = await samplePdf(msg);
@@ -472,8 +475,10 @@ export function ackRelocationOp(id: string, channel?: string, ts?: string): bool
 
 /** A button tap passed back by Luna. Building can take minutes, so it runs on its own. */
 export function startRelocationAction(action: 'approve' | 'ignore', key: string, userId: string): { ok: boolean; status?: string; reason?: string } {
+  if (DELIVERY !== 'luna') return { ok: false, reason: 'Relocation cards are not going through Luna.' };
   const c = state.campaigns[key];
-  if (!c) return { ok: false, reason: 'No such relocation campaign.' };
+  // Only a card Luna actually posted can be tapped.
+  if (!c || !c.dm) return { ok: false, reason: 'No such relocation campaign.' };
   if (!APPROVERS.includes(userId)) return { ok: false, reason: 'Only the relocation approvers (Eddie) can approve or ignore this.' };
   if (c.status !== 'pending') return { ok: false, status: c.status, reason: `This campaign is already ${c.status}.` };
   void handleRelocationAction(`reloc_${action}`, key, userId).catch(e => console.error('[Relocation] action failed:', e));
