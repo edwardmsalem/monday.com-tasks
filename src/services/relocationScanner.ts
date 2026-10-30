@@ -49,6 +49,9 @@ const DELIVERY: 'dm' | 'luna' = process.env['RELOCATION_DELIVERY'] === 'luna' ? 
 const APPROVERS = (process.env['RELOCATION_APPROVERS'] || EDDIE_SLACK_ID).split(',').map(s => s.trim()).filter(Boolean);
 const INTERVAL_MS = Number(process.env['RELOCATION_SCANNER_INTERVAL_MS']) || 15 * 60 * 1000;
 const LOOKBACK = process.env['RELOCATION_SCANNER_LOOKBACK'] || 'newer_than:2d';
+// When set (0-23), scan once a day at this Eastern hour instead of every INTERVAL_MS.
+const DAILY_HOUR_RAW = process.env['RELOCATION_SCANNER_DAILY_HOUR_ET'];
+const DAILY_HOUR = DAILY_HOUR_RAW !== undefined && DAILY_HOUR_RAW !== '' && Number.isInteger(Number(DAILY_HOUR_RAW)) && Number(DAILY_HOUR_RAW) >= 0 && Number(DAILY_HOUR_RAW) <= 23 ? Number(DAILY_HOUR_RAW) : null;
 // A campaign quiet this long is over; the team's next email starts a new one.
 const CAMPAIGN_IDLE_MS = 60 * 24 * 60 * 60 * 1000;
 
@@ -101,6 +104,7 @@ interface ScannerState {
   campaigns: Record<string, Campaign>;
   closerAlerts: Record<string, number>; // message id -> when DMed
   outbox?: OutboxOp[];
+  lastDailyRun?: string; // Eastern date (YYYY-MM-DD) of the last daily scan
 }
 
 let state: ScannerState = loadState();
@@ -489,7 +493,28 @@ export function startRelocationAction(action: 'approve' | 'ignore', key: string,
 }
 
 export function startRelocationScanner(): void {
-  console.log(`[Relocation] scanner enabled: every ${INTERVAL_MS / 60000}min over ${LOOKBACK}, ${DELIVERY === 'luna' ? 'cards to Luna outbox' : `DMs to ${EDDIE_SLACK_ID}`}, approvers ${APPROVERS.join(',')}, state ${STATE_FILE}`);
+  console.log(`[Relocation] scanner enabled: ${DAILY_HOUR !== null ? `daily at ${DAILY_HOUR}:00 ET` : `every ${INTERVAL_MS / 60000}min`} over ${LOOKBACK}, ${DELIVERY === 'luna' ? 'cards to Luna outbox' : `DMs to ${EDDIE_SLACK_ID}`}, approvers ${APPROVERS.join(',')}, state ${STATE_FILE}`);
+  if (DAILY_HOUR !== null) {
+    // Checked each minute; the date is saved, so a restart never scans twice in a day
+    // and a server that was down at the hour catches up when it comes back that day.
+    const tick = () => {
+      const { day, hour } = easternNow();
+      if (hour < DAILY_HOUR || state.lastDailyRun === day) return;
+      state.lastDailyRun = day;
+      saveState();
+      void runRelocationScan();
+    };
+    setTimeout(tick, 30_000);
+    setInterval(tick, 60_000);
+    return;
+  }
   setTimeout(() => { void runRelocationScan(); }, 30_000);
   setInterval(() => { void runRelocationScan(); }, INTERVAL_MS);
+}
+
+function easternNow(): { day: string; hour: number } {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date()).map(p => [p.type, p.value]));
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
 }
