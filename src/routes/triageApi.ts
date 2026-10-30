@@ -7,6 +7,7 @@
  * Auth: Bearer token matching CORE_API_KEY
  */
 
+import crypto from 'crypto';
 import { parseChecklist, checklistInstructions, applyChecklist } from '../services/scanChecklist.js';
 import express, { Router, type Request, type Response } from 'express';
 import { isLunaScanKey, lunaScanAllowed, lunaRelocationAllowed } from '../middleware/lunaScanKey.js';
@@ -440,6 +441,15 @@ router.post('/tasks/relocation/outbox/ack', async (req: Request, res: Response):
 
 router.post('/tasks/relocation/action', async (req: Request, res: Response): Promise<void> => {
   if (!verifyApiKey(req, res)) return;
+  // Taps are relayed by Luna's Slack button handler, which holds its own
+  // secret: the scan key alone (which Luna's agent can use) cannot approve.
+  const actionKey = process.env['RELOCATION_ACTION_KEY'];
+  const given = String(req.headers['x-relocation-action-key'] ?? '');
+  if (!actionKey || given.length !== actionKey.length
+      || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(actionKey))) {
+    res.status(403).json({ error: 'Relocation action key required' });
+    return;
+  }
   const { action, key, userId } = req.body ?? {};
   if ((action !== 'approve' && action !== 'ignore') || typeof key !== 'string' || typeof userId !== 'string') {
     res.status(400).json({ error: 'action (approve|ignore), key and userId required' });
