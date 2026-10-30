@@ -198,7 +198,8 @@ export async function createScanAppointmentEvents(
   subject: string,
   recipients: Array<{ email: string; rawDateTime: string | null }>,
   mondayItemId: string,
-  sheetUrl?: string
+  sheetUrl?: string,
+  eventType?: string
 ): Promise<ScanAppointmentResult[]> {
   // Filter to only recipients with valid datetime
   const recipientsWithTime = recipients.filter(r => r.rawDateTime);
@@ -245,7 +246,7 @@ export async function createScanAppointmentEvents(
 
   const results: ScanAppointmentResult[] = [];
   const mondayUrl = monday.getItemUrl(mondayItemId);
-  const eventType = detectEventType(subject);
+  const title = eventType || detectEventType(subject);
   const currentYear = new Date().getFullYear();
 
   for (const group of timeSlotGroups) {
@@ -269,7 +270,7 @@ export async function createScanAppointmentEvents(
 
     try {
       const result = await coreApiGoogle.calendar.createEvent({
-        summary: `(${emails.length}) ${teamName} ${eventType} ${currentYear}`,
+        summary: `(${emails.length}) ${teamName} ${title} ${currentYear}`,
         description: descriptionParts.join('\n'),
         start: {
           dateTime: startTimeStr,

@@ -39,7 +39,7 @@ import * as path from 'path';
 import { google as coreApiGoogle, slack as coreApiSlack } from './coreApi.js';
 import { CANDIDATE_QUERY, judgeRelocationEmail, campaignKey, type RelocationKind, type RelocationVerdict } from './relocationDetect.js';
 import { findRelatedRecipients, enrichRecipientsWithAppointments, type RecipientWithAppointment } from './gmail.js';
-import { batchLookupAccountsForScan, createScanSheet, detectContentType, getSportFromTeam, type Sport } from './sheets.js';
+import { batchLookupAccountsForScan, createScanSheet, getSportFromTeam, type Sport } from './sheets.js';
 import * as calendar from './calendar.js';
 import { convertHtmlToPdf } from './convertApi.js';
 import { addAppointmentsToScanSheet } from './relocationSheet.js';
@@ -334,7 +334,7 @@ async function buildCampaign(c: Campaign): Promise<void> {
     } catch (e) {
       console.error('[Relocation] Account lookup failed (non-fatal):', e);
     }
-    const sheet = await createScanSheet({ title: c.sampleSubject, recipients: fresh, contentType: detectContentType(c.sampleSubject), accountInfo, allAccounts, teamName: c.team });
+    const sheet = await createScanSheet({ title: c.sampleSubject, recipients: fresh, contentType: 'relocation', accountInfo, allAccounts, teamName: c.team });
     c.sheetId = sheet.spreadsheetId; c.sheetUrl = sheet.spreadsheetUrl;
     added = fresh.length;
   } else {
@@ -343,7 +343,7 @@ async function buildCampaign(c: Campaign): Promise<void> {
 
   let events = 0;
   if (calendar.isCalendarEnabled()) {
-    const made = await calendar.createScanAppointmentEvents(c.team, c.sampleSubject, fresh, '', c.sheetUrl ?? '');
+    const made = await calendar.createScanAppointmentEvents(c.team, c.sampleSubject, fresh, '', c.sheetUrl ?? '', c.kind);
     events = made.length;
   }
   c.scheduled.push(...fresh.map(r => `${r.email.toLowerCase()}|${r.rawDateTime}`));
