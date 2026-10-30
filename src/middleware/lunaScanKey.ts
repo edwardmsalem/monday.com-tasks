@@ -8,6 +8,11 @@
  * with it gets 403 before any router runs. An hourly guard limits how many
  * scans it can start, since each scan reads every matching email with the AI
  * and writes a sheet and calendar events.
+ *
+ * Since 2026-10-29 the same key also opens the relocation card routes Luna
+ * uses to post relocation campaigns in #operations and pass back the button
+ * taps (Eddie: "switch it to Luna posting it in operations"). Those are not
+ * counted against the scan limit.
  */
 
 import crypto from 'crypto';
@@ -15,6 +20,12 @@ import type { Request, Response, NextFunction } from 'express';
 
 export function lunaScanAllowed(method: string, path: string): boolean {
   return method === 'POST' && /^\/tasks\/scan\/?$/.test(path);
+}
+
+/** Relocation card routes for Luna (relocationScanner.ts, delivery mode luna). */
+export function lunaRelocationAllowed(method: string, path: string): boolean {
+  return (method === 'GET' && /^\/tasks\/relocation\/outbox\/?$/.test(path))
+    || (method === 'POST' && /^\/tasks\/relocation\/(outbox\/ack|action)\/?$/.test(path));
 }
 
 export function isLunaScanKey(req: Request, key = process.env['TRIAGE_SCAN_KEY_LUNA']): boolean {
@@ -32,6 +43,7 @@ export function resetLunaScanWindow(): void { windowStart = 0; used = 0; }
 /** Mount before every router. Requests without the key pass through untouched. */
 export function lunaScanGuard(req: Request, res: Response, next: NextFunction): void {
   if (!isLunaScanKey(req)) { next(); return; }
+  if (lunaRelocationAllowed(req.method, req.path)) { (req as any).lunaScan = true; next(); return; }
   if (!lunaScanAllowed(req.method, req.path)) {
     res.status(403).json({ success: false, error: 'Scan-only key: route not allowed' });
     return;
