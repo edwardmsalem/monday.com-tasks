@@ -244,8 +244,11 @@ async function postCampaignDm(c: Campaign, msg: any): Promise<void> {
   }
 }
 
+/** Cards posted by Luna go through her outbox; cards already DMed before the switch stay DMs. */
+const viaLuna = (c?: Campaign): boolean => DELIVERY === 'luna' && !(c?.dm && c.dm.channel.startsWith('D'));
+
 async function refreshCampaignDm(c: Campaign): Promise<void> {
-  if (DELIVERY === 'luna') {
+  if (viaLuna(c)) {
     queue({ op: 'update', campaignKey: c.key, text: `${c.kind} campaign: ${c.team}`, blocks: campaignBlocks(c), facts: campaignFacts(c) });
     return;
   }
@@ -254,7 +257,7 @@ async function refreshCampaignDm(c: Campaign): Promise<void> {
 }
 
 async function threadNote(c: Campaign, text: string): Promise<void> {
-  if (DELIVERY === 'luna') {
+  if (viaLuna(c)) {
     queue({ op: 'reply', campaignKey: c.key, text, facts: campaignFacts(c) });
     return;
   }
