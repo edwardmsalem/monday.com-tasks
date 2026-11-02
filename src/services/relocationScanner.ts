@@ -214,7 +214,7 @@ function queue(op: Omit<OutboxOp, 'id' | 'createdAt'>): void {
 function campaignBlocks(c: Campaign): unknown[] {
   const statusLine = c.status === 'pending'
     ? `_Nothing is created until ${DELIVERY === 'luna' ? 'it is approved' : 'you approve'}._`
-    : c.status === 'ignored' ? '_Ignored. Later emails for this campaign stay quiet._'
+    : c.status === 'ignored' ? '_Ignored. Later emails for this campaign stay quiet. Tapped Ignore by mistake? Approve still works._'
     : c.status === 'building' ? '_Approved. Building the sheet and calendar..._'
     : `_Approved.${c.sheetUrl ? ` <${c.sheetUrl}|Tracking sheet>` : ''} Later emails are added automatically._`;
   const blocks: unknown[] = [
@@ -228,6 +228,10 @@ function campaignBlocks(c: Campaign): unknown[] {
     blocks.push({ type: 'actions', elements: [
       { type: 'button', text: { type: 'plain_text', text: 'Approve: build sheet + calendar' }, style: 'primary', action_id: 'reloc_approve', value: buttonValue('approve', c.key) },
       { type: 'button', text: { type: 'plain_text', text: 'Ignore' }, action_id: 'reloc_ignore', value: buttonValue('ignore', c.key) },
+    ] });
+  } else if (c.status === 'ignored') {
+    blocks.push({ type: 'actions', elements: [
+      { type: 'button', text: { type: 'plain_text', text: 'Approve anyway: build sheet + calendar' }, action_id: 'reloc_approve', value: buttonValue('approve', c.key) },
     ] });
   }
   return blocks;
@@ -427,13 +431,14 @@ export async function handleRelocationAction(actionId: string, key: string, user
   const c = state.campaigns[key];
   if (!c) return;
   if (!APPROVERS.includes(userId)) return;
-  if (actionId === 'reloc_ignore') {
+  if (actionId === 'reloc_ignore' && c.status === 'pending') {
     c.status = 'ignored';
     saveState();
     await refreshCampaignDm(c);
     return;
   }
-  if (actionId === 'reloc_approve' && c.status === 'pending') {
+  // An ignored campaign can still be approved, for a mistaken Ignore tap.
+  if (actionId === 'reloc_approve' && (c.status === 'pending' || c.status === 'ignored')) {
     c.status = 'building';
     saveState();
     await refreshCampaignDm(c);
@@ -487,7 +492,8 @@ export function startRelocationAction(action: 'approve' | 'ignore', key: string,
   // Only a card Luna actually posted can be tapped.
   if (!c || !c.dm) return { ok: false, reason: 'No such relocation campaign.' };
   if (!APPROVERS.includes(userId)) return { ok: false, reason: 'Only the relocation approvers (Eddie) can approve or ignore this.' };
-  if (c.status !== 'pending') return { ok: false, status: c.status, reason: `This campaign is already ${c.status}.` };
+  const allowed = c.status === 'pending' || (action === 'approve' && c.status === 'ignored');
+  if (!allowed) return { ok: false, status: c.status, reason: `This campaign is already ${c.status}.` };
   void handleRelocationAction(`reloc_${action}`, key, userId).catch(e => console.error('[Relocation] action failed:', e));
   return { ok: true, status: action === 'approve' ? 'building' : 'ignored' };
 }
