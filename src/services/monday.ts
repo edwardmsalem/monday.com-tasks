@@ -2049,13 +2049,16 @@ export async function getIssueCallItems(): Promise<Array<{
 // Associates Board — Closer Lookup
 // ============================================================================
 
-const ASSOCIATES_BOARD_ID = '7511353761';
-const ASSOCIATES_SS_EMAIL_COL = 'ss_email';
-const ASSOCIATES_CLOSER_COL = 'lead_closer';
+// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434, one card per person.
+// SS email is assoc_ss_email (associates) or lead_ss_email (leads). The closer is the text column
+// assoc_closer (no Monday person id there, so mondayUserId is null and callers use the name).
+const ASSOCIATES_BOARD_ID = '18391601434';
+const ASSOCIATES_SS_EMAIL_COLS = ['assoc_ss_email', 'lead_ss_email'];
+const ASSOCIATES_CLOSER_COL = 'assoc_closer';
 
 /**
  * Find the closer assigned to an associate by their SS email address.
- * Queries the associates board (7511353761) matching the "SS email" column.
+ * Queries Accounts (NEW FLOW) matching the associate or lead SS email column.
  * Returns the closer name from the matched item, or null if not found.
  */
 export async function findCloserByEmail(email: string): Promise<string | null> {
@@ -2090,11 +2093,19 @@ export async function findCloserByEmail(email: string): Promise<string | null> {
       };
     }>(query, {
       boardId: ASSOCIATES_BOARD_ID,
-      columnId: ASSOCIATES_SS_EMAIL_COL,
+      columnId: ASSOCIATES_SS_EMAIL_COLS[0],
       value: email,
     });
 
-    const item = result.items_page_by_column_values.items[0];
+    let item = result.items_page_by_column_values.items[0];
+    if (!item) {
+      const second = await executeQuery<typeof result>(query, {
+        boardId: ASSOCIATES_BOARD_ID,
+        columnId: ASSOCIATES_SS_EMAIL_COLS[1],
+        value: email,
+      });
+      item = second.items_page_by_column_values.items[0];
+    }
     if (!item) {
       console.log(`[Associates] No item found for SS email: ${email}`);
       return null;
@@ -2149,11 +2160,19 @@ export async function findCloserDetailsByEmail(email: string): Promise<CloserDet
       };
     }>(query, {
       boardId: ASSOCIATES_BOARD_ID,
-      columnId: ASSOCIATES_SS_EMAIL_COL,
+      columnId: ASSOCIATES_SS_EMAIL_COLS[0],
       value: email,
     });
 
-    const item = result.items_page_by_column_values.items[0];
+    let item = result.items_page_by_column_values.items[0];
+    if (!item) {
+      const second = await executeQuery<typeof result>(query, {
+        boardId: ASSOCIATES_BOARD_ID,
+        columnId: ASSOCIATES_SS_EMAIL_COLS[1],
+        value: email,
+      });
+      item = second.items_page_by_column_values.items[0];
+    }
     if (!item) {
       console.log(`[Associates] No item found for SS email: ${email}`);
       return null;
