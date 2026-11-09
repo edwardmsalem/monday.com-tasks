@@ -18,7 +18,9 @@ import { monday as coreApiMonday } from './coreApi.js';
 
 // Boards
 const MASTER_NUMBERS_BOARD_ID = '18414675114';
-const ASSOCIATES_BOARD_ID = '7511353761';
+// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is assoc_ss_email (associates)
+// or lead_ss_email (leads); SS mobile keeps the id ss_mobile.
+const ASSOCIATES_BOARD_ID = '18391601434';
 
 // Master Numbers columns
 const MASTER_ASSOCIATE_LINK_COL = 'board_relation_mm4dm77t'; // "Associate" connect column (the trigger)
@@ -29,7 +31,7 @@ const MASTER_TM_EMAIL_COL = 'email_mm3ndwda'; // "Bound TM Account" email assign
 
 // Associates board columns
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
-const ASSOCIATE_SS_EMAIL_COL = 'ss_email';
+const ASSOCIATE_SS_EMAIL_COLS = ['assoc_ss_email', 'lead_ss_email'];
 
 export const ASSOCIATE_LINK_TRIGGER = {
   boardId: Number(MASTER_NUMBERS_BOARD_ID),
@@ -134,7 +136,11 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
     // Reflect link state on the SIM row, and assign the associate's SS email to
     // the SIM (fill if blank or already matching; never clobber a different one).
     const masterEmail = (await readColumnText(masterItemId, MASTER_TM_EMAIL_COL)).trim();
-    const assocEmail = (await readColumnText(newId, ASSOCIATE_SS_EMAIL_COL)).trim();
+    let assocEmail = '';
+    for (const col of ASSOCIATE_SS_EMAIL_COLS) {
+      assocEmail = (await readColumnText(newId, col)).trim();
+      if (assocEmail) break;
+    }
     const masterVals: Record<string, unknown> = {
       [MASTER_ASSOCIATE_STATUS_COL]: { label: 'Active' },
       [MASTER_ASSOCIATE_ID_COL]: newId,

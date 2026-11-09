@@ -25,9 +25,11 @@
 
 import { monday as coreApiMonday } from './coreApi.js';
 
-const ASSOCIATES_BOARD_ID = '7511353761';
+// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is assoc_ss_email (associates)
+// or lead_ss_email (leads); SS mobile keeps the id ss_mobile.
+const ASSOCIATES_BOARD_ID = '18391601434';
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
-const ASSOCIATE_LAST_UPDATED_COL = 'last_updated__1';
+const ASSOCIATE_LAST_UPDATED_COL = 'updated'; // Accounts "Updated" (last updated) column
 
 const MASTER_NUMBERS_BOARD_ID = '18414675114';
 const MASTER_PHONE_COL = 'phone_mm3pv28f';
