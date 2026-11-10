@@ -7,9 +7,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { migrateLegacyStateFile } from '../utils/stateDir.js';
 import { getESTDateString } from './workingHours.js';
 
-const STATE_FILE = path.join(process.cwd(), '.digest-state.json');
+// Durable state file (Railway volume, ./data locally), migrated once from the
+// legacy process.cwd()/.digest-state.json location if needed.
+const STATE_FILE = migrateLegacyStateFile('.digest-state.json', [path.join(process.cwd(), '.digest-state.json')]);
 
 // ============================================================================
 // Types

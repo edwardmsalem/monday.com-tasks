@@ -9,7 +9,9 @@
  * Only sends during business hours (M-F 9am-5pm EST, excluding US holidays)
  */
 
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { config, configCompat } from '../config/environment.js';
+import { getStatePath, ensureStateDir } from '../utils/stateDir.js';
 import * as slack from './slack.js';
 import * as monday from './monday.js';
 import { monday as coreApiMonday } from './coreApi.js';
@@ -81,16 +83,71 @@ function isBusinessHours(): boolean {
   return true;
 }
 
-// Track which follow-ups we've already sent (to avoid duplicates)
-const sentFollowUps = new Map<string, number>(); // key -> timestamp
+// Track which follow-ups we've already sent (to avoid duplicates).
+// Persisted to the durable state dir so reminders are not re-sent after a
+// restart/redeploy. No legacy file exists (was previously in-memory only).
+const SENT_FOLLOWUPS_FILE = getStatePath('auto-followups.json');
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+interface SentFollowUpsState {
+  entries: Array<{ key: string; ts: number }>;
+  savedAt: number;
+}
+
+/**
+ * Load the sent-follow-up markers from disk, dropping any older than one day
+ * (matching the existing one-day cleanup intent).
+ */
+function loadSentFollowUps(): Map<string, number> {
+  const map = new Map<string, number>();
+  try {
+    if (existsSync(SENT_FOLLOWUPS_FILE)) {
+      const content = readFileSync(SENT_FOLLOWUPS_FILE, 'utf-8');
+      const state = JSON.parse(content) as SentFollowUpsState;
+      const oneDayAgo = Date.now() - ONE_DAY_MS;
+      for (const { key, ts } of state.entries ?? []) {
+        if (ts >= oneDayAgo) {
+          map.set(key, ts);
+        }
+      }
+      console.log(`[AutoFollowUp] Loaded ${map.size} recent follow-up markers from disk`);
+    }
+  } catch (error) {
+    console.error('[AutoFollowUp] Failed to load follow-up state (starting fresh):', error);
+  }
+  return map;
+}
+
+/**
+ * Persist the sent-follow-up markers to disk.
+ */
+function saveSentFollowUps(): void {
+  try {
+    ensureStateDir();
+    const state: SentFollowUpsState = {
+      entries: Array.from(sentFollowUps.entries()).map(([key, ts]) => ({ key, ts })),
+      savedAt: Date.now(),
+    };
+    writeFileSync(SENT_FOLLOWUPS_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch (error) {
+    console.error('[AutoFollowUp] Failed to save follow-up state:', error);
+  }
+}
+
+const sentFollowUps: Map<string, number> = loadSentFollowUps(); // key -> timestamp
 
 // Cleanup old entries every hour
 setInterval(() => {
-  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const oneDayAgo = Date.now() - ONE_DAY_MS;
+  let removed = 0;
   for (const [key, timestamp] of sentFollowUps.entries()) {
     if (timestamp < oneDayAgo) {
       sentFollowUps.delete(key);
+      removed++;
     }
+  }
+  if (removed > 0) {
+    saveSentFollowUps();
   }
 }, 60 * 60 * 1000);
 
@@ -591,6 +648,7 @@ function hasRecentFollowUp(key: string): boolean {
 
 function markFollowUpSent(key: string): void {
   sentFollowUps.set(key, Date.now());
+  saveSentFollowUps();
 }
 
 /**

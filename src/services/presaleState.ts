@@ -8,11 +8,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { migrateLegacyStateFile } from '../utils/stateDir.js';
 
-// Use /data directory on Railway, fallback to cwd for local dev
-// Railway volumes are mounted at /data by default
-const DATA_DIR = process.env['RAILWAY_VOLUME_MOUNT_PATH'] || (process.env['RAILWAY_ENVIRONMENT'] ? '/data' : process.cwd());
-const STATE_FILE = path.join(DATA_DIR, 'presale-state.json');
+// Durable state file (Railway volume, ./data locally), migrated once from the
+// legacy process.cwd()/presale-state.json location if needed.
+const STATE_FILE = migrateLegacyStateFile('presale-state.json', [path.join(process.cwd(), 'presale-state.json')]);
 
 // ============================================================================
 // Types
