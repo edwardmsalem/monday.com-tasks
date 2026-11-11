@@ -15,11 +15,19 @@ interface Write { board: string; item: string; values: Record<string, any> }
 function fakeMonday(items: Record<string, Item>) {
   const writes: Write[] = [];
   const bulkReads: string[] = [];
+  const phoneReads: string[] = [];
   const orig = monday.query;
   (monday as { query: unknown }).query = async (q: string, v: Record<string, any> = {}) => {
     if (q.includes('change_multiple_column_values')) {
       writes.push({ board: String(v.boardId), item: String(v.itemId), values: JSON.parse(v.columnValues) });
       return { change_multiple_column_values: { id: v.itemId } };
+    }
+    if (q.includes('items_page_by_column_values') && q.includes('column_id: "phone_mm3pv28f"')) {
+      phoneReads.push(...v.vals);
+      const hits = Object.entries(items)
+        .filter(([, it]) => it.board === MASTER && v.vals.includes(it.cols.phone_mm3pv28f))
+        .map(([id, it]) => ({ id, phone: [{ text: it.cols.phone_mm3pv28f }] }));
+      return { items_page_by_column_values: { items: hits } };
     }
     if (q.includes('items_page_by_column_values')) {
       assert.strictEqual(String(v.b), MASTER);
@@ -42,7 +50,7 @@ function fakeMonday(items: Record<string, Item>) {
     }
     throw new Error('unexpected Monday query: ' + q);
   };
-  return { writes, bulkReads, restore: () => { (monday as { query: unknown }).query = orig; } };
+  return { writes, bulkReads, phoneReads, restore: () => { (monday as { query: unknown }).query = orig; } };
 }
 
 const link = (id: string) => ({ linkedPulseIds: [{ linkedPulseId: Number(id) }] });
@@ -240,5 +248,21 @@ test('unlink of the primary promotes and clears other_ss_numbers in the same wri
     assert.strictEqual(personWrites[0].values.ss_mobile.phone, '13318360655');
     assert.strictEqual(personWrites[0].values.other_ss_numbers, '');
     assert.strictEqual(m.bulkReads.length, 1);
+  } finally { m.restore(); }
+});
+
+test('a merged non-SIM number in other_ss_numbers survives a recompute; a stale SIM number does not', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', other_ss_numbers: '7813856147, 5550001111' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', text_mm3p3w1z: PERSON }, links: [PERSON] },
+    '102': { board: MASTER, cols: { phone_mm3pv28f: '13318360655', text_mm3p3w1z: PERSON }, links: [PERSON] },
+    // 5550001111 is a SIM on Master Numbers that is no longer linked to this person: dropped.
+    '103': { board: MASTER, cols: { phone_mm3pv28f: '15550001111', text_mm3p3w1z: '' }, links: [] },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 102, value: link(PERSON), previousValue: null });
+    const w = m.writes.find((x) => x.item === PERSON && 'other_ss_numbers' in x.values)!;
+    assert.strictEqual(w.values.other_ss_numbers, '3318360655, 7813856147');
+    assert.strictEqual(ssMobileWrites(m.writes).length, 0);
   } finally { m.restore(); }
 });

@@ -164,12 +164,37 @@ async function setColumnValues(
   });
 }
 
+// Numbers in other_ss_numbers that are not SIMs on Master Numbers (for example a merged card's own
+// phone) are kept on every recompute, so a merge never loses a number (Eddie 2026-11-10).
+async function withNonSimNumbers(personId: string, primary: string, computed: string): Promise<string> {
+  const current = (await readColumnText(personId, ASSOCIATE_OTHER_SS_COL)) || '';
+  const have = computed ? computed.split(',').map((x) => x.trim()).filter(Boolean) : [];
+  const extra = Array.from(new Set((current.match(/\d[\d\s().+-]{8,}\d/g) || []).map(tenDigits)))
+    .filter((n) => n.length === 10 && !have.includes(n) && !(primary && sameNumber(primary, n)));
+  if (extra.length === 0) return computed;
+  const query = `
+    query ($b: ID!, $vals: [String]!) {
+      items_page_by_column_values(limit: 500, board_id: $b, columns: [{column_id: "${MASTER_PHONE_COL}", column_values: $vals}]) {
+        items { id phone: column_values(ids: ["${MASTER_PHONE_COL}"]) { text } }
+      }
+    }
+  `;
+  const vals = extra.flatMap((n) => [n, `1${n}`]);
+  const res = (await coreApiMonday.query(query, { b: MASTER_NUMBERS_BOARD_ID, vals })) as {
+    items_page_by_column_values?: { items?: Array<{ phone?: Array<{ text: string | null }> }> };
+  };
+  const sims = new Set((res.items_page_by_column_values?.items ?? []).map((it) => tenDigits(it.phone?.[0]?.text ?? '')));
+  const keep = extra.filter((n) => !sims.has(n));
+  if (keep.length) console.log(`[AssociateLink] ${personId} keeps non-SIM other numbers ${keep.join(',')}`);
+  return [...have, ...keep].join(', ');
+}
+
 // Recompute and write other_ss_numbers for a person from one bulk read (ss_mobile untouched).
 async function refreshOtherNumbers(personId: string, excludeItemId: string, knownMobile?: string): Promise<void> {
   const board = (await readItemBoard(personId)) || ASSOCIATES_BOARD_ID;
   if (board !== ASSOCIATES_BOARD_ID) return;
   const primary = knownMobile ?? (await readColumnText(personId, ASSOCIATE_SS_MOBILE_COL)).replace(/\D/g, '');
-  const text = otherNumbersText(primary, await findOtherLinkedSims(personId, excludeItemId));
+  const text = await withNonSimNumbers(personId, primary, otherNumbersText(primary, await findOtherLinkedSims(personId, excludeItemId)));
   await setColumnValues(board, personId, { [ASSOCIATE_OTHER_SS_COL]: text });
   console.log(`[AssociateLink] ${personId} other_ss_numbers = "${text}"`);
 }
@@ -217,7 +242,7 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
         const simStatus = await readColumnText(masterItemId, MASTER_SIM_STATUS_COL);
         sims.push({ id: masterItemId, phone: phoneDigits, assocStatus: 'Active', simStatus });
       }
-      personVals[ASSOCIATE_OTHER_SS_COL] = otherNumbersText(isPrimary ? phoneDigits : currentMobile, sims);
+      personVals[ASSOCIATE_OTHER_SS_COL] = await withNonSimNumbers(newId, isPrimary ? phoneDigits : currentMobile, otherNumbersText(isPrimary ? phoneDigits : currentMobile, sims));
     }
     if (isPrimary) {
       personVals[ASSOCIATE_SS_MOBILE_COL] = { phone: phoneDigits, countryShortName: 'US' };
@@ -273,7 +298,7 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
           ? { phone: promoted, countryShortName: 'US' }
           : { phone: '', countryShortName: '' },
       };
-      if (prevBoard === ASSOCIATES_BOARD_ID) prevVals[ASSOCIATE_OTHER_SS_COL] = otherNumbersText(promoted, others);
+      if (prevBoard === ASSOCIATES_BOARD_ID) prevVals[ASSOCIATE_OTHER_SS_COL] = await withNonSimNumbers(prevId, promoted, otherNumbersText(promoted, others));
       await setColumnValues(prevBoard, prevId, prevVals);
       console.log(promoted
         ? `[AssociateLink] ${prevId} primary ${phoneDigits} unlinked; promoted ${promoted} (item ${promotable?.id})`
