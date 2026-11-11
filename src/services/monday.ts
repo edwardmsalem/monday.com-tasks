@@ -2055,6 +2055,47 @@ export async function getIssueCallItems(): Promise<Array<{
 const ASSOCIATES_BOARD_ID = '18391601434';
 const ASSOCIATES_SS_EMAIL_COLS = ['assoc_ss_email', 'lead_ss_email'];
 const ASSOCIATES_CLOSER_COL = 'assoc_closer';
+// Two numbers per person (2026-11-10): a person's second SIM carries its own Bound TM Account
+// email on Master Numbers, which is not on the person card. Fallback: find the SIM by that email
+// and take the person it links to.
+const MASTER_NUMBERS_BOARD_ID = '18414675114';
+const MASTER_TM_EMAIL_COL = 'email_mm3ndwda';
+const MASTER_ASSOCIATE_LINK_COL = 'board_relation_mm4dm77t';
+
+type CloserItem = { id: string; name: string; column_values: Array<{ id: string; text: string | null; value?: string | null }> };
+
+/**
+ * Person card linked to the Master Numbers SIM whose Bound TM Account email is `email`.
+ * One read of Master Numbers by the email column, one read of the person. Null when no SIM
+ * matches, none is linked, or the SIMs point at different people (logged, not guessed).
+ */
+async function findPersonBySimTmEmail(email: string): Promise<CloserItem | null> {
+  const simRes = await executeQuery<{
+    items_page_by_column_values: { items: Array<{ id: string; link?: Array<{ linked_item_ids?: string[] }> }> };
+  }>(`
+    query ($b: ID!, $vals: [String]!) {
+      items_page_by_column_values(limit: 10, board_id: $b, columns: [{ column_id: "${MASTER_TM_EMAIL_COL}", column_values: $vals }]) {
+        items { id link: column_values(ids: ["${MASTER_ASSOCIATE_LINK_COL}"]) { ... on BoardRelationValue { linked_item_ids } } }
+      }
+    }
+  `, { b: MASTER_NUMBERS_BOARD_ID, vals: [email] });
+  const sims = simRes.items_page_by_column_values?.items ?? [];
+  const people = [...new Set(sims.flatMap(s => (s.link?.[0]?.linked_item_ids ?? []).map(String)))];
+  if (people.length === 0) {
+    console.log(`[Associates] No linked SIM with TM email ${email} (${sims.length} SIM rows)`);
+    return null;
+  }
+  if (people.length > 1) {
+    console.warn(`[Associates] TM email ${email} is on SIMs linked to different people (${people.join(', ')}); not guessing`);
+    return null;
+  }
+  const personRes = await executeQuery<{ items: CloserItem[] }>(`
+    query ($ids: [ID!]) { items(ids: $ids) { id name column_values(ids: ["${ASSOCIATES_CLOSER_COL}"]) { id text value } } }
+  `, { ids: [people[0]] });
+  const person = personRes.items?.[0] ?? null;
+  if (person) console.log(`[Associates] TM email ${email} -> SIM ${sims.map(s => s.id).join(',')} -> person ${person.id}`);
+  return person;
+}
 
 /**
  * Find the closer assigned to an associate by their SS email address.
@@ -2106,6 +2147,7 @@ export async function findCloserByEmail(email: string): Promise<string | null> {
       });
       item = second.items_page_by_column_values.items[0];
     }
+    if (!item) item = ((await findPersonBySimTmEmail(email)) ?? undefined) as typeof item;
     if (!item) {
       console.log(`[Associates] No item found for SS email: ${email}`);
       return null;
@@ -2173,6 +2215,7 @@ export async function findCloserDetailsByEmail(email: string): Promise<CloserDet
       });
       item = second.items_page_by_column_values.items[0];
     }
+    if (!item) item = ((await findPersonBySimTmEmail(email)) ?? undefined) as typeof item;
     if (!item) {
       console.log(`[Associates] No item found for SS email: ${email}`);
       return null;

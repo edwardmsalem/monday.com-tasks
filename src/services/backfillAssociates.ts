@@ -27,6 +27,7 @@ const ASSOCIATES_BOARD_ID = '18391601434';
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
 const ASSOCIATE_SS_EMAIL_COL = 'assoc_ss_email';
 const ASSOCIATE_LEAD_SS_EMAIL_COL = 'lead_ss_email';
+const ASSOCIATE_OTHER_SS_COL = 'other_ss_numbers'; // "Other SS Numbers": secondary SIM numbers, comma separated
 
 const MASTER_NUMBERS_BOARD_ID = '18414675114';
 const MASTER_PHONE_COL = 'phone_mm3pv28f';
@@ -83,7 +84,7 @@ export interface BackfillPlan {
 }
 
 export async function computeBackfillPlan(opts: { reveal?: boolean } = {}): Promise<BackfillPlan> {
-  const associates = await pageAll(ASSOCIATES_BOARD_ID, [ASSOCIATE_SS_MOBILE_COL, ASSOCIATE_SS_EMAIL_COL, ASSOCIATE_LEAD_SS_EMAIL_COL]);
+  const associates = await pageAll(ASSOCIATES_BOARD_ID, [ASSOCIATE_SS_MOBILE_COL, ASSOCIATE_SS_EMAIL_COL, ASSOCIATE_LEAD_SS_EMAIL_COL, ASSOCIATE_OTHER_SS_COL]);
   const masters = await pageAll(MASTER_NUMBERS_BOARD_ID, [MASTER_PHONE_COL, MASTER_TM_EMAIL_COL, MASTER_ASSOCIATE_LINK_COL]);
 
   const masterByPhone = new Map<string, PageItem[]>();
@@ -100,8 +101,31 @@ export async function computeBackfillPlan(opts: { reveal?: boolean } = {}): Prom
   let withSsMobile = 0, alreadyCorrect = 0, emailFill = 0, emailSame = 0;
   const emailConflicts: Array<{ associate: string; simEmail: string; ssEmail: string; masterId: string }> = [];
 
+  // Secondary numbers (other_ss_numbers) are relinked too when their SIM row lost its link.
+  // They never get the SS email (that belongs to the primary SIM), and a row linked to a
+  // different person is never moved.
+  let secondaryLinks = 0, secondaryLinkedToOther = 0;
   for (const a of associates) {
-    const ss = last10(col(a, ASSOCIATE_SS_MOBILE_COL)?.text);
+    const primary = last10(col(a, ASSOCIATE_SS_MOBILE_COL)?.text);
+    const secondaries = [...new Set(String(col(a, ASSOCIATE_OTHER_SS_COL)?.text ?? '').split(',').map(last10).filter(n => n && n !== primary))];
+    for (const n of secondaries) {
+      const rows = masterByPhone.get(n);
+      if (!rows || rows.length === 0) { notFound.push({ associate: a.name, associateId: a.id, phone: n }); continue; }
+      if (rows.length > 1) { collisions.push({ associate: a.name, phone: n, masterCount: rows.length }); continue; }
+      const m = rows[0];
+      const linkedId = col(m, MASTER_ASSOCIATE_LINK_COL)?.linked_item_ids?.[0];
+      if (linkedId && String(linkedId) === String(a.id)) { alreadyCorrect++; continue; }
+      if (linkedId) {
+        secondaryLinkedToOther++;
+        alreadyLinkedToOther.push({ associate: a.name, phone: mask(n), masterId: m.id });
+        console.warn(`[Backfill] secondary ${mask(n)} of ${a.id} is on SIM ${m.id} linked to ${linkedId}; skipped`);
+        continue;
+      }
+      secondaryLinks++;
+      matched.push({ associateId: a.id, associateName: a.name, masterId: m.id, phone: n, assocEmail: '', setEmail: false });
+    }
+
+    const ss = primary;
     if (!ss) continue;
     withSsMobile++;
     const rows = masterByPhone.get(ss);
@@ -137,6 +161,8 @@ export async function computeBackfillPlan(opts: { reveal?: boolean } = {}): Prom
     associatesTotal: associates.length,
     associatesWithSsMobile: withSsMobile,
     readyToLink: clean.length,
+    secondaryToLink: secondaryLinks,
+    secondaryLinkedToOther,
     alreadyCorrect,
     notFound: notFound.length,
     collisions: collisions.length,

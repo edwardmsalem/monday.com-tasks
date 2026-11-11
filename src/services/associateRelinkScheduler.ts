@@ -29,6 +29,7 @@ import { monday as coreApiMonday } from './coreApi.js';
 // or lead_ss_email (leads); SS mobile keeps the id ss_mobile.
 const ASSOCIATES_BOARD_ID = '18391601434';
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
+const ASSOCIATE_OTHER_SS_COL = 'other_ss_numbers'; // "Other SS Numbers": secondary SIM numbers, comma separated
 const ASSOCIATE_LAST_UPDATED_COL = 'updated'; // Accounts "Updated" (last updated) column
 
 const MASTER_NUMBERS_BOARD_ID = '18414675114';
@@ -49,7 +50,7 @@ const last10 = (s: string | null | undefined): string => {
   return d.length >= 10 ? d.slice(-10) : '';
 };
 
-interface AssocItem { id: string; ss: string }
+interface AssocItem { id: string; ss: string; others: string[] }
 interface MasterItem { id: string; phone: string; linkedId: string | null }
 
 /** The most-recently-updated associates (a board move bumps Last updated). */
@@ -58,17 +59,22 @@ async function recentAssociates(): Promise<AssocItem[]> {
     query ($b: [ID!]) {
       boards(ids: $b) {
         items_page(limit: ${RECENT_LIMIT}, query_params: {order_by: [{column_id: "${ASSOCIATE_LAST_UPDATED_COL}", direction: desc}]}) {
-          items { id column_values(ids: ["${ASSOCIATE_SS_MOBILE_COL}"]) { text } }
+          items { id column_values(ids: ["${ASSOCIATE_SS_MOBILE_COL}", "${ASSOCIATE_OTHER_SS_COL}"]) { id text } }
         }
       }
     }`;
   const res = (await coreApiMonday.query(query, { b: [ASSOCIATES_BOARD_ID] })) as {
-    boards?: Array<{ items_page?: { items?: Array<{ id: string; column_values?: Array<{ text: string | null }> }> } }>;
+    boards?: Array<{ items_page?: { items?: Array<{ id: string; column_values?: Array<{ id?: string; text: string | null }> }> } }>;
   };
   const items = res.boards?.[0]?.items_page?.items ?? [];
+  const text = (it: (typeof items)[number], id: string) => it.column_values?.find(c => c.id === id)?.text;
   return items
-    .map(it => ({ id: it.id, ss: last10(it.column_values?.[0]?.text) }))
-    .filter(a => a.ss);
+    .map(it => {
+      const ss = last10(text(it, ASSOCIATE_SS_MOBILE_COL));
+      const others = String(text(it, ASSOCIATE_OTHER_SS_COL) ?? '').split(',').map(last10).filter(n => n && n !== ss);
+      return { id: it.id, ss, others: [...new Set(others)] };
+    })
+    .filter(a => a.ss || a.others.length);
 }
 
 /** One batched lookup of Master rows for a set of phone numbers. */
@@ -106,24 +112,30 @@ async function setAssociateLink(masterId: string, associateId: string): Promise<
   });
 }
 
-async function sweep(): Promise<void> {
+export async function sweep(): Promise<void> {
   if (running) { console.log('[Relink] previous tick still running, skipping'); return; }
   running = true;
   try {
     const assoc = await recentAssociates();
     if (assoc.length === 0) { lastResult = 'no recent associates with SS Mobile'; return; }
-    const phones = [...new Set(assoc.map(a => a.ss))];
+    // Primary (ss_mobile) plus every number in other_ss_numbers, all in the same one batched read.
+    const wanted = assoc.flatMap(a => [...(a.ss ? [{ id: a.id, phone: a.ss, secondary: false }] : []), ...a.others.map(p => ({ id: a.id, phone: p, secondary: true }))]);
+    const phones = [...new Set(wanted.map(w => w.phone))];
     const masters = await mastersByPhones(phones);
 
     let linked = 0, already = 0, conflict = 0, noMatch = 0, errors = 0;
-    for (const a of assoc) {
-      const rows = masters.get(a.ss);
+    for (const a of wanted) {
+      const rows = masters.get(a.phone);
       if (!rows || rows.length === 0) { noMatch++; continue; }
       if (rows.length > 1) { conflict++; continue; } // ambiguous phone -> leave for manual
       const m = rows[0];
       if (m.linkedId === a.id) { already++; continue; }
-      if (m.linkedId) { conflict++; continue; } // linked to someone else -> leave
-      try { await setAssociateLink(m.id, a.id); linked++; }
+      if (m.linkedId) { // linked to someone else -> leave
+        conflict++;
+        if (a.secondary) console.warn(`[Relink] secondary ***${a.phone.slice(-4)} of ${a.id} is on SIM ${m.id} linked to ${m.linkedId}; not moved`);
+        continue;
+      }
+      try { await setAssociateLink(m.id, a.id); linked++; if (a.secondary) console.log(`[Relink] secondary ***${a.phone.slice(-4)} relinked SIM ${m.id} -> ${a.id}`); }
       catch (e) { errors++; console.error(`[Relink] link failed assoc ${a.id} -> SIM ${m.id}: ${e instanceof Error ? e.message : 'unknown'}`); }
     }
     lastResult = `recent=${assoc.length} linked=${linked} already=${already} conflict=${conflict} noMatch=${noMatch} errors=${errors}`;

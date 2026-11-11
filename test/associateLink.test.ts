@@ -27,7 +27,10 @@ function fakeMonday(items: Record<string, Item>) {
       bulkReads.push(want);
       const hits = Object.entries(items)
         .filter(([, it]) => it.board === MASTER && it.cols.text_mm3p3w1z === want)
-        .map(([id, it]) => ({ id, phone: [{ text: it.cols.phone_mm3pv28f ?? '' }], link: [{ linked_item_ids: it.links ?? [] }] }));
+        .map(([id, it]) => ({
+          id, phone: [{ text: it.cols.phone_mm3pv28f ?? '' }], link: [{ linked_item_ids: it.links ?? [] }],
+          astatus: [{ text: it.cols.color_mm3pwvz4 ?? '' }], sstatus: [{ text: it.cols.color_mm3p4zqg ?? '' }],
+        }));
       return { items_page_by_column_values: { items: hits } };
     }
     if (q.includes('board { id }')) {
@@ -104,7 +107,8 @@ test('unlink of a secondary SIM leaves ss_mobile', async () => {
   try {
     await handleAssociateLink({ pulseId: 102, value: null, previousValue: link(PERSON) });
     assert.strictEqual(ssMobileWrites(m.writes).length, 0);
-    assert.strictEqual(m.bulkReads.length, 0);
+    // Step 9: one bulk read to recompute other_ss_numbers (no ss_mobile change).
+    assert.strictEqual(m.bulkReads.length, 1);
     const sim = simWrite(m.writes, '102');
     assert.deepStrictEqual(sim.color_mm3pwvz4, { label: 'Not Linked' });
     assert.strictEqual(sim.text_mm3p3w1z, '');
@@ -148,5 +152,78 @@ test('no-change event makes no Monday calls', async () => {
   try {
     await handleAssociateLink({ pulseId: 101, value: link(PERSON), previousValue: link(PERSON) });
     assert.strictEqual(m.writes.length + m.bulkReads.length, 0);
+  } finally { m.restore(); }
+});
+
+// ---- Step 9: other_ss_numbers ----
+
+function otherWrites(writes: Write[], person = PERSON) {
+  return writes.filter((w) => w.item === person && 'other_ss_numbers' in w.values);
+}
+
+test('second link writes other_ss_numbers (excluding burned and Not Linked rows), no ss_mobile change', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', assoc_ss_email: 'a@x.com' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+    '103': { board: MASTER, cols: { phone_mm3pv28f: '13317770000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'burned' }, links: [PERSON] },
+    '104': { board: MASTER, cols: { phone_mm3pv28f: '13317771111', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Not Linked', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+    '105': { board: MASTER, cols: { phone_mm3pv28f: '13317772222', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'ready-to-recycle' }, links: [PERSON] },
+    '102': { board: MASTER, cols: { phone_mm3pv28f: '13318360655', email_mm3ndwda: '', color_mm3p4zqg: 'in-use' } },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 102, value: link(PERSON), previousValue: null });
+    assert.strictEqual(ssMobileWrites(m.writes).length, 0);
+    const o = otherWrites(m.writes);
+    assert.strictEqual(o.length, 1);
+    assert.strictEqual(o[0].board, ACCOUNTS);
+    assert.strictEqual(o[0].values.other_ss_numbers, '3318360655');
+    assert.deepStrictEqual(m.bulkReads, [PERSON]);
+  } finally { m.restore(); }
+});
+
+test('primary link writes ss_mobile and other_ss_numbers in one call, sorted by SIM id', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', assoc_ss_email: 'a@x.com' } },
+    '120': { board: MASTER, cols: { phone_mm3pv28f: '13319990000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+    '110': { board: MASTER, cols: { phone_mm3pv28f: '13318880000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: '' } },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 101, value: link(PERSON), previousValue: null });
+    const personWrites = m.writes.filter((w) => w.item === PERSON);
+    assert.strictEqual(personWrites.length, 1);
+    assert.strictEqual(personWrites[0].values.ss_mobile.phone, '13318345000');
+    assert.strictEqual(personWrites[0].values.other_ss_numbers, '3318880000, 3319990000');
+  } finally { m.restore(); }
+});
+
+test('unlink of the only secondary SIM clears other_ss_numbers', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', other_ss_numbers: '3318360655' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+    '102': { board: MASTER, cols: { phone_mm3pv28f: '13318360655', text_mm3p3w1z: PERSON }, links: [] },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 102, value: null, previousValue: link(PERSON) });
+    assert.strictEqual(ssMobileWrites(m.writes).length, 0);
+    const o = otherWrites(m.writes);
+    assert.strictEqual(o.length, 1);
+    assert.strictEqual(o[0].values.other_ss_numbers, '');
+  } finally { m.restore(); }
+});
+
+test('unlink of the primary promotes and clears other_ss_numbers in the same write', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', other_ss_numbers: '3318360655' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', text_mm3p3w1z: PERSON }, links: [] },
+    '102': { board: MASTER, cols: { phone_mm3pv28f: '13318360655', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 101, value: null, previousValue: link(PERSON) });
+    const personWrites = m.writes.filter((w) => w.item === PERSON);
+    assert.strictEqual(personWrites.length, 1);
+    assert.strictEqual(personWrites[0].values.ss_mobile.phone, '13318360655');
+    assert.strictEqual(personWrites[0].values.other_ss_numbers, '');
+    assert.strictEqual(m.bulkReads.length, 1);
   } finally { m.restore(); }
 });
