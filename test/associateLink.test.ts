@@ -133,6 +133,21 @@ test('unlink of the primary with another SIM linked promotes it (one bulk read)'
   } finally { m.restore(); }
 });
 
+test('unlink of the primary never promotes a burned SIM; it promotes the next in-use one', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', text_mm3p3w1z: PERSON }, links: [] },
+    '100': { board: MASTER, cols: { phone_mm3pv28f: '13311111111', text_mm3p3w1z: PERSON, color_mm3p4zqg: 'burned' }, links: [PERSON] },
+    '102': { board: MASTER, cols: { phone_mm3pv28f: '13318360655', text_mm3p3w1z: PERSON }, links: [PERSON] },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 101, value: null, previousValue: link(PERSON) });
+    const s = ssMobileWrites(m.writes);
+    assert.strictEqual(s.length, 1);
+    assert.deepStrictEqual(s[0].values.ss_mobile, { phone: '13318360655', countryShortName: 'US' });
+  } finally { m.restore(); }
+});
+
 test('unlink of the primary with no other SIM clears ss_mobile', async () => {
   const m = fakeMonday({
     [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000' } },

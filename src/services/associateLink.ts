@@ -264,7 +264,10 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
       // Promote another SIM still linked to this person, if any; else clear.
       // The same bulk read also gives the new other_ss_numbers (step 9), written in the same call.
       const others = await findOtherLinkedSims(prevId, masterItemId);
-      const promoted = others[0]?.phone ?? '';
+      // Promote only a SIM that is still in use (never a burned, recycling, empty or Not Linked row).
+      const promotable = others.find((s) => s.assocStatus.trim().toLowerCase() !== 'not linked'
+        && !SIM_STATUS_NOT_IN_USE.includes(s.simStatus.trim().toLowerCase()));
+      const promoted = promotable?.phone ?? '';
       const prevVals: Record<string, unknown> = {
         [ASSOCIATE_SS_MOBILE_COL]: promoted
           ? { phone: promoted, countryShortName: 'US' }
@@ -273,7 +276,7 @@ export async function handleAssociateLink(event: AssociateLinkEvent): Promise<vo
       if (prevBoard === ASSOCIATES_BOARD_ID) prevVals[ASSOCIATE_OTHER_SS_COL] = otherNumbersText(promoted, others);
       await setColumnValues(prevBoard, prevId, prevVals);
       console.log(promoted
-        ? `[AssociateLink] ${prevId} primary ${phoneDigits} unlinked; promoted ${promoted} (item ${others[0].id})`
+        ? `[AssociateLink] ${prevId} primary ${phoneDigits} unlinked; promoted ${promoted} (item ${promotable?.id})`
         : `[AssociateLink] ${prevId} primary ${phoneDigits} unlinked; no other SIM linked, ss_mobile cleared`);
     } else {
       // A secondary number left: ss_mobile stays, other_ss_numbers is recomputed.
