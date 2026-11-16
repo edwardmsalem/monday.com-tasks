@@ -666,7 +666,7 @@ function getIssueCallDueDate(): string {
  * Usage: /issuecall [team] [email]
  * Example: /issuecall astros john@example.com
  *
- * - Owners: Dayna + Ruzzell Garcia
+ * - Owners: ISSUE_CALL_OWNERS (default Dayna); missing names are skipped
  * - Due: Today (or tomorrow if after 4 PM EST)
  * - Posts to issue call channel with account info
  * - Monitors thread for first 👀 or reply → assigns as supporter
@@ -799,20 +799,21 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Use the first successful account for naming, or first email if none found
     const primaryAccount = accountResults.find(r => r.success) || accountResults[0];
 
-    // Look up owners: Dayna + Ruzzell Garcia
-    const dayna = await findUserByName('Dayna');
-    const ruzzell = await findUserByName('Ruzzell Garcia');
-
-    if (!dayna) {
-      await slack.sendResponseUrl(response_url,
-        `:x: Could not find Dayna in the user directory. Please contact an admin.`
-      );
-      return;
+    // Look up owners. Names come from ISSUE_CALL_OWNERS (comma separated),
+    // default Dayna. A name that is no longer in the directory (someone who
+    // left) is skipped with a log line instead of blocking the issue call.
+    const ownerNames = (process.env.ISSUE_CALL_OWNERS || 'Dayna')
+      .split(',').map(n => n.trim()).filter(Boolean);
+    const owners: NonNullable<Awaited<ReturnType<typeof findUserByName>>>[] = [];
+    for (const ownerName of ownerNames) {
+      const found = await findUserByName(ownerName);
+      if (found) owners.push(found);
+      else console.warn(`[IssueCall] Owner "${ownerName}" not found in the user directory, skipped`);
     }
 
-    if (!ruzzell) {
+    if (owners.length === 0) {
       await slack.sendResponseUrl(response_url,
-        `:x: Could not find Ruzzell Garcia in the user directory. Please contact an admin.`
+        `:x: None of the issue call owners (${ownerNames.join(', ')}) are in the user directory. Please contact an admin.`
       );
       return;
     }
@@ -842,7 +843,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const mondayItem = await monday.createItem({
       name: taskName,
       dueDate,
-      ownerIds: [dayna.mondayId, ruzzell.mondayId],
+      ownerIds: owners.map(o => o.mondayId),
       supportIds,
       taskType: 'Issue Call',
       source: 'Slack Tasks',
@@ -950,7 +951,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     const supporterPart = supporterUser?.slackId
       ? `*Supporter:* <@${supporterUser.slackId}>`
       : `⏳ _Waiting for supporter_ — React 👀 or reply to claim`;
-    contextLines.push(`*Due:* ${dueDate}  ·  *Owners:* <@${dayna.slackId}> & <@${ruzzell.slackId}>  ·  ${supporterPart}`);
+    contextLines.push(`*Due:* ${dueDate}  ·  *Owners:* ${owners.map(o => o.slackId ? `<@${o.slackId}>` : o.name).join(' & ')}  ·  ${supporterPart}`);
 
     // Single section for all context + assignment info
     if (contextLines.length > 0) {
