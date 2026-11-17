@@ -589,6 +589,12 @@ async function handleIssueCallWorking(
     // Update Monday status to "Working on it"
     await monday.updateWorkflowStatus(mondayItemId, 'Working on it');
 
+    // Someone is on it, so stop the claim reminders for this thread
+    if (threadTs) {
+      const { markIssueCallHandled } = await import('../services/issueCallTracker.js');
+      markIssueCallHandled(threadTs, userId);
+    }
+
     // Post confirmation to thread
     if (channelId && threadTs) {
       await slack.postToThread(
@@ -613,6 +619,12 @@ async function handleIssueCallComplete(
   try {
     // Update Monday status to "Done"
     await monday.updateWorkflowStatus(mondayItemId, 'Done');
+
+    // Someone is on it, so stop the claim reminders for this thread
+    if (threadTs) {
+      const { markIssueCallHandled } = await import('../services/issueCallTracker.js');
+      markIssueCallHandled(threadTs, userId);
+    }
 
     // Post confirmation to thread
     if (channelId && threadTs) {

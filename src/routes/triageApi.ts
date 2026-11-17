@@ -19,6 +19,7 @@ import { createScanSheet, createCustomSheet, detectContentType, batchLookupAccou
 import * as calendar from '../services/calendar.js';
 import { detectEventType } from '../services/calendar.js';
 import { findUserByName, findUserByMondayId } from '../services/userResolver.js';
+import { issueCallOwnerSlackIds } from '../services/issueCallOwners.js';
 import { getTaskTypeDisplayName } from '../config/taskTypes.js';
 import { parseDate, formatDateForDisplay, isAsapDate } from '../utils/dateParser.js';
 import { formatTaskName } from '../utils/taskName.js';
@@ -891,12 +892,14 @@ router.post('/tasks/closer-lookup', async (req: Request, res: Response): Promise
       // Closer is in Slack — return their Slack ID
       res.json({ closer: closerUser.name, closerSlackId: closerUser.slackId, ruzzellSlackId: null });
     } else {
-      // Closer not in Slack — also resolve Ruzzell so client can @mention him
-      const ruzzellUser = await findUserByName('Ruzzell');
+      // Closer not in Slack: resolve the issue call owner (ISSUE_CALL_OWNERS,
+      // default Dayna) so the client can @mention her instead. The response
+      // key stays ruzzellSlackId because the Triage app and core-api read it.
+      const [fallbackSlackId] = await issueCallOwnerSlackIds(findUserByName, []);
       res.json({
         closer: closerUser?.name ?? details.name,
         closerSlackId: null,
-        ruzzellSlackId: ruzzellUser?.slackId ?? null,
+        ruzzellSlackId: fallbackSlackId ?? null,
       });
     }
   } catch (error) {
