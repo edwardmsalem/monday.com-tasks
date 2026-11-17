@@ -119,6 +119,8 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
         const isFromMonday = event.text.includes('(via Monday)') || event.text.startsWith('[From Monday');
         if (!isFromMonday) {
           // Check if this is an issue call thread being claimed
+          // A first reply in an unclaimed issue call thread claims it. The reply is
+          // still copied to Monday below, so the claimer's message is never lost.
           if (isPendingIssueCall(event.thread_ts)) {
             console.log('Reply in issue call thread detected, claiming for user:', event.user);
             try {
@@ -126,20 +128,19 @@ router.post('/relay/events', express.json(), async (req: Request, res: Response)
             } catch (err) {
               console.error('Failed to claim issue call:', err);
             }
-          } else {
-            // Sync to Monday
-            console.log('Slack thread reply detected (via relay):', {
-              channel: event.channel,
-              thread_ts: event.thread_ts,
-              user: event.user,
-              text: event.text.substring(0, 50),
-              fileCount: event.files?.length ?? 0,
-            });
-            try {
-              await sync.syncSlackToMonday(event.thread_ts, event.text, event.user, event.channel, event.files);
-            } catch (syncError) {
-              console.error('Failed to sync Slack to Monday:', syncError);
-            }
+          }
+          // Sync to Monday
+          console.log('Slack thread reply detected (via relay):', {
+            channel: event.channel,
+            thread_ts: event.thread_ts,
+            user: event.user,
+            text: event.text.substring(0, 50),
+            fileCount: event.files?.length ?? 0,
+          });
+          try {
+            await sync.syncSlackToMonday(event.thread_ts, event.text, event.user, event.channel, event.files);
+          } catch (syncError) {
+            console.error('Failed to sync Slack to Monday:', syncError);
           }
         }
       }
