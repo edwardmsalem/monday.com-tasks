@@ -424,6 +424,8 @@ app.post('/webhook/slack/task', slackUrlEncodedWithRawBody, async (req: Request 
 
 import { lookupAccountForIssueCall, formatIssueCallAccount, logSheetsConfiguration } from './services/sheets.js';
 import { parseIssueCallInputSafe } from './services/claude.js';
+import { resolveIssueCallOwners } from './services/issueCallOwners.js';
+import { registerIssueCall } from './services/issueCallTracker.js';
 
 /**
  * Expand short team names to full official names for Monday.com
@@ -670,7 +672,7 @@ function getIssueCallDueDate(): string {
  * - Due: Today (or tomorrow if after 4 PM EST)
  * - Posts to issue call channel with account info
  * - Monitors thread for first 👀 or reply → assigns as supporter
- * - Pings @closers hourly until claimed
+ * - Pings the thread until claimed (issueCallTracker), claim stops it
  */
 app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Request & { rawBody?: string }, res: Response): Promise<void> => {
   // Verify Slack signature (QW-07)
@@ -802,14 +804,7 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     // Look up owners. Names come from ISSUE_CALL_OWNERS (comma separated),
     // default Dayna. A name that is no longer in the directory (someone who
     // left) is skipped with a log line instead of blocking the issue call.
-    const ownerNames = (process.env.ISSUE_CALL_OWNERS || 'Dayna')
-      .split(',').map(n => n.trim()).filter(Boolean);
-    const owners: NonNullable<Awaited<ReturnType<typeof findUserByName>>>[] = [];
-    for (const ownerName of ownerNames) {
-      const found = await findUserByName(ownerName);
-      if (found) owners.push(found);
-      else console.warn(`[IssueCall] Owner "${ownerName}" not found in the user directory, skipped`);
-    }
+    const { names: ownerNames, owners } = await resolveIssueCallOwners(findUserByName);
 
     if (owners.length === 0) {
       await slack.sendResponseUrl(response_url,
@@ -1022,6 +1017,23 @@ app.post('/webhook/slack/issuecall', slackUrlEncodedWithRawBody, async (req: Req
     await monday.updateSlackThreadId(mondayItem.id, slackMessage.ts, issueCallChannelId);
 
     console.log(`Posted issue call to channel ${issueCallChannelId}, thread ${slackMessage.ts}`);
+
+    // Start the claim reminders. Until someone reacts 👀, replies or presses
+    // Claim, the tracker pings the thread during business hours: the
+    // suggested supporter first (if one was named), then the owners, and
+    // Edward after an hour. Claiming stops it.
+    try {
+      registerIssueCall({
+        mondayItemId: String(mondayItem.id),
+        slackThreadTs: slackMessage.ts,
+        channelId: issueCallChannelId,
+        createdAt: Date.now(),
+        ownerSlackIds: owners.map(o => o.slackId).filter((id): id is string => !!id),
+        suggestedSupporterSlackId: supporterUser?.slackId ?? undefined,
+      });
+    } catch (trackError) {
+      console.error('[IssueCall] Failed to register issue call for claim reminders:', trackError);
+    }
 
     // Send confirmation via response_url
     const slackThreadUrl = `https://slack.com/archives/${issueCallChannelId}/p${slackMessage.ts.replace('.', '')}`;
@@ -1693,7 +1705,7 @@ app.post('/admin/digest/reset', express.json(), (_req: Request, res: Response): 
 // ============================================================================
 
 /**
- * Manually trigger all daily reports (Garet, Ruzzell, Executive)
+ * Manually trigger all daily reports (Garet, issue call owners, Executive)
  * Usage: POST /admin/report/all
  */
 app.post('/admin/report/all', express.json(), async (_req: Request, res: Response): Promise<void> => {
@@ -1744,15 +1756,17 @@ app.post('/admin/report/supervisor/garet', express.json(), async (_req: Request,
 });
 
 /**
- * Manually trigger Ruzzell's supervisor report (issue calls only)
- * Usage: POST /admin/report/supervisor/ruzzell
+ * Manually trigger the issue call supervisor report (issue calls only),
+ * sent to the issue call owners (ISSUE_CALL_OWNERS, default Dayna)
+ * Usage: POST /admin/report/supervisor/issue-calls
+ * The old /admin/report/supervisor/ruzzell path still works and sends the same report.
  */
-app.post('/admin/report/supervisor/ruzzell', express.json(), async (_req: Request, res: Response): Promise<void> => {
+app.post(['/admin/report/supervisor/issue-calls', '/admin/report/supervisor/ruzzell'], express.json(), async (_req: Request, res: Response): Promise<void> => {
   try {
-    const result = await digestScheduler.triggerRuzzellReport();
+    const result = await digestScheduler.triggerIssueCallReport();
     res.json(result);
   } catch (error) {
-    console.error('[ReportTrigger] Ruzzell report failed:', error);
+    console.error('[ReportTrigger] Issue call report failed:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',

@@ -9,6 +9,7 @@
 
 import { config, configCompat } from '../config/environment.js';
 import { formatDateEST, getDayName, getDaysLate, getESTDateString } from './workingHours.js';
+import { issueCallOwnerNames } from './issueCallOwners.js';
 
 // ============================================================================
 // Types
@@ -380,6 +381,17 @@ export function buildPersonalDigestBlocks(
 /**
  * Build blocks for issue call digest (channel)
  */
+/**
+ * True when the issue call digest has anything to list. The 10 AM digest tags
+ * @closers, so it stays quiet when every section is empty.
+ */
+export function hasOpenIssueCalls(issueCalls: IssueCallsByCategory): boolean {
+  return issueCalls.overdue.length > 0
+    || issueCalls.dueToday.length > 0
+    || issueCalls.thisWeek.length > 0
+    || issueCalls.unclaimed.length > 0;
+}
+
 export function buildIssueCallDigestBlocks(
   issueCalls: IssueCallsByCategory
 ): any[] {
@@ -902,7 +914,7 @@ export function buildIssueCallClaimEscalationBlocks(
   if (!isFirst) {
     blocks.push(dividerBlock());
     blocks.push(
-      contextBlock('First escalation sent to Ruzzell + Dayna earlier.')
+      contextBlock(`First escalation sent to ${issueCallOwnerNames().join(' + ')} earlier.`)
     );
   }
 
@@ -947,7 +959,7 @@ export function buildIssueCallCompletionEscalationBlocks(
   if (!isFirst) {
     blocks.push(dividerBlock());
     blocks.push(
-      contextBlock('First escalation sent to Ruzzell + Dayna earlier.')
+      contextBlock(`First escalation sent to ${issueCallOwnerNames().join(' + ')} earlier.`)
     );
   }
 

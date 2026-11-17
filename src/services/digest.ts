@@ -13,6 +13,8 @@ import * as blockKit from './blockKit.js';
 import * as digestState from './digestState.js';
 import * as workingHours from './workingHours.js';
 import { monday as coreApiMonday, getCachedConfig } from './coreApi.js';
+import { findUserByName } from './userResolver.js';
+import { issueCallOwnerSlackIds } from './issueCallOwners.js';
 
 // ============================================================================
 // Constants
@@ -50,7 +52,7 @@ export const ESCALATION_CONFIG = {
     claiming: {
       first: {
         afterMinutes: 60,
-        recipients: ['U072TG6N57A', 'U05BRER83HT'], // Ruzzell, Dayna
+        recipients: ['U05BRER83HT'], // Dayna. Fallback only: the issue call owners (ISSUE_CALL_OWNERS) are resolved at send time
       },
       final: {
         afterMinutes: 120,
@@ -60,7 +62,7 @@ export const ESCALATION_CONFIG = {
     completion: {
       first: {
         hoursBeforeDeadline: 4,
-        recipients: ['U072TG6N57A', 'U05BRER83HT'], // Ruzzell, Dayna
+        recipients: ['U05BRER83HT'], // Dayna. Fallback only: the issue call owners (ISSUE_CALL_OWNERS) are resolved at send time
       },
       final: {
         hoursBeforeDeadline: 2,
@@ -907,6 +909,12 @@ export async function sendIssueCallDigest(): Promise<boolean> {
       }
     }
 
+    // Nothing open: stay quiet instead of tagging @closers over an empty list
+    if (!blockKit.hasOpenIssueCalls(categorized)) {
+      console.log('[Digest] No open issue calls, skipping issue call digest');
+      return true;
+    }
+
     // Build blocks
     const blocks = blockKit.buildIssueCallDigestBlocks(categorized);
 
@@ -1249,7 +1257,7 @@ export async function checkIssueCallEscalations(): Promise<void> {
         // For demo, escalate if not at level 1 yet
         const blocks = blockKit.buildIssueCallClaimEscalationBlocks(ic, 1, true);
 
-        for (const recipientId of cfg.first.recipients) {
+        for (const recipientId of await issueCallOwnerSlackIds(findUserByName, cfg.first.recipients)) {
           await sendDM(recipientId, 'Unclaimed Issue Call', blocks);
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
@@ -1297,7 +1305,7 @@ export async function checkIssueCallEscalations(): Promise<void> {
           true
         );
 
-        for (const recipientId of cfg.first.recipients) {
+        for (const recipientId of await issueCallOwnerSlackIds(findUserByName, cfg.first.recipients)) {
           await sendDM(recipientId, 'Issue Call At Risk', blocks);
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
@@ -1316,7 +1324,7 @@ export async function checkIssueCallEscalations(): Promise<void> {
 // Supervisor IDs
 const SUPERVISOR_IDS = {
   garet: 'U04CFCNAN4Q',      // Garet - non-issue call tasks
-  ruzzell: 'U072TG6N57A',    // Ruzzell - issue calls
+  issueCalls: 'U05BRER83HT', // Dayna - issue calls. Fallback only: the report goes to the issue call owners (ISSUE_CALL_OWNERS)
   executive: 'U0144K906KA',  // Edward - executive (everything)
 };
 
@@ -1589,9 +1597,9 @@ function buildGaretReportBlocks(
 }
 
 /**
- * Build supervisor report blocks for Ruzzell (issue calls only)
+ * Build supervisor report blocks for the issue call owners (issue calls only)
  */
-function buildRuzzellReportBlocks(
+function buildIssueCallReportBlocks(
   tasks: MondayTask[],
   escalationCounts: Map<string, number>
 ): any[] {
@@ -1858,20 +1866,26 @@ export async function sendSupervisorReportGaret(): Promise<boolean> {
 }
 
 /**
- * Send Ruzzell's supervisor report (issue calls only)
+ * Send the issue call supervisor report (issue calls only) to the issue call
+ * owners (ISSUE_CALL_OWNERS, default Dayna)
  */
-export async function sendSupervisorReportRuzzell(): Promise<boolean> {
-  console.log('[Report] Sending Ruzzell supervisor report...');
+export async function sendSupervisorReportIssueCalls(): Promise<boolean> {
+  console.log('[Report] Sending issue call supervisor report...');
 
   try {
     const tasks = await fetchAllTasksForReport();
     const escalationCounts = digestState.getWeeklyIssueCallEscalationCounts();
-    const blocks = buildRuzzellReportBlocks(tasks, escalationCounts);
+    const blocks = buildIssueCallReportBlocks(tasks, escalationCounts);
 
-    const result = await sendDM(SUPERVISOR_IDS.ruzzell, 'Daily Issue Call Report', blocks);
-    return result !== null;
+    const recipients = await issueCallOwnerSlackIds(findUserByName, [SUPERVISOR_IDS.issueCalls]);
+    let sent = false;
+    for (const recipientId of recipients) {
+      const result = await sendDM(recipientId, 'Daily Issue Call Report', blocks);
+      if (result !== null) sent = true;
+    }
+    return sent;
   } catch (error) {
-    console.error('[Report] Error sending Ruzzell report:', error);
+    console.error('[Report] Error sending issue call report:', error);
     return false;
   }
 }
@@ -1899,14 +1913,14 @@ export async function sendExecutiveReport(): Promise<boolean> {
 /**
  * Send all daily reports (6 PM EST)
  */
-export async function sendAllDailyReports(): Promise<{ garet: boolean; ruzzell: boolean; executive: boolean }> {
+export async function sendAllDailyReports(): Promise<{ garet: boolean; issueCalls: boolean; executive: boolean }> {
   console.log('[Report] Sending all daily reports...');
 
-  const [garet, ruzzell, executive] = await Promise.all([
+  const [garet, issueCalls, executive] = await Promise.all([
     sendSupervisorReportGaret(),
-    sendSupervisorReportRuzzell(),
+    sendSupervisorReportIssueCalls(),
     sendExecutiveReport(),
   ]);
 
-  return { garet, ruzzell, executive };
+  return { garet, issueCalls, executive };
 }
