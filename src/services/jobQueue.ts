@@ -10,8 +10,9 @@
  * - pdf_conversion: Retry PDF conversions
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
+import { ensureStateDir, migrateLegacyStateFile } from '../utils/stateDir.js';
 import {
   RETRY_DELAYS_MS,
   MAX_RETRY_ATTEMPTS,
@@ -57,8 +58,9 @@ export type JobProcessor = (payload: Record<string, unknown>) => Promise<void>;
 // Constants
 // ============================================================================
 
-const DATA_DIR = './data';
-const QUEUE_FILE = `${DATA_DIR}/job-queue.json`;
+// Durable state file (Railway volume, ./data locally), migrated once from
+// the legacy ./data location if needed.
+const QUEUE_FILE = migrateLegacyStateFile('job-queue.json', ['./data/job-queue.json']);
 
 // Use centralized constants for retry configuration
 const DEFAULT_RETRY_DELAYS = [...RETRY_DELAYS_MS];
@@ -81,10 +83,7 @@ const processors: Map<Job['type'], JobProcessor> = new Map();
 // ============================================================================
 
 function ensureDataDirectory(): void {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-    console.log(`[JobQueue] Created data directory: ${DATA_DIR}`);
-  }
+  ensureStateDir();
 }
 
 function loadJobs(): Job[] {

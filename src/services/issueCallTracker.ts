@@ -9,6 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { migrateLegacyStateFile } from '../utils/stateDir.js';
 import { config } from '../config/environment.js';
 import * as slack from './slack.js';
 import * as monday from './monday.js';
@@ -40,8 +41,9 @@ export interface PendingIssueCall {
 // In-memory store of pending issue calls
 const pendingIssueCalls = new Map<string, PendingIssueCall>();
 
-// Persistence file path
-const PERSISTENCE_FILE = path.join(process.cwd(), '.issue-calls.json');
+// Persistence file path (Railway volume, ./data locally), migrated once from
+// the legacy process.cwd()/.issue-calls.json location if needed.
+const PERSISTENCE_FILE = migrateLegacyStateFile('.issue-calls.json', [path.join(process.cwd(), '.issue-calls.json')]);
 
 /**
  * Load pending issue calls from disk

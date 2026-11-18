@@ -108,3 +108,18 @@ Email-to-Monday.com task management system with Slack integration and scheduled 
 ## How to talk to me
 
 Talk to me as a non-technical front-end user. I understand some dev concepts but explain things in plain English, not jargon. When something has a slow-vs-fast or one-time-vs-every-time distinction hidden in it, spell it out instead of assuming I'll catch it. Don't walk me through code unless I ask. Tell me what a change does in plain terms before you make it. If I say "plain it," that means stop and re-explain without the jargon.
+
+## Workflow Capture
+
+If we develop a reusable workflow, SOP, debugging playbook, deployment checklist, research routine, or coding process during a session, do not silently save it. Before ending the task, ASK me:
+
+"Should I make a skill of this?"
+
+If I say yes, create the skill at `.claude/skills/<slug>/SKILL.md` with:
+- YAML frontmatter including a `description` field explaining when to use it
+- `disable-model-invocation: true` if it should only run on explicit command
+- Body: purpose, when to use, step-by-step, expected output
+
+If I say no, drop it. Do not save it as a fallback to CLAUDE.md unless I specifically ask.
+
+Never assume the chat transcript is sufficient long-term storage for a process, but never save behind my back either. Always ask first.

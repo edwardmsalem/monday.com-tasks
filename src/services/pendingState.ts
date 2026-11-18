@@ -10,8 +10,8 @@
  * TTL cleanup runs on load and periodically to remove expired entries.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { ensureStateDir, migrateLegacyStateFile } from '../utils/stateDir.js';
 import type { ParsedTask, MissingFields } from './taskParser.js';
 import type { GmailEmailResult } from './gmail.js';
 
@@ -56,10 +56,11 @@ interface DmCooldownState {
 // Constants
 // ============================================================================
 
-const DATA_DIR = './data';
-const PENDING_TASKS_FILE = `${DATA_DIR}/pending-tasks.json`;
-const PENDING_EMAIL_FILE = `${DATA_DIR}/pending-email-selections.json`;
-const DM_COOLDOWN_FILE = `${DATA_DIR}/dm-cooldown.json`;
+// Durable state files (Railway volume, ./data locally), migrated once from
+// the legacy ./data location if needed.
+const PENDING_TASKS_FILE = migrateLegacyStateFile('pending-tasks.json', ['./data/pending-tasks.json']);
+const PENDING_EMAIL_FILE = migrateLegacyStateFile('pending-email-selections.json', ['./data/pending-email-selections.json']);
+const DM_COOLDOWN_FILE = migrateLegacyStateFile('dm-cooldown.json', ['./data/dm-cooldown.json']);
 
 // TTLs (matching original values)
 const PENDING_TASK_TTL_MS = 10 * 60 * 1000;        // 10 minutes
@@ -83,10 +84,7 @@ let cleanupIntervalId: NodeJS.Timeout | null = null;
 // ============================================================================
 
 function ensureDataDirectory(): void {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-    console.log(`[PendingState] Created data directory: ${DATA_DIR}`);
-  }
+  ensureStateDir();
 }
 
 function safeReadJson<T>(filepath: string, defaultValue: T): T {

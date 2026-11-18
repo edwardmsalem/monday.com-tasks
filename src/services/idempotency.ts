@@ -7,8 +7,9 @@
  * Keys are persisted to disk and expire after a configurable TTL.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
+import { ensureStateDir, migrateLegacyStateFile } from '../utils/stateDir.js';
 import {
   IDEMPOTENCY_KEY_TTL_MS,
   IDEMPOTENCY_CLEANUP_INTERVAL_MS,
@@ -39,8 +40,9 @@ export interface IdempotencyCheckResult {
 // Constants
 // ============================================================================
 
-const DATA_DIR = './data';
-const IDEMPOTENCY_FILE = `${DATA_DIR}/idempotency-keys.json`;
+// Durable state file (Railway volume, ./data locally), migrated once from
+// the legacy ./data location if needed.
+const IDEMPOTENCY_FILE = migrateLegacyStateFile('idempotency-keys.json', ['./data/idempotency-keys.json']);
 
 // Use centralized constants
 const DEFAULT_TTL_MS = IDEMPOTENCY_KEY_TTL_MS;
@@ -59,10 +61,7 @@ let cleanupInterval: NodeJS.Timeout | null = null;
 // ============================================================================
 
 function ensureDataDirectory(): void {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-    console.log(`[Idempotency] Created data directory: ${DATA_DIR}`);
-  }
+  ensureStateDir();
 }
 
 function loadEntries(): void {

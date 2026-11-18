@@ -5,8 +5,8 @@
  * Prevents duplicate 8AM release and 11AM reminder jobs after deploy/restart.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { ensureStateDir, migrateLegacyStateFile } from '../utils/stateDir.js';
 
 // ============================================================================
 // Types
@@ -22,7 +22,9 @@ export interface SchedulerState {
 // Constants
 // ============================================================================
 
-const STATE_FILE_PATH = './data/scheduler-state.json';
+// Durable state file (Railway volume, ./data locally), migrated once from
+// the legacy ./data location if needed.
+const STATE_FILE_PATH = migrateLegacyStateFile('scheduler-state.json', ['./data/scheduler-state.json']);
 
 const DEFAULT_STATE: SchedulerState = {
   lastReleaseDate: null,
@@ -44,11 +46,7 @@ let cachedState: SchedulerState | null = null;
  * Ensure the data directory exists
  */
 function ensureDataDirectory(): void {
-  const dir = dirname(STATE_FILE_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-    console.log(`[SchedulerState] Created data directory: ${dir}`);
-  }
+  ensureStateDir();
 }
 
 /**
