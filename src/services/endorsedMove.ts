@@ -20,6 +20,7 @@
  */
 
 import { monday as coreApiMonday } from './coreApi.js';
+import { isOldBoardEvent } from './oldBoards.js';
 
 const LEADS_BOARD_ID = '7511353720';
 const ASSOCIATES_BOARD_ID = '7511353761';
@@ -76,6 +77,11 @@ async function setStage(itemId: string, label: string): Promise<void> {
  * and the lead has a Team (mirrors the native automation's condition).
  */
 export async function handleEndorsedMove(event: EndorsedMoveEvent): Promise<void> {
+  // 2026-11-09: Leads* and Associates* are retired, people live on Accounts. Never move an old-board card.
+  if (isOldBoardEvent(event.boardId)) {
+    console.log(`[EndorsedMove] item ${event.pulseId}: event from old board ${event.boardId} (Leads*/Associates*), ignoring`);
+    return;
+  }
   if (!ENABLED) return;
   const itemId = event.pulseId ? String(event.pulseId) : null;
   if (!itemId) return;

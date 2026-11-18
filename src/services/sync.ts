@@ -12,6 +12,7 @@
 import { config } from '../config/environment.js';
 import * as monday from './monday.js';
 import * as slack from './slack.js';
+import { maskCardNumbersWithCount } from './cardMask.js';
 import { getAllUsers, findUserByName, type UnifiedUser } from './userResolver.js';
 import { parseTaskWithAI, parseFollowUpAnswers, type ParsedTask } from './taskParser.js';
 import {
@@ -131,8 +132,14 @@ export async function syncSlackToMonday(
 
   console.log(`Found Monday item ${mondayItemId} for thread ${slackThreadTs}`);
 
+  // A card number typed in a Slack thread must not land on a Monday card (2026-10-23). Masked before anything else.
+  const masked = maskCardNumbersWithCount(messageText);
+  if (masked.cards || masked.codes) {
+    console.warn(`[Sync] hid ${masked.cards} card number(s) and ${masked.codes} security code(s) before copying a Slack reply to Monday item ${mondayItemId}`);
+  }
+
   // Convert Slack links to HTML
-  const textWithLinks = convertSlackLinksToHtml(messageText);
+  const textWithLinks = convertSlackLinksToHtml(masked.text);
 
   // Translate Slack mentions to Monday format (returns text + user IDs for proper mentions)
   const { text: translatedText, mentionUserIds } = await translateSlackMentionsToMonday(textWithLinks);

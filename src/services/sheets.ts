@@ -1548,7 +1548,7 @@ export async function batchLookupAccountsForScan(
     const firstRow = rows[0].rowData;
     const name = getColumnValue(firstRow, headers, 'name', 'account name', 'customer name', 'full name');
     const planType = getColumnValue(firstRow, headers, 'option', 'plan type', 'plan', 'package', 'plan name', 'plan/pkg');
-    const last4 = getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4');
+    const last4 = normalizeLast4(getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4'));
     const exp = getColumnValue(firstRow, headers, 'exp', 'expiration', 'exp date', 'expiry');
     const cvv = getColumnValue(firstRow, headers, 'cvc', 'cvv', 'security code', 'cv2');
     const billingAddress = getColumnValue(firstRow, headers, 'address', 'street address', 'mailing address', 'billing address');
@@ -1862,7 +1862,39 @@ function findColumnIndex(headers: string[], ...possibleNames: string[]): number 
 function getColumnValue(row: string[], headers: string[], ...possibleNames: string[]): string {
   const idx = findColumnIndex(headers, ...possibleNames);
   if (idx === -1 || idx >= row.length) return '';
-  return row[idx]?.trim() || '';
+  const cell = row[idx] as unknown;
+  if (cell === null || cell === undefined) return '';
+  return String(cell).trim();
+}
+
+/**
+ * Card last 4 as a 4 character string. The sheet stores some of these as
+ * numbers, so 0008 arrives as "8" and 0757 as "757". Digit-only values are
+ * padded back to 4 with leading zeros. A longer digit run keeps its last 4.
+ * Anything else (blank, text) is returned trimmed as is.
+ */
+export function normalizeLast4(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  if (!/^\d+$/.test(text)) return text;
+  return text.length >= 4 ? text.slice(-4) : text.padStart(4, '0');
+}
+
+/**
+ * Join seat strings for display, dropping exact repeats. A half-season plan
+ * puts the same seats on two rows (one per half), which listed them twice.
+ */
+export function dedupeSeatStrings(seatStrings: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of seatStrings) {
+    const text = raw.trim();
+    const key = text.replace(/\s+/g, ' ').toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
 }
 
 export interface IssueCallAccountResult {
@@ -1971,7 +2003,7 @@ export async function lookupAccountForIssueCall(
   const address = getColumnValue(firstRow, headers, 'address', 'street address', 'mailing address');
 
   // Card info - try various column names
-  const last4 = getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4');
+  const last4 = normalizeLast4(getColumnValue(firstRow, headers, 'last 4', 'last4', 'card last 4', 'cc last 4'));
   const exp = getColumnValue(firstRow, headers, 'exp', 'expiration', 'exp date', 'expiry');
   const cvc = getColumnValue(firstRow, headers, 'cvc', 'cvv', 'security code', 'cv2');
 
@@ -2010,9 +2042,10 @@ export async function lookupAccountForIssueCall(
     }
   }
 
-  const seatsFormatted = seatStrings.length > 1
-    ? '\n  • ' + seatStrings.join('\n  • ')
-    : seatStrings[0] || '';
+  const uniqueSeats = dedupeSeatStrings(seatStrings);
+  const seatsFormatted = uniqueSeats.length > 1
+    ? '\n  • ' + uniqueSeats.join('\n  • ')
+    : uniqueSeats[0] || '';
 
   console.log(`Found ${matchingAccounts.length} seat location(s) for ${email} (${teamResult.sheetName})`);
 

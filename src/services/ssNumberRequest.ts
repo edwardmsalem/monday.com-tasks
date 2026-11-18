@@ -22,6 +22,7 @@
  */
 
 import { monday as coreApiMonday } from './coreApi.js';
+import { isOldBoardEvent } from './oldBoards.js';
 
 // Boards
 const LEADS_BOARD_ID = '7511353720';
@@ -146,6 +147,11 @@ async function callFarmBSwap(identity: Identity, dryRun: boolean): Promise<FarmB
  * Handle a Leads "Status" change. Fires only when it becomes "Request Setup".
  */
 export async function handleSsNumberRequest(event: SsNumberEvent): Promise<void> {
+  // 2026-11-09: Leads* is retired. The poller's Accounts lane is the only SS path.
+  if (isOldBoardEvent(event.boardId)) {
+    console.log(`[SsNumber] item ${event.pulseId}: event from old board ${event.boardId} (Leads*/Associates*), ignoring`);
+    return;
+  }
   const leadId = event.pulseId ? String(event.pulseId) : null;
   if (!leadId) {
     console.log('[SsNumber] No pulseId on event, skipping');

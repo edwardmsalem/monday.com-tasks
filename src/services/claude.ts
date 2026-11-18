@@ -10,6 +10,7 @@ import { TASK_TYPE_MAPPINGS } from '../config/taskTypes.js';
 import { getUserNamesString } from './userResolver.js';
 import { claude as coreApiClaude, getCachedConfig } from './coreApi.js';
 import type { TaskDetails } from '../types/index.js';
+import { cleanOptionalText } from '../utils/optionalText.js';
 
 // Build task type context (static, doesn't need dynamic loading)
 const availableTaskTypes = TASK_TYPE_MAPPINGS.map(t =>
@@ -799,11 +800,11 @@ Be flexible with input formats. Users might say:
   return {
     team: result.team,
     emails: result.emails || [],
-    issueDescription: result.issueDescription || null,
-    actionRequired: result.actionRequired || null,
-    notes: result.notes || null,
-    slackThreadLink: result.slackThreadLink || null,
-    suggestedSupporter: result.suggestedSupporter || null,
+    issueDescription: cleanOptionalText(result.issueDescription),
+    actionRequired: cleanOptionalText(result.actionRequired),
+    notes: cleanOptionalText(result.notes),
+    slackThreadLink: cleanOptionalText(result.slackThreadLink),
+    suggestedSupporter: cleanOptionalText(result.suggestedSupporter),
     confidence: result.confidence,
   };
 }

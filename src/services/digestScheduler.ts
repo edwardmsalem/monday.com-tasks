@@ -387,7 +387,7 @@ export function resetTodayTracking(): void {
 /**
  * Manually trigger all daily reports (supervisor + executive)
  */
-export async function triggerDailyReports(): Promise<{ garet: boolean; ruzzell: boolean; executive: boolean }> {
+export async function triggerDailyReports(): Promise<{ garet: boolean; issueCalls: boolean; executive: boolean }> {
   console.log('[Scheduler] Manual trigger: daily reports');
   return await digest.sendAllDailyReports();
 }
@@ -402,11 +402,11 @@ export async function triggerGaretReport(): Promise<{ success: boolean }> {
 }
 
 /**
- * Manually trigger Ruzzell's supervisor report
+ * Manually trigger the issue call supervisor report (goes to the issue call owners)
  */
-export async function triggerRuzzellReport(): Promise<{ success: boolean }> {
-  console.log('[Scheduler] Manual trigger: Ruzzell report');
-  const success = await digest.sendSupervisorReportRuzzell();
+export async function triggerIssueCallReport(): Promise<{ success: boolean }> {
+  console.log('[Scheduler] Manual trigger: issue call report');
+  const success = await digest.sendSupervisorReportIssueCalls();
   return { success };
 }
 

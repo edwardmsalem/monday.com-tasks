@@ -34,7 +34,7 @@ export interface PendingIssueCall {
   pingCount: number;  // Track how many pings sent
   claimed: boolean;
   claimedBy?: string;  // Slack user ID
-  ownerSlackIds?: string[];  // Dayna + Ruzzell Slack IDs for pinging
+  ownerSlackIds?: string[];  // Issue call owners' Slack IDs for pinging (ISSUE_CALL_OWNERS, default Dayna)
   suggestedSupporterSlackId?: string;  // Mentioned user to ping first
 }
 
@@ -173,6 +173,22 @@ export async function claimIssueCall(
 }
 
 /**
+ * Stop the claim reminders for an issue call without the Monday and Slack side
+ * effects of claimIssueCall. Used when someone presses Working on it or Done:
+ * the status button already updates Monday and posts in the thread.
+ * Returns true when a pending issue call was stopped.
+ */
+export function markIssueCallHandled(threadTs: string, slackUserId: string): boolean {
+  const issueCall = pendingIssueCalls.get(threadTs);
+  if (!issueCall || issueCall.claimed) return false;
+  issueCall.claimed = true;
+  issueCall.claimedBy = slackUserId;
+  saveToDisk();
+  console.log(`[IssueCallTracker] Issue call ${threadTs} handled by ${slackUserId}, reminders stopped`);
+  return true;
+}
+
+/**
  * Check if current time is within business hours
  * Business hours: Monday-Friday, 10am-6pm Eastern Time
  */
@@ -199,7 +215,7 @@ function isBusinessHours(): boolean {
 /**
  * Ping for all unclaimed issue calls
  * - First ping: @suggested_supporter only (if mentioned in command)
- * - Second ping onward: @dayna + @ruzzell
+ * - Second ping onward: the issue call owners (ISSUE_CALL_OWNERS, default Dayna)
  * - After 1 hour: Also include @edward
  */
 export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number; removed: number }> {
@@ -232,7 +248,7 @@ export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number; remov
       // First ping: just the suggested supporter
       mentions = `<@${issueCall.suggestedSupporterSlackId}>`;
     } else {
-      // Second ping onward: Dayna + Ruzzell
+      // Second ping onward: the issue call owners
       mentions = (issueCall.ownerSlackIds || [])
         .map(id => `<@${id}>`)
         .join(' ');
