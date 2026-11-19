@@ -16,8 +16,10 @@ function fakeMonday(items: Record<string, Item>) {
   const writes: Write[] = [];
   const bulkReads: string[] = [];
   const phoneReads: string[] = [];
+  const calls = { n: 0 };
   const orig = monday.query;
   (monday as { query: unknown }).query = async (q: string, v: Record<string, any> = {}) => {
+    calls.n++;
     if (q.includes('change_multiple_column_values')) {
       writes.push({ board: String(v.boardId), item: String(v.itemId), values: JSON.parse(v.columnValues) });
       return { change_multiple_column_values: { id: v.itemId } };
@@ -41,6 +43,11 @@ function fakeMonday(items: Record<string, Item>) {
         }));
       return { items_page_by_column_values: { items: hits } };
     }
+    if (q.includes('ReadItem')) {
+      const it = items[v.ids[0]];
+      if (!it) return { items: [] };
+      return { items: [{ board: { id: it.board }, column_values: v.cols.map((c: string) => ({ id: c, text: it.cols[c] ?? '' })) }] };
+    }
     if (q.includes('board { id }')) {
       return { items: [{ board: { id: items[v.ids[0]]?.board ?? '' } }] };
     }
@@ -50,7 +57,7 @@ function fakeMonday(items: Record<string, Item>) {
     }
     throw new Error('unexpected Monday query: ' + q);
   };
-  return { writes, bulkReads, phoneReads, restore: () => { (monday as { query: unknown }).query = orig; } };
+  return { writes, bulkReads, phoneReads, calls, restore: () => { (monday as { query: unknown }).query = orig; } };
 }
 
 const link = (id: string) => ({ linkedPulseIds: [{ linkedPulseId: Number(id) }] });
@@ -87,7 +94,8 @@ test('relinking the same number (formatted differently) still counts as primary'
   });
   try {
     await handleAssociateLink({ pulseId: 101, value: link(PERSON), previousValue: null });
-    assert.strictEqual(ssMobileWrites(m.writes).length, 1);
+    // Same digits already there: no ss_mobile rewrite, but it is still the primary (email copied).
+    assert.strictEqual(ssMobileWrites(m.writes).length, 0);
     assert.ok(simWrite(m.writes, '101').email_mm3ndwda);
   } finally { m.restore(); }
 });
@@ -264,5 +272,44 @@ test('a merged non-SIM number in other_ss_numbers survives a recompute; a stale 
     const w = m.writes.find((x) => x.item === PERSON && 'other_ss_numbers' in x.values)!;
     assert.strictEqual(w.values.other_ss_numbers, '3318360655, 7813856147');
     assert.strictEqual(ssMobileWrites(m.writes).length, 0);
+  } finally { m.restore(); }
+});
+
+// ---- Monday call budget (framework 2026-11-19: bulk link writes cost about 7 calls per row) ----
+
+test('call budget: new primary link', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', assoc_ss_email: 'a@x.com' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: '' } },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 101, value: link(PERSON), previousValue: null });
+    console.log('CALLS new-primary-link', m.calls.n);
+    assert.ok(m.calls.n <= 5);
+  } finally { m.restore(); }
+});
+
+test('call budget: relink where Monday already matches', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', assoc_ss_email: 'a@x.com' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: 'a@x.com', color_mm3pwvz4: 'Active', text_mm3p3w1z: PERSON, color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 101, value: link(PERSON), previousValue: null });
+    console.log('CALLS already-stamped-link', m.calls.n, 'writes', m.writes.length);
+    assert.strictEqual(m.writes.length, 0);
+    assert.ok(m.calls.n <= 3);
+  } finally { m.restore(); }
+});
+
+test('call budget: unlink of a secondary', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000' } },
+    '102': { board: MASTER, cols: { phone_mm3pv28f: '13318360655', text_mm3p3w1z: PERSON } },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 102, value: null, previousValue: link(PERSON) });
+    console.log('CALLS unlink-secondary', m.calls.n);
+    assert.ok(m.calls.n <= 4);
   } finally { m.restore(); }
 });
