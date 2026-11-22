@@ -20,13 +20,13 @@
  */
 
 import { monday as coreApiMonday } from './coreApi.js';
+import { ACCOUNTS_SS_EMAIL_COL, extractEmails } from '../utils/ssEmails.js';
 
-// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is assoc_ss_email (associates)
-// or lead_ss_email (leads); SS mobile keeps the id ss_mobile.
+// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is the text column
+// ss_email_address since 2026-11-22 (may hold several emails); SS mobile keeps the id ss_mobile.
 const ASSOCIATES_BOARD_ID = '18391601434';
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
-const ASSOCIATE_SS_EMAIL_COL = 'assoc_ss_email';
-const ASSOCIATE_LEAD_SS_EMAIL_COL = 'lead_ss_email';
+const ASSOCIATE_SS_EMAIL_COL = ACCOUNTS_SS_EMAIL_COL;
 const ASSOCIATE_OTHER_SS_COL = 'other_ss_numbers'; // "Other SS Numbers": secondary SIM numbers, comma separated
 
 const MASTER_NUMBERS_BOARD_ID = '18414675114';
@@ -84,7 +84,7 @@ export interface BackfillPlan {
 }
 
 export async function computeBackfillPlan(opts: { reveal?: boolean } = {}): Promise<BackfillPlan> {
-  const associates = await pageAll(ASSOCIATES_BOARD_ID, [ASSOCIATE_SS_MOBILE_COL, ASSOCIATE_SS_EMAIL_COL, ASSOCIATE_LEAD_SS_EMAIL_COL, ASSOCIATE_OTHER_SS_COL]);
+  const associates = await pageAll(ASSOCIATES_BOARD_ID, [ASSOCIATE_SS_MOBILE_COL, ASSOCIATE_SS_EMAIL_COL, ASSOCIATE_OTHER_SS_COL]);
   const masters = await pageAll(MASTER_NUMBERS_BOARD_ID, [MASTER_PHONE_COL, MASTER_TM_EMAIL_COL, MASTER_ASSOCIATE_LINK_COL]);
 
   const masterByPhone = new Map<string, PageItem[]>();
@@ -137,11 +137,12 @@ export async function computeBackfillPlan(opts: { reveal?: boolean } = {}): Prom
     if (linkedId && String(linkedId) === String(a.id)) { alreadyCorrect++; continue; }
     if (linkedId) { alreadyLinkedToOther.push({ associate: a.name, phone: mask(ss), masterId: m.id }); continue; }
 
-    const ssEmail = String(col(a, ASSOCIATE_SS_EMAIL_COL)?.text || col(a, ASSOCIATE_LEAD_SS_EMAIL_COL)?.text || '').trim();
+    const ssEmails = extractEmails(col(a, ASSOCIATE_SS_EMAIL_COL)?.text);
+    const ssEmail = ssEmails[0] ?? '';
     const simEmail = String(col(m, MASTER_TM_EMAIL_COL)?.text ?? '').trim();
     let setEmail = false;
     if (ssEmail && !simEmail) { setEmail = true; emailFill++; }
-    else if (ssEmail && norm(simEmail) === norm(ssEmail)) { emailSame++; }
+    else if (ssEmail && ssEmails.some((e) => norm(e) === norm(simEmail))) { emailSame++; }
     else if (ssEmail && simEmail) { emailConflicts.push({ associate: a.name, simEmail, ssEmail, masterId: m.id }); }
 
     matched.push({ associateId: a.id, associateName: a.name, masterId: m.id, phone: ss, assocEmail: ssEmail, setEmail });
