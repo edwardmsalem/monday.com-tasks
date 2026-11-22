@@ -25,8 +25,8 @@
 
 import { monday as coreApiMonday } from './coreApi.js';
 
-// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is assoc_ss_email (associates)
-// or lead_ss_email (leads); SS mobile keeps the id ss_mobile.
+// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is the text column
+// ss_email_address since 2026-11-22 (may hold several emails); SS mobile keeps the id ss_mobile.
 const ASSOCIATES_BOARD_ID = '18391601434';
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
 const ASSOCIATE_OTHER_SS_COL = 'other_ss_numbers'; // "Other SS Numbers": secondary SIM numbers, comma separated

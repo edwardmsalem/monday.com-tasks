@@ -16,6 +16,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { monday as coreApiMondayRaw } from './coreApi.js';
+import { ACCOUNTS_SS_EMAIL_COL, extractEmails } from '../utils/ssEmails.js';
 
 // Counts Monday calls per link event so the log shows the cost of each one (bulk-only rule).
 // Kept per event, so events handled at the same time during a bulk write do not mix counts.
@@ -30,8 +31,8 @@ const coreApiMonday = {
 
 // Boards
 const MASTER_NUMBERS_BOARD_ID = '18414675114';
-// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is assoc_ss_email (associates)
-// or lead_ss_email (leads); SS mobile keeps the id ss_mobile.
+// 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434. SS email is the text column
+// ss_email_address since 2026-11-22 (may hold several emails, the first is used); SS mobile keeps the id ss_mobile.
 const ASSOCIATES_BOARD_ID = '18391601434';
 
 // Master Numbers columns
@@ -45,7 +46,7 @@ const SIM_STATUS_NOT_IN_USE = ['burned', 'ready-to-recycle', 'empty'];
 
 // Associates board columns
 const ASSOCIATE_SS_MOBILE_COL = 'ss_mobile';
-const ASSOCIATE_SS_EMAIL_COLS = ['assoc_ss_email', 'lead_ss_email'];
+const ASSOCIATE_SS_EMAIL_COL = ACCOUNTS_SS_EMAIL_COL;
 // "Other SS Numbers" (text, 2026-11-11): every other linked SIM's number, 10 digits, comma separated,
 // sorted by SIM item id. Only on Accounts, so only written when the person lives there.
 const ASSOCIATE_OTHER_SS_COL = 'other_ss_numbers';
@@ -94,7 +95,7 @@ async function readItem(itemId: string, columnIds: string[]): Promise<ItemSnapsh
   return { board: it?.board?.id ?? '', text };
 }
 
-const PERSON_COLS = [ASSOCIATE_SS_MOBILE_COL, ASSOCIATE_OTHER_SS_COL, ...ASSOCIATE_SS_EMAIL_COLS];
+const PERSON_COLS = [ASSOCIATE_SS_MOBILE_COL, ASSOCIATE_OTHER_SS_COL, ASSOCIATE_SS_EMAIL_COL];
 const MASTER_COLS = [MASTER_PHONE_COL, MASTER_SIM_STATUS_COL, MASTER_TM_EMAIL_COL, MASTER_ASSOCIATE_STATUS_COL, MASTER_ASSOCIATE_ID_COL];
 
 // Two phone strings name the same number (ignores formatting and a leading US 1).
@@ -291,11 +292,8 @@ async function applyLinkChange(masterItemId: string, newId: string | null, prevI
     // the SIM (fill if blank or already matching; never clobber a different one).
     // Only the primary SIM gets the SS email; a secondary SIM keeps its own.
     const masterEmail = master.text[MASTER_TM_EMAIL_COL].trim();
-    let assocEmail = '';
-    for (const col of ASSOCIATE_SS_EMAIL_COLS) {
-      assocEmail = person.text[col].trim();
-      if (assocEmail) break;
-    }
+    const assocEmails = extractEmails(person.text[ASSOCIATE_SS_EMAIL_COL]);
+    const assocEmail = assocEmails[0] ?? '';
     const masterVals: Record<string, unknown> = {};
     if (master.text[MASTER_ASSOCIATE_STATUS_COL].trim() !== 'Active') masterVals[MASTER_ASSOCIATE_STATUS_COL] = { label: 'Active' };
     if (master.text[MASTER_ASSOCIATE_ID_COL].trim() !== newId) masterVals[MASTER_ASSOCIATE_ID_COL] = newId;
@@ -303,8 +301,8 @@ async function applyLinkChange(masterItemId: string, newId: string | null, prevI
       console.log(`[AssociateLink] secondary SIM ${masterItemId}: SS email not copied`);
     } else if (assocEmail && !masterEmail) {
       masterVals[MASTER_TM_EMAIL_COL] = { email: assocEmail, text: assocEmail };
-    } else if (assocEmail && masterEmail && masterEmail.toLowerCase() !== assocEmail.toLowerCase()) {
-      console.warn(`[AssociateLink] email conflict on ${masterItemId}: SIM has ${masterEmail}, associate SS email ${assocEmail} — left SIM email unchanged`);
+    } else if (assocEmail && masterEmail && !assocEmails.some((e) => e.toLowerCase() === masterEmail.toLowerCase())) {
+      console.warn(`[AssociateLink] email conflict on ${masterItemId}: SIM has ${masterEmail}, associate SS email ${assocEmails.join(', ')}, left SIM email unchanged`);
     }
     if (Object.keys(masterVals).length) await setColumnValues(MASTER_NUMBERS_BOARD_ID, masterItemId, masterVals);
     console.log(`[AssociateLink] Linked item ${masterItemId} -> associate ${newId}, ${isPrimary ? `stamped ${phoneDigits}` : 'secondary'}`);

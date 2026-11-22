@@ -39,17 +39,19 @@ function fake(people: Record<string, Person>, sims: Record<string, Sim>) {
       column_values: [
         { id: 'ss_mobile', text: p.ss, value: null },
         { id: 'other_ss_numbers', text: p.others ?? '', value: null },
-        { id: 'assoc_ss_email', text: p.ssEmail ?? '', value: null },
-        { id: 'lead_ss_email', text: '', value: null },
-        { id: 'assoc_closer', text: p.closer ?? '', value: p.closerId ? JSON.stringify({ personsAndTeams: [{ id: p.closerId, kind: 'person' }] }) : null },
+        { id: 'ss_email_address', text: p.ssEmail ?? '', value: null },
+        { id: 'account_exec', text: p.closer ?? '', value: p.closerId ? JSON.stringify({ personsAndTeams: [{ id: p.closerId, kind: 'person' }] }) : null },
       ],
     });
+    if (q.includes('FindPersonBySsEmail')) {
+      // closer: Accounts by SS email, Monday's contains_text (substring, any case)
+      assert.deepStrictEqual(v.b, [ACCOUNTS]);
+      assert.ok(q.includes('column_id: "ss_email_address"') && q.includes('operator: contains_text'));
+      const hits = Object.entries(people).filter(([, p]) => (p.ssEmail ?? '').toLowerCase().includes(String(v.v).toLowerCase()));
+      return { boards: [{ items_page: { items: hits.map(([id, p]) => personItem(id, p)) } }] };
+    }
     if (q.includes('items_page_by_column_values')) {
-      // relink: Master by phone; closer: Accounts by SS email, then Master by TM email
-      if (v.boardId === ACCOUNTS) {
-        const hits = Object.entries(people).filter(([, p]) => v.columnId === 'assoc_ss_email' && p.ssEmail === v.value);
-        return { items_page_by_column_values: { items: hits.map(([id, p]) => personItem(id, p)) } };
-      }
+      // relink: Master by phone; closer fallback: Master by TM email
       assert.strictEqual(String(v.b), MASTER);
       const col = q.includes('email_mm3ndwda", column_values') ? 'email' : 'phone';
       const hits = Object.entries(sims).filter(([, s]) => col === 'email'
@@ -131,5 +133,35 @@ test('closer lookup does not guess when a TM email sits on SIMs of two people', 
   );
   try {
     assert.strictEqual(await findCloserDetailsByEmail('x@x.com'), null);
+  } finally { f.restore(); }
+});
+
+test('closer lookup reads SS Email Address with several emails and needs the exact address', async () => {
+  const f = fake(
+    {
+      '9001': { ss: '1', ssEmail: 'ba@x.com', closer: 'Wrong', closerId: 1 },
+      '9002': { ss: '2', ssEmail: 'other@y.com, A@X.com', closer: 'Kim Lee, Second Exec', closerId: 777 },
+    },
+    {},
+  );
+  try {
+    assert.deepStrictEqual(await findCloserDetailsByEmail('a@x.com'), { name: 'Kim Lee', mondayUserId: 777 });
+    assert.strictEqual(await findCloserByEmail('other@y.com'), 'Kim Lee');
+    assert.deepStrictEqual(await findCloserDetailsByEmail('ba@x.com'), { name: 'Wrong', mondayUserId: 1 });
+  } finally { f.restore(); }
+});
+
+test('backfill: SIM email equal to the second SS email is not a conflict; blank SIM gets the first', async () => {
+  const f = fake(
+    { '9001': { ss: '13318345000', ssEmail: 'one@x.com, two@x.com' }, '9002': { ss: '13317770000', ssEmail: 'three@x.com, four@x.com' } },
+    { '101': { phone: '13318345000', links: [], email: 'TWO@x.com' }, '102': { phone: '13317770000', links: [] } },
+  );
+  try {
+    const plan = await computeBackfillPlan();
+    const byMaster = Object.fromEntries(plan.matched.map((r) => [r.masterId, [r.setEmail, r.assocEmail]]));
+    assert.deepStrictEqual(byMaster['101'], [false, 'one@x.com']);
+    assert.deepStrictEqual(byMaster['102'], [true, 'three@x.com']);
+    assert.strictEqual(plan.summary.emailConflicts, 0);
+    assert.strictEqual(plan.summary.emailAlreadySame, 1);
   } finally { f.restore(); }
 });

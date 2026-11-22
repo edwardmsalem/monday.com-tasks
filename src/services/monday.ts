@@ -4,6 +4,7 @@ import type { MondayItem, MondayUser, TaskDebugInfo } from '../types/index.js';
 import { mondayCircuit } from './circuitBreaker.js';
 import { addJob, registerProcessor } from './jobQueue.js';
 import { monday as coreApiMonday } from './coreApi.js';
+import { ACCOUNTS_SS_EMAIL_COL, cellHasEmail } from '../utils/ssEmails.js';
 
 /**
  * Execute a GraphQL query against the Monday.com API via core-api
@@ -2050,11 +2051,12 @@ export async function getIssueCallItems(): Promise<Array<{
 // ============================================================================
 
 // 2026-11-09 cutover: people live on Accounts (NEW FLOW) 18391601434, one card per person.
-// SS email is assoc_ss_email (associates) or lead_ss_email (leads). The closer is the text column
-// assoc_closer (no Monday person id there, so mondayUserId is null and callers use the name).
+// 2026-11-22: the SS email is the text column ss_email_address (may hold several emails, e.g.
+// "a@x.com, b@y.com"), and the closer is the A/Exec people column account_exec. The old columns
+// assoc_ss_email, lead_ss_email and assoc_closer are being deleted.
 const ASSOCIATES_BOARD_ID = '18391601434';
-const ASSOCIATES_SS_EMAIL_COLS = ['assoc_ss_email', 'lead_ss_email'];
-const ASSOCIATES_CLOSER_COL = 'assoc_closer';
+const ASSOCIATES_SS_EMAIL_COL = ACCOUNTS_SS_EMAIL_COL;
+const ASSOCIATES_CLOSER_COL = 'account_exec';
 // Two numbers per person (2026-11-10): a person's second SIM carries its own Bound TM Account
 // email on Master Numbers, which is not on the person card. Fallback: find the SIM by that email
 // and take the person it links to.
@@ -2063,6 +2065,27 @@ const MASTER_TM_EMAIL_COL = 'email_mm3ndwda';
 const MASTER_ASSOCIATE_LINK_COL = 'board_relation_mm4dm77t';
 
 type CloserItem = { id: string; name: string; column_values: Array<{ id: string; text: string | null; value?: string | null }> };
+
+/**
+ * Person card whose SS Email Address cell holds `email`. One read: Monday's contains_text filter
+ * narrows the board, then each hit is checked for the exact address (so "a@x.com" never matches
+ * "ba@x.com"). Null when none match.
+ */
+async function findPersonBySsEmail(email: string): Promise<CloserItem | null> {
+  const res = await executeQuery<{ boards: Array<{ items_page: { items: CloserItem[] } }> }>(`
+    query FindPersonBySsEmail($b: [ID!], $v: CompareValue!) {
+      boards(ids: $b) {
+        items_page(limit: 25, query_params: { rules: [{ column_id: "${ASSOCIATES_SS_EMAIL_COL}", compare_value: $v, operator: contains_text }] }) {
+          items { id name column_values(ids: ["${ASSOCIATES_SS_EMAIL_COL}", "${ASSOCIATES_CLOSER_COL}"]) { id text value } }
+        }
+      }
+    }
+  `, { b: [ASSOCIATES_BOARD_ID], v: email });
+  const hits = (res.boards?.[0]?.items_page?.items ?? [])
+    .filter(it => cellHasEmail(it.column_values.find(c => c.id === ASSOCIATES_SS_EMAIL_COL)?.text, email));
+  if (hits.length > 1) console.warn(`[Associates] SS email ${email} is on ${hits.length} cards (${hits.map(h => h.id).join(', ')}); using ${hits[0].id}`);
+  return hits[0] ?? null;
+}
 
 /**
  * Person card linked to the Master Numbers SIM whose Bound TM Account email is `email`.
@@ -2097,66 +2120,42 @@ async function findPersonBySimTmEmail(email: string): Promise<CloserItem | null>
   return person;
 }
 
+/** The A/Exec of a person card: first person's Monday id from the people value, and its name. */
+function closerOf(item: CloserItem): CloserDetails {
+  const col = item.column_values.find(c => c.id === ASSOCIATES_CLOSER_COL);
+  let mondayUserId: number | null = null;
+  if (col?.value) {
+    try {
+      const parsed = JSON.parse(col.value) as { personsAndTeams?: Array<{ id: number | string; kind?: string }> };
+      const person = parsed.personsAndTeams?.find(p => p.kind === 'person') ?? parsed.personsAndTeams?.[0];
+      if (person?.id != null) mondayUserId = Number(person.id);
+    } catch {
+      // value wasn't the expected People JSON, fall back to the text name
+    }
+  }
+  // A people cell with several people reads "A, B"; the first matches the id above.
+  const name = col?.text?.split(',')[0]?.trim() || null;
+  return { name, mondayUserId };
+}
+
+async function findPersonByEmail(email: string): Promise<CloserItem | null> {
+  return (await findPersonBySsEmail(email)) ?? (await findPersonBySimTmEmail(email));
+}
+
 /**
- * Find the closer assigned to an associate by their SS email address.
- * Queries Accounts (NEW FLOW) matching the associate or lead SS email column.
- * Returns the closer name from the matched item, or null if not found.
+ * Find the closer (A/Exec) assigned to an associate by their SS email address.
+ * Returns the closer name from the matched card, or null if not found.
  */
 export async function findCloserByEmail(email: string): Promise<string | null> {
-
-  const query = `
-    query FindCloserByEmail($boardId: ID!, $columnId: String!, $value: String!) {
-      items_page_by_column_values(
-        board_id: $boardId
-        columns: [{ column_id: $columnId, column_values: [$value] }]
-        limit: 1
-      ) {
-        items {
-          id
-          name
-          column_values {
-            id
-            text
-          }
-        }
-      }
-    }
-  `;
-
   try {
-    const result = await executeQuery<{
-      items_page_by_column_values: {
-        items: Array<{
-          id: string;
-          name: string;
-          column_values: Array<{ id: string; text: string }>;
-        }>;
-      };
-    }>(query, {
-      boardId: ASSOCIATES_BOARD_ID,
-      columnId: ASSOCIATES_SS_EMAIL_COLS[0],
-      value: email,
-    });
-
-    let item = result.items_page_by_column_values.items[0];
-    if (!item) {
-      const second = await executeQuery<typeof result>(query, {
-        boardId: ASSOCIATES_BOARD_ID,
-        columnId: ASSOCIATES_SS_EMAIL_COLS[1],
-        value: email,
-      });
-      item = second.items_page_by_column_values.items[0];
-    }
-    if (!item) item = ((await findPersonBySimTmEmail(email)) ?? undefined) as typeof item;
+    const item = await findPersonByEmail(email);
     if (!item) {
       console.log(`[Associates] No item found for SS email: ${email}`);
       return null;
     }
-
-    const closerCol = item.column_values.find(c => c.id === ASSOCIATES_CLOSER_COL);
-    const closer = closerCol?.text?.trim() || null;
-    console.log(`[Associates] Found closer "${closer}" for ${email} (item ${item.id})`);
-    return closer;
+    const { name } = closerOf(item);
+    console.log(`[Associates] Found closer "${name}" for ${email} (item ${item.id})`);
+    return name;
   } catch (error) {
     console.error(`[Associates] Closer lookup failed for ${email}:`, error);
     return null;
@@ -2165,78 +2164,24 @@ export async function findCloserByEmail(email: string): Promise<string | null> {
 
 export interface CloserDetails {
   name: string | null;         // display name (People-column text)
-  mondayUserId: number | null; // Monday person id (unambiguous — prefer this)
+  mondayUserId: number | null; // Monday person id (unambiguous, prefer this)
 }
 
 /**
- * Like findCloserByEmail, but also returns the closer's Monday person ID from the
- * `lead_closer` People column. The ID is unambiguous: resolving it straight to
- * Slack avoids name-matching entirely (no "Gray/Grey" typos, no picking the wrong
- * "Nolan"). The text name is kept only as a display fallback. (Edward, 2026-07-14)
+ * Like findCloserByEmail, but also returns the closer's Monday person ID from the A/Exec
+ * people column. The ID is unambiguous: resolving it straight to Slack avoids name-matching
+ * entirely. The text name is kept only as a display fallback. (Edward, 2026-07-14)
  */
 export async function findCloserDetailsByEmail(email: string): Promise<CloserDetails | null> {
-  const query = `
-    query FindCloserByEmail($boardId: ID!, $columnId: String!, $value: String!) {
-      items_page_by_column_values(
-        board_id: $boardId
-        columns: [{ column_id: $columnId, column_values: [$value] }]
-        limit: 1
-      ) {
-        items {
-          id
-          name
-          column_values(ids: ["${ASSOCIATES_CLOSER_COL}"]) { id text value }
-        }
-      }
-    }
-  `;
-
   try {
-    const result = await executeQuery<{
-      items_page_by_column_values: {
-        items: Array<{
-          id: string;
-          name: string;
-          column_values: Array<{ id: string; text: string | null; value: string | null }>;
-        }>;
-      };
-    }>(query, {
-      boardId: ASSOCIATES_BOARD_ID,
-      columnId: ASSOCIATES_SS_EMAIL_COLS[0],
-      value: email,
-    });
-
-    let item = result.items_page_by_column_values.items[0];
-    if (!item) {
-      const second = await executeQuery<typeof result>(query, {
-        boardId: ASSOCIATES_BOARD_ID,
-        columnId: ASSOCIATES_SS_EMAIL_COLS[1],
-        value: email,
-      });
-      item = second.items_page_by_column_values.items[0];
-    }
-    if (!item) item = ((await findPersonBySimTmEmail(email)) ?? undefined) as typeof item;
+    const item = await findPersonByEmail(email);
     if (!item) {
       console.log(`[Associates] No item found for SS email: ${email}`);
       return null;
     }
-
-    const closerCol = item.column_values.find(c => c.id === ASSOCIATES_CLOSER_COL);
-    const name = closerCol?.text?.trim() || null;
-
-    let mondayUserId: number | null = null;
-    if (closerCol?.value) {
-      try {
-        const parsed = JSON.parse(closerCol.value) as { personsAndTeams?: Array<{ id: number | string; kind?: string }> };
-        const person = parsed.personsAndTeams?.find(p => p.kind === 'person') ?? parsed.personsAndTeams?.[0];
-        if (person?.id != null) mondayUserId = Number(person.id);
-      } catch {
-        // value wasn't the expected People JSON — fall back to the text name
-      }
-    }
-
-    console.log(`[Associates] Closer "${name}" (mondayId=${mondayUserId ?? 'none'}) for ${email} (item ${item.id})`);
-    return { name, mondayUserId };
+    const details = closerOf(item);
+    console.log(`[Associates] Closer "${details.name}" (mondayId=${details.mondayUserId ?? 'none'}) for ${email} (item ${item.id})`);
+    return details;
   } catch (error) {
     console.error(`[Associates] Closer details lookup failed for ${email}:`, error);
     return null;

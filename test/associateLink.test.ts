@@ -71,7 +71,7 @@ function simWrite(writes: Write[], simId: string) {
 
 test('first SIM fills a blank ss_mobile and gets the SS email', async () => {
   const m = fakeMonday({
-    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', assoc_ss_email: 'a@x.com' } },
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', ss_email_address: 'a@x.com' } },
     '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: '' } },
   });
   try {
@@ -89,7 +89,7 @@ test('first SIM fills a blank ss_mobile and gets the SS email', async () => {
 
 test('relinking the same number (formatted differently) still counts as primary', async () => {
   const m = fakeMonday({
-    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '+1 331 834 5000', assoc_ss_email: 'a@x.com' } },
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '+1 331 834 5000', ss_email_address: 'a@x.com' } },
     '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: '' } },
   });
   try {
@@ -102,7 +102,7 @@ test('relinking the same number (formatted differently) still counts as primary'
 
 test('second SIM leaves ss_mobile alone and gets no email copied', async () => {
   const m = fakeMonday({
-    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', assoc_ss_email: 'a@x.com' } },
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', ss_email_address: 'a@x.com' } },
     '102': { board: MASTER, cols: { phone_mm3pv28f: '13318360655', email_mm3ndwda: '' } },
   });
   try {
@@ -194,7 +194,7 @@ function otherWrites(writes: Write[], person = PERSON) {
 
 test('second link writes other_ss_numbers (excluding burned and Not Linked rows), no ss_mobile change', async () => {
   const m = fakeMonday({
-    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', assoc_ss_email: 'a@x.com' } },
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', ss_email_address: 'a@x.com' } },
     '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
     '103': { board: MASTER, cols: { phone_mm3pv28f: '13317770000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'burned' }, links: [PERSON] },
     '104': { board: MASTER, cols: { phone_mm3pv28f: '13317771111', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Not Linked', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
@@ -214,7 +214,7 @@ test('second link writes other_ss_numbers (excluding burned and Not Linked rows)
 
 test('primary link writes ss_mobile and other_ss_numbers in one call, sorted by SIM id', async () => {
   const m = fakeMonday({
-    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', assoc_ss_email: 'a@x.com' } },
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', ss_email_address: 'a@x.com' } },
     '120': { board: MASTER, cols: { phone_mm3pv28f: '13319990000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
     '110': { board: MASTER, cols: { phone_mm3pv28f: '13318880000', text_mm3p3w1z: PERSON, color_mm3pwvz4: 'Active', color_mm3p4zqg: 'in-use' }, links: [PERSON] },
     '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: '' } },
@@ -279,7 +279,7 @@ test('a merged non-SIM number in other_ss_numbers survives a recompute; a stale 
 
 test('call budget: new primary link', async () => {
   const m = fakeMonday({
-    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', assoc_ss_email: 'a@x.com' } },
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', ss_email_address: 'a@x.com' } },
     '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: '' } },
   });
   try {
@@ -291,7 +291,7 @@ test('call budget: new primary link', async () => {
 
 test('call budget: relink where Monday already matches', async () => {
   const m = fakeMonday({
-    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', assoc_ss_email: 'a@x.com' } },
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', ss_email_address: 'a@x.com' } },
     '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: 'a@x.com', color_mm3pwvz4: 'Active', text_mm3p3w1z: PERSON, color_mm3p4zqg: 'in-use' }, links: [PERSON] },
   });
   try {
@@ -311,5 +311,27 @@ test('call budget: unlink of a secondary', async () => {
     await handleAssociateLink({ pulseId: 102, value: null, previousValue: link(PERSON) });
     console.log('CALLS unlink-secondary', m.calls.n);
     assert.ok(m.calls.n <= 4);
+  } finally { m.restore(); }
+});
+
+test('SS Email Address with several emails: the first goes to a blank SIM', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '', ss_email_address: 'First.One@x.com, second@y.com' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: '' } },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 101, value: link(PERSON), previousValue: null });
+    assert.deepStrictEqual(simWrite(m.writes, '101').email_mm3ndwda, { email: 'First.One@x.com', text: 'First.One@x.com' });
+  } finally { m.restore(); }
+});
+
+test('SS Email Address with several emails: a SIM holding any of them is not a conflict and is not rewritten', async () => {
+  const m = fakeMonday({
+    [PERSON]: { board: ACCOUNTS, cols: { ss_mobile: '13318345000', ss_email_address: 'first@x.com; SECOND@y.com' } },
+    '101': { board: MASTER, cols: { phone_mm3pv28f: '13318345000', email_mm3ndwda: 'second@y.com', color_mm3pwvz4: 'Active', text_mm3p3w1z: PERSON, color_mm3p4zqg: 'in-use' }, links: [PERSON] },
+  });
+  try {
+    await handleAssociateLink({ pulseId: 101, value: link(PERSON), previousValue: null });
+    assert.strictEqual(m.writes.length, 0);
   } finally { m.restore(); }
 });
