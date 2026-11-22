@@ -7,6 +7,7 @@
  * Auth: Bearer token matching CORE_API_KEY
  */
 
+import { actionTargetsOutsideSelection } from './aiActionScope.js';
 import crypto from 'crypto';
 import { parseChecklist, checklistInstructions, applyChecklist } from '../services/scanChecklist.js';
 import express, { Router, type Request, type Response } from 'express';
@@ -1311,6 +1312,14 @@ router.post('/tasks/ai-chat', async (req: Request, res: Response): Promise<void>
       }
       if (!confirmedAction.toolInput || typeof confirmedAction.toolInput !== 'object') {
         res.status(400).json({ error: 'toolInput is required' });
+        return;
+      }
+      // When the chat was about specific emails, a confirmed action may only
+      // touch those emails. A tricky email could otherwise steer an archive,
+      // trash or post onto other mail under a harmless label (Triage audit SEC-8).
+      const outOfScope = actionTargetsOutsideSelection(confirmedAction.toolInput, messageIds);
+      if (outOfScope.length > 0) {
+        res.status(400).json({ error: `Action targets ${outOfScope.length} email(s) outside this chat's selection` });
         return;
       }
 
