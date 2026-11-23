@@ -503,6 +503,9 @@ async function getFirstName(slackUserId: string): Promise<string> {
 // DM Functions
 // ============================================================================
 
+// Slack users who get no digest, escalation or report DMs (Eddie, 2026-11-23).
+export const MUTED_DM_USERS = new Set<string>(['U0144K906KA']);
+
 /**
  * Send a DM to a user
  */
@@ -511,6 +514,11 @@ async function sendDM(
   text: string,
   blocks?: any[]
 ): Promise<{ channel: string; ts: string } | null> {
+  // Eddie, 2026-11-23: "Disable this notification system entirely" for his DMs.
+  if (MUTED_DM_USERS.has(userId)) {
+    console.log(`[Digest] Muted DM "${text}" to ${userId}`);
+    return null;
+  }
   try {
     const client = getClient();
 
