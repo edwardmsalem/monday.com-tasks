@@ -26,11 +26,13 @@
  * Where the cards go (Eddie, 2026-10-29: "switch it to Luna posting it in
  * operations"): RELOCATION_DELIVERY=luna puts every card, update and thread
  * note in an outbox instead of DMing. Luna reads it (GET
- * /tasks/relocation/outbox), posts in #operations as herself, acks each post
+ * /tasks/relocation/outbox), posts in #season-tickets-admin as herself, acks each post
  * with its channel and ts, and passes button taps back (POST
  * /tasks/relocation/action). Unset, cards are DMed to Eddie as before.
  * Who may approve: RELOCATION_APPROVERS (Slack ids, comma separated), default
- * Eddie only.
+ * Eddie only. Since 2026-11-23 Luna posts the cards in #season-tickets-admin,
+ * where anyone may approve or ignore (Eddie: "Anyone in the channel"), see
+ * relocationApprovers.ts. Cards left in #operations stay with the approvers.
  */
 
 import * as crypto from 'crypto';
@@ -43,10 +45,12 @@ import { batchLookupAccountsForScan, createScanSheet, getSportFromTeam, type Spo
 import * as calendar from './calendar.js';
 import { convertHtmlToPdf } from './convertApi.js';
 import { addAppointmentsToScanSheet } from './relocationSheet.js';
+import { mayDecide, openChannels } from './relocationApprovers.js';
 
 const EDDIE_SLACK_ID = process.env['RELOCATION_SCANNER_DM_USER'] || 'U0144K906KA';
 const DELIVERY: 'dm' | 'luna' = process.env['RELOCATION_DELIVERY'] === 'luna' ? 'luna' : 'dm';
 const APPROVERS = (process.env['RELOCATION_APPROVERS'] || EDDIE_SLACK_ID).split(',').map(s => s.trim()).filter(Boolean);
+const OPEN_CHANNELS = openChannels();
 const INTERVAL_MS = Number(process.env['RELOCATION_SCANNER_INTERVAL_MS']) || 15 * 60 * 1000;
 const LOOKBACK = process.env['RELOCATION_SCANNER_LOOKBACK'] || 'newer_than:2d';
 // When set (0-23), scan once a day at this Eastern hour instead of every INTERVAL_MS.
@@ -430,7 +434,7 @@ export async function runRelocationScan(): Promise<{ judged: number; hits: numbe
 export async function handleRelocationAction(actionId: string, key: string, userId: string): Promise<void> {
   const c = state.campaigns[key];
   if (!c) return;
-  if (!APPROVERS.includes(userId)) return;
+  if (!mayDecide(userId, c.dm?.channel, APPROVERS, OPEN_CHANNELS)) return;
   if (actionId === 'reloc_ignore' && c.status === 'pending') {
     c.status = 'ignored';
     saveState();
@@ -491,7 +495,7 @@ export function startRelocationAction(action: 'approve' | 'ignore', key: string,
   const c = state.campaigns[key];
   // Only a card Luna actually posted can be tapped.
   if (!c || !c.dm) return { ok: false, reason: 'No such relocation campaign.' };
-  if (!APPROVERS.includes(userId)) return { ok: false, reason: 'Only the relocation approvers (Eddie) can approve or ignore this.' };
+  if (!mayDecide(userId, c.dm.channel, APPROVERS, OPEN_CHANNELS)) return { ok: false, reason: 'Only the relocation approvers (Eddie) can approve or ignore this.' };
   const allowed = c.status === 'pending' || (action === 'approve' && c.status === 'ignored');
   if (!allowed) return { ok: false, status: c.status, reason: `This campaign is already ${c.status}.` };
   void handleRelocationAction(`reloc_${action}`, key, userId).catch(e => console.error('[Relocation] action failed:', e));
@@ -499,7 +503,7 @@ export function startRelocationAction(action: 'approve' | 'ignore', key: string,
 }
 
 export function startRelocationScanner(): void {
-  console.log(`[Relocation] scanner enabled: ${DAILY_HOUR !== null ? `daily at ${DAILY_HOUR}:00 ET` : `every ${INTERVAL_MS / 60000}min`} over ${LOOKBACK}, ${DELIVERY === 'luna' ? 'cards to Luna outbox' : `DMs to ${EDDIE_SLACK_ID}`}, approvers ${APPROVERS.join(',')}, state ${STATE_FILE}`);
+  console.log(`[Relocation] scanner enabled: ${DAILY_HOUR !== null ? `daily at ${DAILY_HOUR}:00 ET` : `every ${INTERVAL_MS / 60000}min`} over ${LOOKBACK}, ${DELIVERY === 'luna' ? 'cards to Luna outbox' : `DMs to ${EDDIE_SLACK_ID}`}, approvers ${APPROVERS.join(',')}, open to anyone in ${OPEN_CHANNELS.join(',') || 'no channel'}, state ${STATE_FILE}`);
   if (DAILY_HOUR !== null) {
     // Checked each minute; the date is saved, so a restart never scans twice in a day
     // and a server that was down at the hour catches up when it comes back that day.
