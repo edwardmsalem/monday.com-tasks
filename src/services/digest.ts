@@ -56,7 +56,7 @@ export const ESCALATION_CONFIG = {
       },
       final: {
         afterMinutes: 120,
-        recipients: ['U0144K906KA', 'U08M6BP6X3N'], // Edward, Elia
+        recipients: ['U0144K906KA'], // Edward (muted). Elia removed 2026-11-23, she left the company
       },
     },
     completion: {
@@ -66,7 +66,7 @@ export const ESCALATION_CONFIG = {
       },
       final: {
         hoursBeforeDeadline: 2,
-        recipients: ['U0144K906KA', 'U08M6BP6X3N'], // Edward, Elia
+        recipients: ['U0144K906KA'], // Edward (muted). Elia removed 2026-11-23, she left the company
       },
     },
   },
