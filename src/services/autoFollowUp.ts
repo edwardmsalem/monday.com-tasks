@@ -469,15 +469,15 @@ const OVERDUE_REMINDERS = [
 ];
 
 // Escalation reminder messages (day 2+) - includes manager visibility, more urgency
-const ESCALATION_SLACK_ID = 'U0144K906KA'; // Edward Salem - for visibility on repeat overdue
+// Eddie is no longer tagged on overdue reminders (2026-11-23).
 
 const ESCALATION_REMINDERS = [
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `⚠️ ${mentions} - "${task.name}" is now ${days} days overdue. <@${ESCALATION_SLACK_ID}> for visibility. This requires immediate attention - post an update with status and plan to complete.`,
+    `⚠️ ${mentions} - "${task.name}" is now ${days} days overdue. This requires immediate attention - post an update with status and plan to complete.`,
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `🚨 Hey ${mentions}, this task has been overdue for ${days} days. Looping in <@${ESCALATION_SLACK_ID}>. Please update with current status and expected completion date.`,
+    `🚨 Hey ${mentions}, this task has been overdue for ${days} days. Please update with current status and expected completion date.`,
   (task: TaskForFollowUp, days: number, mentions: string) =>
-    `⚠️ ${mentions} - ${days} days overdue! cc <@${ESCALATION_SLACK_ID}>. Post an update immediately with reason for delay and new target date.`,
+    `⚠️ ${mentions} - ${days} days overdue! Post an update immediately with reason for delay and new target date.`,
 ];
 
 function pickRandom<T>(arr: T[]): T {

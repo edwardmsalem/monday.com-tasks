@@ -20,6 +20,7 @@ export const CLOSERS_GROUP_ID = 'S07QVQVMQMB';
 
 // Edward's Slack ID for escalation after 1 hour
 const EDWARD_SLACK_ID = 'U0144K906KA';
+const EDWARD_MUTED = true;
 
 // Ping intervals
 const PING_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
@@ -255,7 +256,8 @@ export async function pingUnclaimedIssueCalls(): Promise<{ pinged: number; remov
     }
 
     // Add Edward after 1 hour
-    if (shouldEscalateToEdward) {
+    // Muted 2026-11-23 (Eddie: no escalation pings to him). Owners keep being pinged.
+    if (shouldEscalateToEdward && !EDWARD_MUTED) {
       mentions += ` <@${EDWARD_SLACK_ID}>`;
     }
 
