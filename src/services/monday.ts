@@ -2064,7 +2064,7 @@ const MASTER_NUMBERS_BOARD_ID = '18414675114';
 const MASTER_TM_EMAIL_COL = 'email_mm3ndwda';
 const MASTER_ASSOCIATE_LINK_COL = 'board_relation_mm4dm77t';
 
-type CloserItem = { id: string; name: string; column_values: Array<{ id: string; text: string | null; value?: string | null }> };
+export type CloserItem = { id: string; name: string; column_values: Array<{ id: string; text: string | null; value?: string | null }> };
 
 /**
  * Person card whose SS Email Address cell holds `email`. One read: Monday's contains_text filter
@@ -2121,7 +2121,7 @@ async function findPersonBySimTmEmail(email: string): Promise<CloserItem | null>
 }
 
 /** The A/Exec of a person card: first person's Monday id from the people value, and its name. */
-function closerOf(item: CloserItem): CloserDetails {
+export function closerOf(item: CloserItem): CloserDetails {
   const col = item.column_values.find(c => c.id === ASSOCIATES_CLOSER_COL);
   let mondayUserId: number | null = null;
   if (col?.value) {
@@ -2138,8 +2138,24 @@ function closerOf(item: CloserItem): CloserDetails {
   return { name, mondayUserId };
 }
 
+/** Which search found the person: the SS email on Accounts, or a SIM's Bound TM Account email. */
+export type PersonMatchedBy = 'ss_email' | 'tm_email';
+export interface PersonMatch { item: CloserItem; matchedBy: PersonMatchedBy }
+
+/**
+ * The person card for `email` and the rule that found it: the SS email on Accounts first, then
+ * the Master Numbers Bound TM Account fallback. Null when neither matches. Errors propagate.
+ */
+export async function findPersonMatchByEmail(email: string): Promise<PersonMatch | null> {
+  const bySs = await findPersonBySsEmail(email);
+  if (bySs) return { item: bySs, matchedBy: 'ss_email' };
+  const byTm = await findPersonBySimTmEmail(email);
+  if (byTm) return { item: byTm, matchedBy: 'tm_email' };
+  return null;
+}
+
 async function findPersonByEmail(email: string): Promise<CloserItem | null> {
-  return (await findPersonBySsEmail(email)) ?? (await findPersonBySimTmEmail(email));
+  return (await findPersonMatchByEmail(email))?.item ?? null;
 }
 
 /**

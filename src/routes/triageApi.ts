@@ -29,6 +29,8 @@ import * as monday from '../services/monday.js';
 import * as slack from '../services/slack.js';
 import { randomUUID } from 'crypto';
 import { createWatch, listWatches, stopWatch } from '../services/scanWatch.js';
+import { accountCardLookup, parseEmail } from '../services/accountCard.js';
+import { deadlineCalendar, validateDeadline } from '../services/deadlineCalendar.js';
 
 const router = Router();
 router.use(express.json());
@@ -907,6 +909,57 @@ router.post('/tasks/closer-lookup', async (req: Request, res: Response): Promise
     console.error('[Triage API] Closer lookup failed:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Closer lookup failed',
+    });
+  }
+});
+
+// ============================================================================
+// POST /tasks/account-card
+// The person's Accounts card for an email: name, link, closer and which rule matched.
+// Same search as closer-lookup (SS email, then the Master Numbers Bound TM Account),
+// cached in memory (src/services/accountCard.ts) to spare Monday's daily call cap.
+// ============================================================================
+
+router.post('/tasks/account-card', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const email = parseEmail((req.body as { email?: unknown } | undefined)?.email);
+  if (!email) {
+    res.status(400).json({ error: 'email is required and must be one email address' });
+    return;
+  }
+
+  try {
+    const { card } = await accountCardLookup.lookup(email);
+    res.json(card);
+  } catch (error) {
+    console.error('[Triage API] Account card lookup failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Account card lookup failed' });
+  }
+});
+
+// ============================================================================
+// POST /tasks/deadline/calendar
+// One all-day calendar event for a deadline found in an email (src/services/deadlineCalendar.ts).
+// A repeat for the same messageId and dueDate within 24 hours creates nothing.
+// ============================================================================
+
+router.post('/tasks/deadline/calendar', async (req: Request, res: Response): Promise<void> => {
+  if (!verifyApiKey(req, res)) return;
+
+  const checked = validateDeadline(req.body);
+  if (!checked.ok) {
+    res.status(400).json({ success: false, error: checked.error });
+    return;
+  }
+
+  try {
+    res.json(await deadlineCalendar.create(checked.value));
+  } catch (error) {
+    console.error('[Triage API] Deadline calendar event failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Calendar event failed',
     });
   }
 });
