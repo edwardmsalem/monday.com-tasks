@@ -135,8 +135,8 @@ export function isCalendarEnabled(): boolean {
 // /scan Appointment Events
 // ============================================================================
 
-// Default invitees for scan appointment events
-const SCAN_APPOINTMENT_INVITEES = [
+// Default invitees for scan appointment events (also the Triage deadline events)
+export const SCAN_APPOINTMENT_INVITEES = [
   'edward@salemseats.com',
   'michael@salemseats.com',
   'adam@salemseats.com',
